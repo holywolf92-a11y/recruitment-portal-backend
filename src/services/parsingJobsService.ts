@@ -32,7 +32,11 @@ export class ParsingJobsService {
 
   async setStatus(jobId: string, status: JobStatus, extra?: Record<string, any>) {
     const db = supabaseAdminClient();
-    const payload = { status, updated_at: new Date().toISOString(), ...(extra || {}) } as any;
+    // Only update status and output (existing columns)
+    const payload: any = { status };
+    if (extra && extra.result_json) {
+      payload.output = extra.result_json;
+    }
     const { data, error } = await db
       .from('parsing_jobs')
       .update(payload)

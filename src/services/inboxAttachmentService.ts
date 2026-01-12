@@ -27,6 +27,18 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
   try {
     const db = supabaseAdminClient();
 
+    // Upload file to Supabase Storage (upsert to allow retries)
+    const upload = await db.storage
+      .from(input.storageBucket)
+      .upload(input.storagePath, input.fileBuffer, {
+        upsert: true,
+        contentType: input.mimeType ?? 'application/octet-stream',
+      });
+    if ((upload as any)?.error) {
+      const errMsg = (upload as any).error?.message || 'unknown error';
+      throw new AppError(`Failed to upload to storage: ${errMsg}`, ErrorType.DATABASE, 500);
+    }
+
     // Pre-check for duplicates when DB is accessible
     if (input.attachmentType === 'cv' && sha256) {
       const { data: exists, error: checkErr } = await db

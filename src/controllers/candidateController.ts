@@ -133,6 +133,8 @@ export async function extractCandidateDataController(req: Request, res: Response
     const { id } = req.params;
     const { cvUrl } = req.body;
 
+    console.log('🔄 CV Extraction endpoint called - ID:', id, 'URL:', cvUrl);
+
     if (!id) {
       return res.status(400).json({ error: 'Candidate ID is required' });
     }

@@ -122,43 +122,56 @@ router.post(
   '/attachments/:attachmentId/process',
   asyncHandler(async (req: Request, res: Response) => {
     const { attachmentId } = req.params;
+    console.log(`[AttachmentProcess] Starting for attachmentId=${attachmentId}`);
     const parsingJobs = new ParsingJobsService();
 
-    // 1) Get attachment and generate signed URL
-    const attachment = await getAttachmentById(attachmentId);
-    const signedUrl = await getAttachmentSignedUrl(attachmentId, 300);
-    const fileHash = attachment?.sha256 ?? null;
+    try {
+      // 1) Get attachment and generate signed URL
+      console.log(`[AttachmentProcess] Fetching attachment ${attachmentId}...`);
+      const attachment = await getAttachmentById(attachmentId);
+      console.log(`[AttachmentProcess] Got attachment, generating signed URL...`);
+      const signedUrl = await getAttachmentSignedUrl(attachmentId, 300);
+      console.log(`[AttachmentProcess] Got signed URL, creating job...`);
+      const fileHash = attachment?.sha256 ?? null;
 
     // 2) Idempotency: if same attachment+hash already extracted, reuse job
     if (fileHash) {
-      const existing = await parsingJobs.findLatestExtractedForAttachment(attachmentId, fileHash);
-      if (existing) {
-        return res.json({ job_id: existing.id, status: 'extracted', reused: true });
+        console.log(`[AttachmentProcess] Checking for existing job with hash...`);
+        const existing = await parsingJobs.findLatestExtractedForAttachment(attachmentId, fileHash);
+        if (existing) {
+          console.log(`[AttachmentProcess] Found existing job: ${existing.id}`);
+          return res.json({ job_id: existing.id, status: 'extracted', reused: true });
+        }
       }
+
+      // 3) Create parsing job row
+      console.log(`[AttachmentProcess] Creating new parsing job...`);
+      const jobRow = await parsingJobs.createJob({ attachmentId, fileHash });
+      console.log(`[AttachmentProcess] Created job: ${jobRow.id}`);
+
+      // 4) Enqueue BullMQ job
+      console.log(`[AttachmentProcess] Enqueueing to BullMQ...`);
+      await cvParsingQueue.add(
+        'parse',
+        {
+          jobId: jobRow.id,
+          attachmentId,
+          fileUrl: signedUrl,
+          fileHash,
+        },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 2000 },
+          removeOnComplete: 200,
+          removeOnFail: 200,
+        }
+      );
+      console.log(`[AttachmentProcess] Successfully queued job`);
+
+      res.status(202).json({ job_id: jobRow.id, status: 'queued' });
+    } catch (err) {
+      console.error(`[AttachmentProcess] Error:`, err instanceof Error ? err.message : String(err), err);
+      throw err;  // Let asyncHandler deal with it
     }
-
-    // 3) Create parsing job row
-    const jobRow = await parsingJobs.createJob({ attachmentId, fileHash });
-
-    // 4) Enqueue BullMQ job
-    await cvParsingQueue.add(
-      'parse',
-      {
-        jobId: jobRow.id,
-        attachmentId,
-        fileUrl: signedUrl,
-        fileHash,
-      },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 2000 },
-        removeOnComplete: 200,
-        removeOnFail: 200,
-      }
-    );
-
-    res.status(202).json({ job_id: jobRow.id, status: 'queued' });
-  })
-);
 
 export default router;

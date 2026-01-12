@@ -1,0 +1,38 @@
+import { Router } from 'express';
+import authRoutes from './auth';
+import candidateRoutes from './candidates';
+import documentRoutes from './documents';
+import timelineRoutes from './timeline';
+import employerRoutes from './employers';
+import jobOrderRoutes from './jobOrders';
+import cvGeneratorRoutes from './cvGenerator';
+import matchingRoutes from './matching';
+import communicationRoutes from './communication';
+import searchRoutes from './search';
+import inboxRoutes from './inbox';
+import whatsappRoutes from './whatsapp';
+import gmailRoutes from './gmail';
+import testHelperRoutes from './testHelpers';
+import parsingJobsRoutes from './parsingJobs';
+import queueHealthRoutes from './queueHealth';
+
+const router = Router();
+
+router.use('/auth', authRoutes);
+router.use('/candidates', candidateRoutes);
+router.use('/documents', documentRoutes);
+router.use('/timeline', timelineRoutes);
+router.use('/employers', employerRoutes);
+router.use('/job-orders', jobOrderRoutes);
+router.use('/cv-generator', cvGeneratorRoutes);
+router.use('/matching', matchingRoutes);
+router.use('/communication', communicationRoutes);
+router.use('/search', searchRoutes);
+router.use('/cv-inbox', inboxRoutes);
+router.use('/webhooks/whatsapp', whatsappRoutes);
+router.use('/webhooks/gmail', gmailRoutes);
+router.use('/test', testHelperRoutes);
+router.use('/parsing-jobs', parsingJobsRoutes);
+router.use('/health', queueHealthRoutes);
+
+export default router;

@@ -15,6 +15,7 @@ import gmailRoutes from './gmail';
 import testHelperRoutes from './testHelpers';
 import parsingJobsRoutes from './parsingJobs';
 import queueHealthRoutes from './queueHealth';
+import storageHealthRoutes from './storageHealth';
 
 const router = Router();
 
@@ -34,5 +35,6 @@ router.use('/webhooks/gmail', gmailRoutes);
 router.use('/test', testHelperRoutes);
 router.use('/parsing-jobs', parsingJobsRoutes);
 router.use('/health', queueHealthRoutes);
+router.use('/health/storage', storageHealthRoutes);
 
 export default router;

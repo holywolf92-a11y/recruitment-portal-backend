@@ -104,7 +104,8 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
     }
 
     // Otherwise treat as DB error to avoid incorrect 404 from memory fallback
-    throw new AppError('Failed to create attachment (database error)', ErrorType.DATABASE, 500);
+    const detail = err?.message || JSON.stringify(err || {});
+    throw new AppError(`Failed to create attachment (database error): ${detail}`, ErrorType.DATABASE, 500);
   }
 }
 

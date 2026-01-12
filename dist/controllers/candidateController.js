@@ -5,6 +5,9 @@ exports.getCandidateController = getCandidateController;
 exports.listCandidatesController = listCandidatesController;
 exports.updateCandidateController = updateCandidateController;
 exports.deleteCandidateController = deleteCandidateController;
+exports.extractCandidateDataController = extractCandidateDataController;
+exports.updateExtractionController = updateExtractionController;
+exports.getExtractionHistoryController = getExtractionHistoryController;
 // import { AuthRequest } from '../middleware/auth';
 const candidateService_1 = require("../services/candidateService");
 async function createCandidateController(req, res) {
@@ -111,5 +114,60 @@ async function deleteCandidateController(req, res) {
         else {
             res.status(500).json({ error: 'Failed to delete candidate' });
         }
+    }
+}
+// CV Extraction Controllers
+async function extractCandidateDataController(req, res) {
+    try {
+        const userId = 'test-user-id';
+        const { id } = req.params;
+        const { cvUrl } = req.body;
+        if (!id) {
+            return res.status(400).json({ error: 'Candidate ID is required' });
+        }
+        if (!cvUrl) {
+            return res.status(400).json({ error: 'CV URL is required' });
+        }
+        // Import extraction service
+        const { extractCandidateData } = require('../services/extractionService');
+        const result = await extractCandidateData(id, cvUrl, userId);
+        res.json(result);
+    }
+    catch (error) {
+        console.error('Error extracting candidate data:', error);
+        res.status(500).json({ error: error.message || 'Failed to extract candidate data' });
+    }
+}
+async function updateExtractionController(req, res) {
+    try {
+        const userId = 'test-user-id';
+        const { id } = req.params;
+        const { extractedData, approved, notes } = req.body;
+        if (!id) {
+            return res.status(400).json({ error: 'Candidate ID is required' });
+        }
+        const { updateExtraction } = require('../services/extractionService');
+        const result = await updateExtraction(id, extractedData, approved, notes, userId);
+        res.json(result);
+    }
+    catch (error) {
+        console.error('Error updating extraction:', error);
+        res.status(500).json({ error: error.message || 'Failed to update extraction' });
+    }
+}
+async function getExtractionHistoryController(req, res) {
+    try {
+        const userId = 'test-user-id';
+        const { id } = req.params;
+        if (!id) {
+            return res.status(400).json({ error: 'Candidate ID is required' });
+        }
+        const { getExtractionHistory } = require('../services/extractionService');
+        const history = await getExtractionHistory(id, userId);
+        res.json({ history });
+    }
+    catch (error) {
+        console.error('Error fetching extraction history:', error);
+        res.status(500).json({ error: 'Failed to fetch extraction history' });
     }
 }

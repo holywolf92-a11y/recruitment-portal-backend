@@ -6,7 +6,10 @@ import {
   getCandidateController,
   listCandidatesController,
   updateCandidateController,
-  deleteCandidateController
+  deleteCandidateController,
+  extractCandidateDataController,
+  updateExtractionController,
+  getExtractionHistoryController
 } from '../controllers/candidateController';
 
 const router = Router();
@@ -28,5 +31,10 @@ router.put('/:id', validateCandidate, updateCandidateController);
 
 // Delete candidate (soft delete)
 router.delete('/:id', deleteCandidateController);
+
+// CV Extraction Routes
+router.post('/:id/extract', extractCandidateDataController);
+router.put('/:id/extraction', updateExtractionController);
+router.get('/:id/extraction-history', getExtractionHistoryController);
 
 export default router;

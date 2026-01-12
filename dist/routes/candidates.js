@@ -17,4 +17,8 @@ router.get('/:id', candidateController_1.getCandidateController);
 router.put('/:id', validation_1.validateCandidate, candidateController_1.updateCandidateController);
 // Delete candidate (soft delete)
 router.delete('/:id', candidateController_1.deleteCandidateController);
+// CV Extraction Routes
+router.post('/:id/extract', candidateController_1.extractCandidateDataController);
+router.put('/:id/extraction', candidateController_1.updateExtractionController);
+router.get('/:id/extraction-history', candidateController_1.getExtractionHistoryController);
 exports.default = router;

@@ -2,6 +2,8 @@ import { supabaseAdminClient } from '../config/database';
 import { AppError, ErrorType, NotFoundError, createLogger } from '../utils/errorHandling';
 import { hashFile } from '../utils/hashing';
 import { memCreateAttachment, memListAttachmentsForMessage, memDeleteAttachment } from './inboxMemory';
+import { DocumentClassifier } from './documentClassifier';
+import { enqueueDocumentLink } from '../queues/documentLinkQueue';
 
 const logger = createLogger('InboxAttachmentService');
 
@@ -14,6 +16,8 @@ export interface InboxAttachmentCreateInput {
   storageBucket: string;
   storagePath: string;
   candidateId?: string;
+  messageSubject?: string; // For classification
+  messageSource?: string; // gmail, whatsapp, web
 }
 
 export async function createAttachment(input: InboxAttachmentCreateInput) {
@@ -24,13 +28,36 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
   if (!input.storagePath) throw new AppError('storagePath is required', ErrorType.VALIDATION, 400);
 
   const sha256 = hashFile(input.fileBuffer);
+  
+  // Classify attachment automatically
+  const classification = DocumentClassifier.classify(
+    input.fileName,
+    input.messageSubject,
+    input.mimeType
+  );
+  
+  // Extract metadata hints from filename
+  const metadata = DocumentClassifier.extractMetadataFromFilename(input.fileName);
+  
+  // Determine storage path based on classification
+  let finalStoragePath = input.storagePath;
+  if (classification.attachmentKind === 'document' || classification.attachmentKind === 'unknown') {
+    // Use unmatched path for documents (will be moved on link)
+    const source = input.messageSource || 'web';
+    finalStoragePath = DocumentClassifier.generateUnmatchedPath(
+      source,
+      input.inboxMessageId,
+      input.fileName
+    );
+  }
+  
   try {
     const db = supabaseAdminClient();
 
     // Upload file to Supabase Storage (upsert to allow retries)
     const upload = await db.storage
       .from(input.storageBucket)
-      .upload(input.storagePath, input.fileBuffer, {
+      .upload(finalStoragePath, input.fileBuffer, {
         upsert: true,
         contentType: input.mimeType ?? 'application/octet-stream',
       });
@@ -57,11 +84,14 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
         inbox_message_id: input.inboxMessageId,
         candidate_id: input.candidateId ?? null,
         storage_bucket: input.storageBucket,
-        storage_path: input.storagePath,
+        storage_path: finalStoragePath,
         file_name: input.fileName,
         mime_type: input.mimeType ?? null,
         sha256,
         attachment_type: input.attachmentType ?? 'cv',
+        attachment_kind: classification.attachmentKind,
+        document_type: classification.documentType,
+        received_at: new Date().toISOString(),
       })
       .select()
       .single();
@@ -75,7 +105,26 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
       }
       throw error;
     }
-    return data;
+    
+    logger.info(`Attachment classified and created`, {
+      attachmentId: data.id,
+      kind: classification.attachmentKind,
+      documentType: classification.documentType,
+      extractedMetadata: metadata
+    });
+    
+    // Auto-enqueue for document linking if it's a document or unknown type
+    if (classification.attachmentKind === 'document' || classification.attachmentKind === 'unknown') {
+      try {
+        await enqueueDocumentLink(data.id);
+        logger.info(`Enqueued document for linking`, { attachmentId: data.id });
+      } catch (enqueueErr) {
+        // Log error but don't fail the attachment creation
+        logger.error(`Failed to enqueue document link`, { attachmentId: data.id, error: enqueueErr });
+      }
+    }
+    
+    return { ...data, extractedMetadata: metadata };
   } catch (err: any) {
     // If we already classified as duplicate, surface it without falling back
     if (err instanceof AppError && err.type === ErrorType.DUPLICATE) {

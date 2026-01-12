@@ -11,12 +11,9 @@ class ParsingJobsService {
         const { data, error } = await db
             .from('parsing_jobs')
             .insert({
-            attachment_id: input.attachmentId,
-            file_hash: input.fileHash ?? null,
+            inbox_attachment_id: input.attachmentId,
             status: 'queued',
-            attempts: 0,
             created_at: now,
-            updated_at: now,
         })
             .select()
             .single();
@@ -28,7 +25,11 @@ class ParsingJobsService {
     }
     async setStatus(jobId, status, extra) {
         const db = (0, database_1.supabaseAdminClient)();
-        const payload = { status, updated_at: new Date().toISOString(), ...(extra || {}) };
+        // Only update status and output (existing columns)
+        const payload = { status };
+        if (extra && extra.result_json) {
+            payload.output = extra.result_json;
+        }
         const { data, error } = await db
             .from('parsing_jobs')
             .update(payload)
@@ -59,13 +60,11 @@ class ParsingJobsService {
         let query = db
             .from('parsing_jobs')
             .select('*')
-            .eq('attachment_id', attachmentId)
+            .eq('inbox_attachment_id', attachmentId)
             .eq('status', 'extracted')
             .order('created_at', { ascending: false })
             .limit(1);
-        if (fileHash) {
-            query = query.eq('file_hash', fileHash);
-        }
+        // Note: file_hash column doesn't exist in current schema
         const { data, error } = await query;
         if (error)
             throw error;

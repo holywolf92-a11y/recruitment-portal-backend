@@ -9,6 +9,8 @@ const database_1 = require("../config/database");
 const errorHandling_1 = require("../utils/errorHandling");
 const hashing_1 = require("../utils/hashing");
 const inboxMemory_1 = require("./inboxMemory");
+const documentClassifier_1 = require("./documentClassifier");
+const documentLinkQueue_1 = require("../queues/documentLinkQueue");
 const logger = (0, errorHandling_1.createLogger)('InboxAttachmentService');
 async function createAttachment(input) {
     if (!input.inboxMessageId)
@@ -22,8 +24,30 @@ async function createAttachment(input) {
     if (!input.storagePath)
         throw new errorHandling_1.AppError('storagePath is required', errorHandling_1.ErrorType.VALIDATION, 400);
     const sha256 = (0, hashing_1.hashFile)(input.fileBuffer);
+    // Classify attachment automatically
+    const classification = documentClassifier_1.DocumentClassifier.classify(input.fileName, input.messageSubject, input.mimeType);
+    // Extract metadata hints from filename
+    const metadata = documentClassifier_1.DocumentClassifier.extractMetadataFromFilename(input.fileName);
+    // Determine storage path based on classification
+    let finalStoragePath = input.storagePath;
+    if (classification.attachmentKind === 'document' || classification.attachmentKind === 'unknown') {
+        // Use unmatched path for documents (will be moved on link)
+        const source = input.messageSource || 'web';
+        finalStoragePath = documentClassifier_1.DocumentClassifier.generateUnmatchedPath(source, input.inboxMessageId, input.fileName);
+    }
     try {
         const db = (0, database_1.supabaseAdminClient)();
+        // Upload file to Supabase Storage (upsert to allow retries)
+        const upload = await db.storage
+            .from(input.storageBucket)
+            .upload(finalStoragePath, input.fileBuffer, {
+            upsert: true,
+            contentType: input.mimeType ?? 'application/octet-stream',
+        });
+        if (upload?.error) {
+            const errMsg = upload.error?.message || 'unknown error';
+            throw new errorHandling_1.AppError(`Failed to upload to storage: ${errMsg}`, errorHandling_1.ErrorType.DATABASE, 500);
+        }
         // Pre-check for duplicates when DB is accessible
         if (input.attachmentType === 'cv' && sha256) {
             const { data: exists, error: checkErr } = await db
@@ -42,11 +66,14 @@ async function createAttachment(input) {
             inbox_message_id: input.inboxMessageId,
             candidate_id: input.candidateId ?? null,
             storage_bucket: input.storageBucket,
-            storage_path: input.storagePath,
+            storage_path: finalStoragePath,
             file_name: input.fileName,
             mime_type: input.mimeType ?? null,
             sha256,
             attachment_type: input.attachmentType ?? 'cv',
+            attachment_kind: classification.attachmentKind,
+            document_type: classification.documentType,
+            received_at: new Date().toISOString(),
         })
             .select()
             .single();
@@ -59,7 +86,24 @@ async function createAttachment(input) {
             }
             throw error;
         }
-        return data;
+        logger.info(`Attachment classified and created`, {
+            attachmentId: data.id,
+            kind: classification.attachmentKind,
+            documentType: classification.documentType,
+            extractedMetadata: metadata
+        });
+        // Auto-enqueue for document linking if it's a document or unknown type
+        if (classification.attachmentKind === 'document' || classification.attachmentKind === 'unknown') {
+            try {
+                await (0, documentLinkQueue_1.enqueueDocumentLink)(data.id);
+                logger.info(`Enqueued document for linking`, { attachmentId: data.id });
+            }
+            catch (enqueueErr) {
+                // Log error but don't fail the attachment creation
+                logger.error(`Failed to enqueue document link`, { attachmentId: data.id, error: enqueueErr });
+            }
+        }
+        return { ...data, extractedMetadata: metadata };
     }
     catch (err) {
         // If we already classified as duplicate, surface it without falling back
@@ -86,7 +130,8 @@ async function createAttachment(input) {
             });
         }
         // Otherwise treat as DB error to avoid incorrect 404 from memory fallback
-        throw new errorHandling_1.AppError('Failed to create attachment (database error)', errorHandling_1.ErrorType.DATABASE, 500);
+        const detail = err?.message || JSON.stringify(err || {});
+        throw new errorHandling_1.AppError(`Failed to create attachment (database error): ${detail}`, errorHandling_1.ErrorType.DATABASE, 500);
     }
 }
 async function listAttachmentsForMessage(messageId) {

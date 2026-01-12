@@ -12,6 +12,7 @@ exports.updateCandidate = updateCandidate;
 exports.deleteCandidate = deleteCandidate;
 const database_1 = require("../config/database");
 const timelineService_1 = require("./timelineService");
+const documentLinkService_1 = require("./documentLinkService");
 // Normalization helper functions
 function normalizeCNIC(cnic) {
     if (!cnic)
@@ -143,6 +144,15 @@ async function createCandidate(data, userId) {
     catch (timelineError) {
         console.error('Failed to log timeline event:', timelineError);
         // Don't fail the creation if timeline logging fails
+    }
+    // Trigger reconciliation for any unmatched documents with matching identifiers
+    try {
+        const documentLinkService = new documentLinkService_1.DocumentLinkService();
+        await documentLinkService.reconcileDocumentsForCandidate(candidate.id);
+    }
+    catch (reconcileError) {
+        console.error('Failed to reconcile documents for new candidate:', reconcileError);
+        // Don't fail candidate creation if reconciliation fails
     }
     return candidate;
 }

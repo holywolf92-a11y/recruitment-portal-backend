@@ -7,6 +7,7 @@ import routes from './routes';
 import { errorHandler, createLogger } from './utils/errorHandling';
 import { startGmailPolling } from './workers/gmailPollingWorker';
 import { startCvParserWorker } from './workers/cvParserWorker';
+import { startDocumentLinkWorker } from './workers/documentLinkWorker';
 
 dotenv.config();
 validateEnv();
@@ -65,11 +66,15 @@ try {
       try {
         startCvParserWorker();
         logger.info('CV Parser worker started');
+        
+        // Start Document Link worker alongside CV parser
+        startDocumentLinkWorker();
+        logger.info('Document Link worker started');
       } catch (err) {
-        logger.error('Failed to start CV parser worker', err);
+        logger.error('Failed to start workers', err);
       }
     } else {
-      logger.info('CV Parser worker not started (set RUN_WORKER=true and configure REDIS_URL + PYTHON vars)');
+      logger.info('Workers not started (set RUN_WORKER=true and configure REDIS_URL + PYTHON vars)');
     }
   }).on('error', (err) => {
     logger.error('Server failed to start', err);

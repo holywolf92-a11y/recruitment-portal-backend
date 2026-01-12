@@ -1,5 +1,6 @@
 import { supabaseAdminClient } from '../config/database';
 import { logProfileCreated, logProfileUpdated } from './timelineService';
+import { DocumentLinkService } from './documentLinkService';
 
 // Normalization helper functions
 export function normalizeCNIC(cnic: string): string | null {
@@ -160,6 +161,15 @@ export async function createCandidate(data: CreateCandidateData, userId: string)
   } catch (timelineError) {
     console.error('Failed to log timeline event:', timelineError);
     // Don't fail the creation if timeline logging fails
+  }
+
+  // Trigger reconciliation for any unmatched documents with matching identifiers
+  try {
+    const documentLinkService = new DocumentLinkService();
+    await documentLinkService.reconcileDocumentsForCandidate(candidate.id);
+  } catch (reconcileError) {
+    console.error('Failed to reconcile documents for new candidate:', reconcileError);
+    // Don't fail candidate creation if reconciliation fails
   }
 
   return candidate;

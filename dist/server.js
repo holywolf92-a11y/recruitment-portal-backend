@@ -12,6 +12,7 @@ const routes_1 = __importDefault(require("./routes"));
 const errorHandling_1 = require("./utils/errorHandling");
 const gmailPollingWorker_1 = require("./workers/gmailPollingWorker");
 const cvParserWorker_1 = require("./workers/cvParserWorker");
+const documentLinkWorker_1 = require("./workers/documentLinkWorker");
 dotenv_1.default.config();
 (0, env_1.validateEnv)();
 const logger = (0, errorHandling_1.createLogger)('Server');
@@ -58,13 +59,16 @@ try {
             try {
                 (0, cvParserWorker_1.startCvParserWorker)();
                 logger.info('CV Parser worker started');
+                // Start Document Link worker alongside CV parser
+                (0, documentLinkWorker_1.startDocumentLinkWorker)();
+                logger.info('Document Link worker started');
             }
             catch (err) {
-                logger.error('Failed to start CV parser worker', err);
+                logger.error('Failed to start workers', err);
             }
         }
         else {
-            logger.info('CV Parser worker not started (set RUN_WORKER=true and configure REDIS_URL + PYTHON vars)');
+            logger.info('Workers not started (set RUN_WORKER=true and configure REDIS_URL + PYTHON vars)');
         }
     }).on('error', (err) => {
         logger.error('Server failed to start', err);

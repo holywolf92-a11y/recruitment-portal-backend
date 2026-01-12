@@ -17,7 +17,7 @@ export class ParsingJobsService {
     const { data, error } = await db
       .from('parsing_jobs')
       .insert({
-        attachment_id: input.attachmentId,
+        inbox_attachment_id: input.attachmentId,
         file_hash: input.fileHash ?? null,
         status: 'queued',
         attempts: 0,
@@ -67,7 +67,7 @@ export class ParsingJobsService {
     let query = db
       .from('parsing_jobs')
       .select('*')
-      .eq('attachment_id', attachmentId)
+      .eq('inbox_attachment_id', attachmentId)
       .eq('status', 'extracted' as JobStatus)
       .order('created_at', { ascending: false })
       .limit(1);

@@ -18,11 +18,8 @@ export class ParsingJobsService {
       .from('parsing_jobs')
       .insert({
         inbox_attachment_id: input.attachmentId,
-        file_hash: input.fileHash ?? null,
         status: 'queued',
-        attempts: 0,
         created_at: now,
-        updated_at: now,
       })
       .select()
       .single();
@@ -71,9 +68,7 @@ export class ParsingJobsService {
       .eq('status', 'extracted' as JobStatus)
       .order('created_at', { ascending: false })
       .limit(1);
-    if (fileHash) {
-      query = query.eq('file_hash', fileHash);
-    }
+    // Note: file_hash column doesn't exist in current schema
     const { data, error } = await query;
     if (error) throw error;
     return Array.isArray(data) && data.length ? data[0] : null;

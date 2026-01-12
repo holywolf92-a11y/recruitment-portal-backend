@@ -78,8 +78,31 @@ async function callPythonParser(cvUrl: string): Promise<{ success: boolean; data
     // Path to Python script
     const pythonScript = require('path').join(__dirname, '../../..', 'python-parser', 'extract_cv.py');
     
+    // If the CV URL is a storage path (not starting with http), convert to signed URL
+    let extractUrl = cvUrl;
+    if (!cvUrl.startsWith('http')) {
+      const db = supabaseAdminClient();
+      const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'candidate-documents';
+      
+      try {
+        // Generate a 1-hour signed URL for the storage path
+        const { data, error } = await db.storage
+          .from(STORAGE_BUCKET)
+          .createSignedUrl(cvUrl, 3600);
+        
+        if (error || !data.signedUrl) {
+          throw new Error(`Failed to generate signed URL: ${error?.message || 'Unknown error'}`);
+        }
+        
+        extractUrl = data.signedUrl;
+      } catch (urlError: any) {
+        console.error('Failed to create signed URL:', urlError);
+        throw new Error(`Failed to create signed URL for extraction: ${urlError.message}`);
+      }
+    }
+    
     // Execute Python script
-    const { stdout, stderr } = await execAsync(`python "${pythonScript}" "${cvUrl}"`);
+    const { stdout, stderr } = await execAsync(`python "${pythonScript}" "${extractUrl}"`);
     
     if (stderr) {
       console.error('Python parser stderr:', stderr);

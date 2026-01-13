@@ -241,8 +241,8 @@ export async function getCandidateCVDownloadController(req: Request, res: Respon
       return res.status(404).json({ error: 'CV not found for this candidate' });
     }
 
-    // Determine bucket (inbox_attachments uses 'inbox' bucket, candidate_documents uses 'documents')
-    const bucket = cvDoc.storage_path?.includes('inbox/') ? 'inbox' : 'documents';
+    // Use storage_bucket from the document record, fallback to 'documents'
+    const bucket = cvDoc.storage_bucket || 'documents';
 
     // Generate signed URL for download
     try {

@@ -112,16 +112,12 @@ export interface CreateCandidateData {
   address?: string;
   cnic?: string;
   passport?: string;
-  // Checklist items
+  // Document checklist items (Migration 010)
   passport_received?: boolean;
   cnic_received?: boolean;
-  police_character_certificate_received?: boolean;
-  medical_certificate_received?: boolean;
-  protector_stamp_received?: boolean;
-  visa_stamped?: boolean;
-  ticket_purchased?: boolean;
-  biometric_done?: boolean;
-  insurance_purchased?: boolean;
+  degree_received?: boolean;
+  medical_received?: boolean;
+  visa_received?: boolean;
 }
 
 export async function createCandidate(data: CreateCandidateData, userId?: string) {
@@ -157,13 +153,9 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     // Include checklist items if provided (defaults handled by DB)
     passport_received: data.passport_received,
     cnic_received: data.cnic_received,
-    police_character_certificate_received: data.police_character_certificate_received,
-    medical_certificate_received: data.medical_certificate_received,
-    protector_stamp_received: data.protector_stamp_received,
-    visa_stamped: data.visa_stamped,
-    ticket_purchased: data.ticket_purchased,
-    biometric_done: data.biometric_done,
-    insurance_purchased: data.insurance_purchased,
+    degree_received: data.degree_received,
+    medical_received: data.medical_received,
+    visa_received: data.visa_received,
   };
 
   const { data: candidate, error } = await db

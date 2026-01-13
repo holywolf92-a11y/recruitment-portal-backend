@@ -127,16 +127,24 @@ export async function uploadDocument(data: UploadDocumentData, userId: string): 
   try {
     const updateFlags: any = {};
     const type = data.doc_type.toLowerCase();
+    const now = new Date().toISOString();
     
-    if (type.includes('passport')) updateFlags.passport_received = true;
-    else if (type.includes('cnic') || type.includes('id card')) updateFlags.cnic_received = true;
-    else if (type.includes('medical')) updateFlags.medical_certificate_received = true;
-    else if (type.includes('visa')) updateFlags.visa_stamped = true;
-    else if (type.includes('police') || type.includes('character')) updateFlags.police_character_certificate_received = true;
-    else if (type.includes('protector')) updateFlags.protector_stamp_received = true;
-    else if (type.includes('insurance')) updateFlags.insurance_purchased = true;
-    else if (type.includes('ticket')) updateFlags.ticket_purchased = true;
-    else if (type.includes('biometric')) updateFlags.biometric_done = true;
+    if (type.includes('passport')) {
+      updateFlags.passport_received = true;
+      updateFlags.passport_received_at = now;
+    } else if (type.includes('cnic') || type.includes('id card')) {
+      updateFlags.cnic_received = true;
+      updateFlags.cnic_received_at = now;
+    } else if (type.includes('degree') || type.includes('diploma') || type.includes('transcript')) {
+      updateFlags.degree_received = true;
+      updateFlags.degree_received_at = now;
+    } else if (type.includes('medical')) {
+      updateFlags.medical_received = true;
+      updateFlags.medical_received_at = now;
+    } else if (type.includes('visa')) {
+      updateFlags.visa_received = true;
+      updateFlags.visa_received_at = now;
+    }
 
     if (Object.keys(updateFlags).length > 0) {
       await db

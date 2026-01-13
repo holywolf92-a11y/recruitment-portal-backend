@@ -134,8 +134,8 @@ router.post(
       console.log(`[AttachmentProcess] Got signed URL, creating job...`);
       const fileHash = attachment?.sha256 ?? null;
 
-    // 2) Idempotency: if same attachment+hash already extracted, reuse job
-    if (fileHash) {
+      // 2) Idempotency: if same attachment+hash already extracted, reuse job
+      if (fileHash) {
         console.log(`[AttachmentProcess] Checking for existing job with hash...`);
         const existing = await parsingJobs.findLatestExtractedForAttachment(attachmentId, fileHash);
         if (existing) {
@@ -173,5 +173,7 @@ router.post(
       console.error(`[AttachmentProcess] Error:`, err instanceof Error ? err.message : String(err), err);
       throw err;  // Let asyncHandler deal with it
     }
+  })
+);
 
 export default router;

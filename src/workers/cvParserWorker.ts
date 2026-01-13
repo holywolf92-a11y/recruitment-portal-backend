@@ -3,7 +3,7 @@ import { redis } from '../config/redis';
 import crypto from 'crypto';
 import { ParsingJobsService } from '../services/parsingJobsService';
 
-const PY_URL = process.env.PYTHON_CV_PARSER_URL as string;
+const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
 
 function signHmac(body: string) {

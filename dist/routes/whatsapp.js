@@ -78,7 +78,7 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, idempotency_1
                 fileName,
                 mimeType: meta?.mime_type,
                 attachmentType: 'cv',
-                storageBucket: 'inbox',
+                storageBucket: 'documents',
                 storagePath,
                 candidateId: undefined,
             });

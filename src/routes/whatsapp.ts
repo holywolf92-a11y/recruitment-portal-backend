@@ -101,7 +101,7 @@ router.post(
           fileName,
           mimeType: meta?.mime_type,
           attachmentType: 'cv',
-          storageBucket: 'inbox',
+          storageBucket: 'documents',
           storagePath,
           candidateId: undefined,
         });

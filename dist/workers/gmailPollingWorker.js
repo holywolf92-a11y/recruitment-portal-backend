@@ -81,7 +81,7 @@ async function pollGmail() {
                             fileName: attachment.filename,
                             mimeType: attachment.mimeType,
                             attachmentType: 'cv',
-                            storageBucket: 'inbox',
+                            storageBucket: 'documents',
                             storagePath,
                             candidateId: undefined,
                         }).catch((err) => {

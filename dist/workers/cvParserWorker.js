@@ -8,7 +8,7 @@ const bullmq_1 = require("bullmq");
 const redis_1 = require("../config/redis");
 const crypto_1 = __importDefault(require("crypto"));
 const parsingJobsService_1 = require("../services/parsingJobsService");
-const PY_URL = process.env.PYTHON_CV_PARSER_URL;
+const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 function signHmac(body) {
     return crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');

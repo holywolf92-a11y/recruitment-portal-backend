@@ -28,12 +28,12 @@ try {
     app.use((0, cors_1.default)());
     // Capture raw body for signature validation (e.g., Meta WhatsApp webhooks)
     app.use(express_1.default.json({
-        limit: '10mb',
+        limit: '50mb',
         verify: (req, _res, buf) => {
             req.rawBody = buf.toString('utf8');
         }
     }));
-    app.use(express_1.default.urlencoded({ extended: true }));
+    app.use(express_1.default.urlencoded({ extended: true, limit: '50mb' }));
     app.get('/health', (_req, res) => res.json({ status: 'ok' }));
     logger.info('Loading routes...');
     app.use('/api', routes_1.default);
@@ -42,14 +42,20 @@ try {
     app.use(errorHandling_1.errorHandler);
     app.listen(PORT, '0.0.0.0', () => {
         logger.info(`Server listening on port ${PORT}`);
-        // Start Gmail polling worker if credentials available
-        if (process.env.GMAIL_CLIENT_ID && process.env.GMAIL_REFRESH_TOKEN) {
-            (0, gmailPollingWorker_1.startGmailPolling)(5).catch((err) => {
-                logger.error('Failed to start Gmail polling', err);
-            });
+        // Start Gmail polling worker only when explicitly enabled.
+        // This prevents noisy log spam (e.g. invalid_client) when creds are present but not valid.
+        if (process.env.RUN_GMAIL_POLLING === 'true') {
+            if (process.env.GMAIL_CLIENT_ID && process.env.GMAIL_REFRESH_TOKEN) {
+                (0, gmailPollingWorker_1.startGmailPolling)(5).catch((err) => {
+                    logger.error('Failed to start Gmail polling', err);
+                });
+            }
+            else {
+                logger.warn('RUN_GMAIL_POLLING=true but Gmail credentials are missing; polling disabled');
+            }
         }
         else {
-            logger.info('Gmail credentials not configured, polling worker disabled');
+            logger.info('Gmail polling worker disabled (set RUN_GMAIL_POLLING=true to enable)');
         }
         // Start CV parser worker if explicitly enabled and env configured
         if (process.env.RUN_WORKER === 'true' &&

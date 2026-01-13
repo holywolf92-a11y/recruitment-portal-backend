@@ -148,6 +148,16 @@ export class CandidateMatcher {
         .select('id, name, father_name')
         .not('father_name', 'is', null);
 
+      if (error) {
+        const msg = (error as any)?.message || String(error);
+        if (/column\s+candidates\.father_name\s+does not exist/i.test(msg)) {
+          logger.warn('Skipping name+father matching; candidates.father_name column missing', { message: msg });
+        } else {
+          logger.warn('Name+father candidate query failed', { message: msg });
+        }
+        // Fall through to "no match" behavior.
+      }
+
       if (!error && data && data.length > 0) {
         const matches = data.filter(c => {
           const candidateName = this.normalizeName(c.name || '');

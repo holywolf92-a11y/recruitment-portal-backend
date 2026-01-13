@@ -113,7 +113,7 @@ export interface CreateCandidateData {
   passport?: string;
 }
 
-export async function createCandidate(data: CreateCandidateData, userId: string) {
+export async function createCandidate(data: CreateCandidateData, userId?: string) {
   const db = supabaseAdminClient();
 
   // Normalize identifiers

@@ -22,7 +22,11 @@ try {
   logger.warn('Failed to parse REDIS_URL for diagnostics', { message: (e as any)?.message });
 }
 
-const redisFamily = process.env.REDIS_FAMILY ? Number(process.env.REDIS_FAMILY) : 4;
+// Default to `0` (auto) so Node can select IPv4/IPv6 as available.
+// Railway/managed services sometimes provide IPv6-only or dual-stack hostnames.
+const redisFamilyRaw = process.env.REDIS_FAMILY;
+const redisFamilyParsed = redisFamilyRaw ? Number(redisFamilyRaw) : 0;
+const redisFamily = Number.isFinite(redisFamilyParsed) ? redisFamilyParsed : 0;
 
 logger.info('Redis connection configuration', {
   host: redisHostForDiagnostics,

@@ -175,11 +175,11 @@ class DocumentLinkService {
         // Get candidate details
         const { data: candidate, error: candError } = await db
             .from('candidates')
-            .select('email, phone, name, father_name, cnic_normalized')
+            .select('id')
             .eq('id', candidateId)
             .single();
         if (candError || !candidate) {
-            logger.error('Candidate not found for reconciliation', { candidateId });
+            logger.error('Candidate not found for reconciliation', candError, { candidateId });
             return 0;
         }
         // Get pending unmatched documents
@@ -188,7 +188,14 @@ class DocumentLinkService {
             .select('*')
             .eq('status', 'pending_link')
             .eq('needs_manual_review', false);
-        if (unmatchedError || !unmatchedDocs || unmatchedDocs.length === 0) {
+        if (unmatchedError) {
+            logger.warn('Unable to load unmatched documents for reconciliation', {
+                candidateId,
+                error: unmatchedError?.message,
+            });
+            return 0;
+        }
+        if (!unmatchedDocs || unmatchedDocs.length === 0) {
             return 0;
         }
         let linkedCount = 0;

@@ -8,10 +8,39 @@ const bullmq_1 = require("bullmq");
 const redis_1 = require("../config/redis");
 const crypto_1 = __importDefault(require("crypto"));
 const parsingJobsService_1 = require("../services/parsingJobsService");
+const candidateService_1 = require("../services/candidateService");
+const database_1 = require("../config/database");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 function signHmac(body) {
     return crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
+}
+// Helper to create candidate from parsed CV data
+async function createCandidateFromParsedData(parsed, attachmentId) {
+    try {
+        const candidate = parsed.candidate || {};
+        // Build candidate data from parsed CV
+        const candidateData = {
+            name: candidate.full_name || 'Unknown',
+            email: candidate.email || undefined,
+            phone: candidate.phone || undefined,
+            address: candidate.location || undefined,
+        };
+        // Create candidate (system-created, no specific userId)
+        const newCandidate = await (0, candidateService_1.createCandidate)(candidateData);
+        // Link the attachment to the candidate
+        const db = (0, database_1.supabaseAdminClient)();
+        await db
+            .from('inbox_attachments')
+            .update({ candidate_id: newCandidate.id })
+            .eq('id', attachmentId);
+        console.log(`[CVParser] Created candidate ${newCandidate.id} for attachment ${attachmentId}`);
+        return newCandidate;
+    }
+    catch (err) {
+        console.error(`[CVParser] Failed to create candidate from parsed data:`, err);
+        // Don't throw - parsing was successful, just candidate creation failed
+    }
 }
 function startCvParserWorker() {
     const parsingJobs = new parsingJobsService_1.ParsingJobsService();
@@ -48,6 +77,8 @@ function startCvParserWorker() {
                 error_code: null,
                 error_message: null,
             });
+            // Create candidate from parsed data and link to attachment
+            await createCandidateFromParsedData(parsed, attachmentId);
             return { ok: true };
         }
         catch (err) {

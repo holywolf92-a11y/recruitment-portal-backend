@@ -52,12 +52,21 @@ exports.EventTypes = {
  */
 async function createTimelineEvent(data) {
     const db = (0, database_1.supabaseAdminClient)();
+    // `candidate_timeline.actor_user_id` is typically a UUID. Some system flows
+    // (e.g., background workers) may provide a non-UUID actor label ("system").
+    // In that case, store it in metadata and omit `actor_user_id` to avoid DB errors.
+    const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+    const actorUserId = data.actor_user_id && isUuid(data.actor_user_id) ? data.actor_user_id : undefined;
+    const actorLabel = data.actor_user_id && !actorUserId ? data.actor_user_id : undefined;
     const eventData = {
         candidate_id: data.candidate_id,
         event_category: data.event_category,
         event_type: data.event_type,
-        actor_user_id: data.actor_user_id,
-        metadata: data.metadata || {},
+        actor_user_id: actorUserId,
+        metadata: {
+            ...(data.metadata || {}),
+            ...(actorLabel ? { actor_label: actorLabel } : {}),
+        },
     };
     const { data: event, error } = await db
         .from('candidate_timeline')

@@ -125,6 +125,8 @@ router.post(
     console.log(`[AttachmentProcess] Starting for attachmentId=${attachmentId}`);
     const parsingJobs = new ParsingJobsService();
 
+    let jobRow: { id: string } | null = null;
+
     try {
       // 1) Get attachment and generate signed URL
       console.log(`[AttachmentProcess] Fetching attachment ${attachmentId}...`);
@@ -146,15 +148,16 @@ router.post(
 
       // 3) Create parsing job row
       console.log(`[AttachmentProcess] Creating new parsing job...`);
-      const jobRow = await parsingJobs.createJob({ attachmentId, fileHash });
-      console.log(`[AttachmentProcess] Created job: ${jobRow.id}`);
+      const createdJobRow = await parsingJobs.createJob({ attachmentId, fileHash });
+      jobRow = createdJobRow;
+      console.log(`[AttachmentProcess] Created job: ${createdJobRow.id}`);
 
       // 4) Enqueue BullMQ job
       console.log(`[AttachmentProcess] Enqueueing to BullMQ...`);
       await cvParsingQueue.add(
         'parse',
         {
-          jobId: jobRow.id,
+          jobId: createdJobRow.id,
           attachmentId,
           fileUrl: signedUrl,
           fileHash,
@@ -168,8 +171,22 @@ router.post(
       );
       console.log(`[AttachmentProcess] Successfully queued job`);
 
-      res.status(202).json({ job_id: jobRow.id, status: 'queued' });
+      res.status(202).json({ job_id: createdJobRow.id, status: 'queued' });
     } catch (err) {
+      // If we created the DB job but couldn't enqueue (e.g. Redis down), mark it failed
+      // so the UI doesn't remain stuck on "Queued" forever.
+      if (jobRow?.id) {
+        try {
+          await parsingJobs.setStatus(jobRow.id, 'failed', {
+            result_json: {
+              error: 'QUEUE_ENQUEUE_FAILED',
+              message: err instanceof Error ? err.message : String(err),
+            },
+          });
+        } catch {
+          // Best-effort only; original error still handled by asyncHandler.
+        }
+      }
       console.error(`[AttachmentProcess] Error:`, err instanceof Error ? err.message : String(err), err);
       throw err;  // Let asyncHandler deal with it
     }

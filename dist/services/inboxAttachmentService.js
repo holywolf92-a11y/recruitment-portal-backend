@@ -38,15 +38,39 @@ async function createAttachment(input) {
     try {
         const db = (0, database_1.supabaseAdminClient)();
         // Upload file to Supabase Storage (upsert to allow retries)
-        const upload = await db.storage
-            .from(input.storageBucket)
-            .upload(finalStoragePath, input.fileBuffer, {
-            upsert: true,
-            contentType: input.mimeType ?? 'application/octet-stream',
-        });
-        if (upload?.error) {
-            const errMsg = upload.error?.message || 'unknown error';
-            throw new errorHandling_1.AppError(`Failed to upload to storage: ${errMsg}`, errorHandling_1.ErrorType.DATABASE, 500);
+        // Note: occasionally Supabase storage may respond with non-JSON (HTML) on transient edge/proxy errors.
+        // We'll retry a couple of times for these cases.
+        const isTransientStorageError = (msg) => /Unexpected token\s*'<'.*valid JSON|not valid JSON|fetch failed|network|timeout|ECONNRESET|ETIMEDOUT/i.test(msg);
+        let lastUploadError = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            const upload = await db.storage
+                .from(input.storageBucket)
+                .upload(finalStoragePath, input.fileBuffer, {
+                upsert: true,
+                contentType: input.mimeType ?? 'application/octet-stream',
+            });
+            const uploadError = upload?.error;
+            if (!uploadError) {
+                lastUploadError = null;
+                break;
+            }
+            lastUploadError = uploadError;
+            const errMsg = uploadError?.message || 'unknown error';
+            if (attempt < 3 && isTransientStorageError(errMsg)) {
+                logger.warn('Transient storage upload error, retrying', {
+                    attempt,
+                    bucket: input.storageBucket,
+                    path: finalStoragePath,
+                    error: errMsg,
+                });
+                await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
+                continue;
+            }
+            throw new errorHandling_1.AppError(`Failed to upload to storage (bucket=${input.storageBucket}, path=${finalStoragePath}): ${errMsg}`, errorHandling_1.ErrorType.DATABASE, 500);
+        }
+        if (lastUploadError) {
+            const errMsg = lastUploadError?.message || 'unknown error';
+            throw new errorHandling_1.AppError(`Failed to upload to storage after retries (bucket=${input.storageBucket}, path=${finalStoragePath}): ${errMsg}`, errorHandling_1.ErrorType.DATABASE, 500);
         }
         // Pre-check for duplicates when DB is accessible
         if (input.attachmentType === 'cv' && sha256) {

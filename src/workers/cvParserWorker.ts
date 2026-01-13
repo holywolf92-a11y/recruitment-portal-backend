@@ -2,12 +2,45 @@ import { Worker, Job } from 'bullmq';
 import { redis } from '../config/redis';
 import crypto from 'crypto';
 import { ParsingJobsService } from '../services/parsingJobsService';
+import { createCandidate, CreateCandidateData } from '../services/candidateService';
+import { supabaseAdminClient } from '../config/database';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
 
 function signHmac(body: string) {
   return crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
+}
+
+// Helper to create candidate from parsed CV data
+async function createCandidateFromParsedData(parsed: any, attachmentId: string) {
+  try {
+    const candidate = parsed.candidate || {};
+    
+    // Build candidate data from parsed CV
+    const candidateData: CreateCandidateData = {
+      name: candidate.full_name || 'Unknown',
+      email: candidate.email || undefined,
+      phone: candidate.phone || undefined,
+      address: candidate.location || undefined,
+    };
+
+    // Create candidate (system-created, no specific userId)
+    const newCandidate = await createCandidate(candidateData);
+
+    // Link the attachment to the candidate
+    const db = supabaseAdminClient();
+    await db
+      .from('inbox_attachments')
+      .update({ candidate_id: newCandidate.id })
+      .eq('id', attachmentId);
+
+    console.log(`[CVParser] Created candidate ${newCandidate.id} for attachment ${attachmentId}`);
+    return newCandidate;
+  } catch (err) {
+    console.error(`[CVParser] Failed to create candidate from parsed data:`, err);
+    // Don't throw - parsing was successful, just candidate creation failed
+  }
 }
 
 export function startCvParserWorker() {
@@ -59,6 +92,9 @@ export function startCvParserWorker() {
           error_code: null,
           error_message: null,
         });
+
+        // Create candidate from parsed data and link to attachment
+        await createCandidateFromParsedData(parsed, attachmentId);
 
         return { ok: true };
       } catch (err: any) {

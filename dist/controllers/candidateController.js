@@ -207,7 +207,8 @@ async function getCandidateCVDownloadController(req, res) {
                 cvDoc = {
                     storage_path: inboxDocs[0].storage_path,
                     file_name: inboxDocs[0].file_name || 'CV.pdf',
-                    id: inboxDocs[0].id
+                    id: inboxDocs[0].id,
+                    storage_bucket: inboxDocs[0].storage_bucket || 'documents'
                 };
             }
         }

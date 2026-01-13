@@ -1,19 +1,52 @@
 -- Migration 013: Profile Photos and Unmatched Documents
 -- Purpose: Add profile photo storage fields and unmatched documents table for auto-linking manual review
+-- This migration is IDEMPOTENT - safe to run multiple times
 
--- Add profile photo fields to candidates table
-ALTER TABLE candidates
-ADD COLUMN IF NOT EXISTS profile_photo_bucket TEXT,
-ADD COLUMN IF NOT EXISTS profile_photo_path TEXT,
-ADD COLUMN IF NOT EXISTS profile_photo_url TEXT;
+-- =============================================================================
+-- PART 1: Add profile photo fields to candidates table
+-- =============================================================================
 
--- Add comment for profile photo fields
+DO $$ 
+BEGIN
+  -- Add profile_photo_bucket if it doesn't exist
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'candidates' AND column_name = 'profile_photo_bucket'
+  ) THEN
+    ALTER TABLE candidates ADD COLUMN profile_photo_bucket TEXT;
+  END IF;
+
+  -- Add profile_photo_path if it doesn't exist
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'candidates' AND column_name = 'profile_photo_path'
+  ) THEN
+    ALTER TABLE candidates ADD COLUMN profile_photo_path TEXT;
+  END IF;
+
+  -- Add profile_photo_url if it doesn't exist
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns 
+    WHERE table_name = 'candidates' AND column_name = 'profile_photo_url'
+  ) THEN
+    ALTER TABLE candidates ADD COLUMN profile_photo_url TEXT;
+  END IF;
+END $$;
+
+-- Add comments for documentation
 COMMENT ON COLUMN candidates.profile_photo_bucket IS 'Supabase storage bucket for profile photo (e.g., "documents")';
 COMMENT ON COLUMN candidates.profile_photo_path IS 'Storage path to profile photo file (e.g., "candidates/{id}/photo/filename.jpg")';
 COMMENT ON COLUMN candidates.profile_photo_url IS 'Optional direct URL to profile photo';
 
--- Create unmatched_documents table for auto-linking manual review
-CREATE TABLE IF NOT EXISTS unmatched_documents (
+-- =============================================================================
+-- PART 2: Drop and recreate unmatched_documents table (if it exists partially)
+-- =============================================================================
+
+-- Drop table if it exists from previous failed migration
+DROP TABLE IF EXISTS unmatched_documents CASCADE;
+
+-- Create fresh unmatched_documents table
+CREATE TABLE unmatched_documents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   document_id UUID REFERENCES candidate_documents(id) ON DELETE CASCADE,
   
@@ -41,18 +74,24 @@ CREATE TABLE IF NOT EXISTS unmatched_documents (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Add indexes for faster queries
-CREATE INDEX IF NOT EXISTS idx_unmatched_documents_needs_review 
+-- =============================================================================
+-- PART 3: Add indexes for performance
+-- =============================================================================
+
+CREATE INDEX idx_unmatched_documents_needs_review 
   ON unmatched_documents(needs_manual_review) 
   WHERE needs_manual_review = TRUE;
 
-CREATE INDEX IF NOT EXISTS idx_unmatched_documents_match_reason 
+CREATE INDEX idx_unmatched_documents_match_reason 
   ON unmatched_documents(match_reason);
 
-CREATE INDEX IF NOT EXISTS idx_unmatched_documents_document_id 
+CREATE INDEX idx_unmatched_documents_document_id 
   ON unmatched_documents(document_id);
 
--- Add RLS policies for unmatched_documents
+-- =============================================================================
+-- PART 4: Enable RLS and add policies
+-- =============================================================================
+
 ALTER TABLE unmatched_documents ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY unmatched_documents_select ON unmatched_documents
@@ -67,7 +106,10 @@ CREATE POLICY unmatched_documents_update ON unmatched_documents
 CREATE POLICY unmatched_documents_delete ON unmatched_documents
   FOR DELETE USING (true);
 
--- Add comment for unmatched_documents
+-- =============================================================================
+-- PART 5: Add table comments
+-- =============================================================================
+
 COMMENT ON TABLE unmatched_documents IS 'Stores documents that could not be automatically linked to candidates during upload. Used for manual review of ambiguous matches, multiple matches, or no matches.';
 COMMENT ON COLUMN unmatched_documents.match_reason IS 'Reason document needs manual review: no_match (no candidate found), multiple_matches (2+ candidates matched), ambiguous (low confidence), cross_candidate_conflict (uploaded from candidate A but belongs to candidate B)';
 COMMENT ON COLUMN unmatched_documents.match_details IS 'JSON object with match scores and potential candidate IDs for manual review context';

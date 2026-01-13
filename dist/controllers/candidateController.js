@@ -195,12 +195,12 @@ async function getCandidateCVDownloadController(req, res) {
             .ilike('document_type', 'cv')
             .order('received_at', { ascending: false });
         let cvDoc = cvDocs && cvDocs.length > 0 ? cvDocs[0] : null;
-        // If not found, try inbox_attachments table
+        // If not found, try inbox_attachments table (check both candidate_id and linked_candidate_id)
         if (!cvDoc) {
             const { data: inboxDocs } = await db
                 .from('inbox_attachments')
                 .select('*')
-                .eq('linked_candidate_id', id)
+                .or(`candidate_id.eq.${id},linked_candidate_id.eq.${id}`)
                 .or('attachment_kind.ilike.cv,document_type.ilike.cv')
                 .order('created_at', { ascending: false });
             if (inboxDocs && inboxDocs.length > 0) {

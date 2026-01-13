@@ -206,31 +206,52 @@ export async function getCandidateCVDownloadController(req: Request, res: Respon
       return res.status(400).json({ error: 'Candidate ID is required' });
     }
 
-    // Import supabase and utility for signed URLs
     const { supabaseAdminClient } = require('../config/database');
     const db = supabaseAdminClient();
 
-    // Find CV document for this candidate
-    const { data: cvDoc, error: docError } = await db
+    // Try to find CV in candidate_documents table (case-insensitive search)
+    const { data: cvDocs } = await db
       .from('candidate_documents')
       .select('*')
       .eq('candidate_id', id)
-      .eq('document_type', 'cv')
-      .order('received_at', { ascending: false })
-      .limit(1)
-      .single();
+      .ilike('document_type', 'cv')
+      .order('received_at', { ascending: false });
 
-    if (docError || !cvDoc) {
+    let cvDoc = cvDocs && cvDocs.length > 0 ? cvDocs[0] : null;
+
+    // If not found, try inbox_attachments table
+    if (!cvDoc) {
+      const { data: inboxDocs } = await db
+        .from('inbox_attachments')
+        .select('*')
+        .eq('linked_candidate_id', id)
+        .or('attachment_kind.ilike.cv,document_type.ilike.cv')
+        .order('created_at', { ascending: false });
+
+      if (inboxDocs && inboxDocs.length > 0) {
+        cvDoc = {
+          storage_path: inboxDocs[0].storage_path,
+          file_name: inboxDocs[0].file_name || 'CV.pdf',
+          id: inboxDocs[0].id
+        };
+      }
+    }
+
+    if (!cvDoc || !cvDoc.storage_path) {
       return res.status(404).json({ error: 'CV not found for this candidate' });
     }
+
+    // Determine bucket (inbox_attachments uses 'inbox' bucket, candidate_documents uses 'documents')
+    const bucket = cvDoc.storage_path?.includes('inbox/') ? 'inbox' : 'documents';
 
     // Generate signed URL for download
     try {
       const { data, error: urlError } = await db.storage
-        .from('documents')
-        .createSignedUrl(cvDoc.storage_path, 300); // 5 minute expiry for download
+        .from(bucket)
+        .createSignedUrl(cvDoc.storage_path, 300); // 5 minute expiry
 
       if (urlError || !data?.signedUrl) {
+        console.error('Signed URL error:', urlError);
         return res.status(500).json({ error: 'Failed to generate download URL' });
       }
 

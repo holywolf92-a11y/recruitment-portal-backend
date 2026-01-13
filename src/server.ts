@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import { validateEnv } from './config/env';
+import { supabaseAdminClient } from './config/database';
 import routes from './routes';
 import { errorHandler, createLogger } from './utils/errorHandling';
 import { startGmailPolling } from './workers/gmailPollingWorker';
@@ -37,6 +38,34 @@ try {
   app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+  app.get('/health/supabase', async (_req, res) => {
+    try {
+      const supabase = supabaseAdminClient();
+      // Lightweight connectivity/permission check. Avoid returning any data.
+      const { error } = await supabase
+        .from('candidates')
+        .select('id', { head: true, count: 'exact' })
+        .limit(1);
+
+      if (error) {
+        return res.status(500).json({
+          status: 'error',
+          service: 'supabase',
+          message: error.message,
+          code: error.code || null
+        });
+      }
+
+      return res.json({ status: 'ok', service: 'supabase' });
+    } catch (err: any) {
+      return res.status(500).json({
+        status: 'error',
+        service: 'supabase',
+        message: err?.message || 'Unknown error'
+      });
+    }
+  });
 
   logger.info('Loading routes...');
   app.use('/api', routes);

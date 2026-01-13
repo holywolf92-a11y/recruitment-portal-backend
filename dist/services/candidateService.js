@@ -8,6 +8,7 @@ exports.checkForDuplicates = checkForDuplicates;
 exports.createCandidate = createCandidate;
 exports.getCandidateById = getCandidateById;
 exports.listCandidates = listCandidates;
+exports.bulkUpdateCandidateStatus = bulkUpdateCandidateStatus;
 exports.updateCandidate = updateCandidate;
 exports.deleteCandidate = deleteCandidate;
 const database_1 = require("../config/database");
@@ -118,6 +119,12 @@ async function createCandidate(data, userId) {
     const candidateData = {
         candidate_code: candidateCode,
         name: data.name,
+        father_name: data.father_name,
+        status: data.status,
+        source: data.source,
+        ai_score: data.ai_score,
+        auto_extracted: data.auto_extracted,
+        needs_review: data.needs_review,
         email: data.email,
         phone: phoneNormalized,
         date_of_birth: data.date_of_birth,
@@ -126,6 +133,27 @@ async function createCandidate(data, userId) {
         address: data.address,
         cnic_normalized: cnicNormalized,
         passport_normalized: passportNormalized,
+        nationality: data.nationality,
+        position: data.position,
+        experience_years: data.experience_years,
+        country_of_interest: data.country_of_interest,
+        skills: data.skills,
+        languages: data.languages,
+        education: data.education,
+        certifications: data.certifications,
+        previous_employment: data.previous_employment,
+        passport_expiry: data.passport_expiry,
+        professional_summary: data.professional_summary,
+        // Include checklist items if provided (defaults handled by DB)
+        passport_received: data.passport_received,
+        cnic_received: data.cnic_received,
+        degree_received: data.degree_received,
+        medical_received: data.medical_received,
+        visa_received: data.visa_received,
+        // Candidate card doc flags (optional)
+        cv_received: data.cv_received,
+        photo_received: data.photo_received,
+        certificate_received: data.certificate_received,
     };
     const { data: candidate, error } = await db
         .from('candidates')
@@ -174,6 +202,31 @@ async function listCandidates(filters = {}, userId) {
     if (filters.search) {
         query = query.or(`name.ilike.%${filters.search}%,email.ilike.%${filters.search}%,candidate_code.ilike.%${filters.search}%`);
     }
+    // Apply status filter
+    if (filters.status && filters.status !== 'all') {
+        query = query.eq('status', filters.status);
+    }
+    // Apply profession (position) filter
+    if (filters.position && filters.position !== 'all') {
+        query = query.eq('position', filters.position);
+    }
+    // Apply country-of-interest filter
+    if (filters.country_of_interest && filters.country_of_interest !== 'all') {
+        query = query.eq('country_of_interest', filters.country_of_interest);
+    }
+    // Apply document completeness filter (card-required docs)
+    // Complete means: CV + Passport + Certificate + Photo + Medical are present.
+    if (filters.documents === 'complete') {
+        query = query
+            .eq('cv_received', true)
+            .eq('passport_received', true)
+            .eq('certificate_received', true)
+            .eq('photo_received', true)
+            .eq('medical_received', true);
+    }
+    else if (filters.documents === 'missing') {
+        query = query.or('cv_received.eq.false,passport_received.eq.false,certificate_received.eq.false,photo_received.eq.false,medical_received.eq.false');
+    }
     // Apply pagination
     if (filters.limit && filters.offset !== undefined) {
         query = query.range(filters.offset, filters.offset + filters.limit - 1);
@@ -191,6 +244,27 @@ async function listCandidates(filters = {}, userId) {
         total: count,
         limit: filters.limit,
         offset: filters.offset
+    };
+}
+async function bulkUpdateCandidateStatus(candidateIds, status, userId) {
+    const db = (0, database_1.supabaseAdminClient)();
+    if (!Array.isArray(candidateIds) || candidateIds.length === 0) {
+        throw new Error('candidateIds must be a non-empty array');
+    }
+    const allowed = new Set(['Applied', 'Pending', 'Deployed', 'Cancelled']);
+    if (!allowed.has(status)) {
+        throw new Error(`Invalid status: ${status}`);
+    }
+    const { data, error } = await db
+        .from('candidates')
+        .update({ status, updated_at: new Date().toISOString() })
+        .in('id', candidateIds)
+        .select('id,status');
+    if (error)
+        throw error;
+    return {
+        updated: (data || []).length,
+        candidates: data || [],
     };
 }
 async function updateCandidate(id, data, userId) {

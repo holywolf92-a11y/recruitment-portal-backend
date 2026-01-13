@@ -25,7 +25,6 @@ async function extractCandidateData(candidateId, cvUrl, userId) {
             extracted_at: new Date().toISOString()
         })
             .eq('id', candidateId)
-            .eq('user_id', userId)
             .select()
             .single();
         if (error) {
@@ -109,7 +108,6 @@ async function updateExtraction(candidateId, extractedData, approved, notes, use
             extracted_at: new Date().toISOString()
         })
             .eq('id', candidateId)
-            .eq('user_id', userId)
             .select()
             .single();
         if (error) {
@@ -138,7 +136,6 @@ async function getExtractionHistory(candidateId, userId) {
             .from('extraction_history')
             .select('*')
             .eq('candidate_id', candidateId)
-            .eq('user_id', userId)
             .order('extracted_at', { ascending: false });
         if (error) {
             throw new Error(`Failed to fetch extraction history: ${error.message}`);
@@ -156,17 +153,24 @@ async function getExtractionHistory(candidateId, userId) {
 async function logExtractionHistory(candidateId, extractedData, source, userId, notes) {
     try {
         const db = (0, database_1.supabaseAdminClient)();
-        const { error } = await db
-            .from('extraction_history')
-            .insert({
+        const payload = {
             candidate_id: candidateId,
             extracted_data: extractedData,
-            extraction_source: source,
-            extraction_confidence: extractedData.extraction_confidence || {},
+            confidence_scores: extractedData.extraction_confidence || {},
             notes,
-            user_id: userId,
-            extracted_at: new Date().toISOString()
-        });
+            extracted_at: new Date().toISOString(),
+        };
+        if (source === 'human-reviewed') {
+            payload.approved = true;
+            payload.reviewed_at = new Date().toISOString();
+        }
+        else if (source === 'rejected') {
+            payload.approved = false;
+            payload.reviewed_at = new Date().toISOString();
+        }
+        const { error } = await db
+            .from('extraction_history')
+            .insert(payload);
         if (error) {
             console.error('Failed to log extraction history:', error);
         }

@@ -12,9 +12,10 @@ function validateEnv() {
         process.env.SUPABASE_ANON_KEY = 'sb_publishable_5qD27qPFc04oqSmS61s1tw_lgt8FhBV';
         console.warn('[validateEnv] Using fallback SUPABASE_ANON_KEY');
     }
+    // NEVER provide a hardcoded service role key - it MUST come from environment
+    // If missing, the application cannot function safely
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-        process.env.SUPABASE_SERVICE_ROLE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhuY3ZzZXh0d212anlkY3VrZHd4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NzI2NzMyOSwiZXhwIjoyMDgyODQzMzI5fQ.X0XKEnH8pUqthf0tziaRWFAsRIaeU6am0qtWDxuR6mQ';
-        console.warn('[validateEnv] Using fallback SUPABASE_SERVICE_ROLE_KEY');
+        throw new Error('SUPABASE_SERVICE_ROLE_KEY is required and must be set via environment variables');
     }
     if (!process.env.PORT) {
         process.env.PORT = '3000';

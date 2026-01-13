@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 // import { authenticate } from '../middleware/auth';
 import { validateCandidate } from '../middleware/validation';
 import {
@@ -10,10 +11,28 @@ import {
   bulkUpdateCandidateStatusController,
   extractCandidateDataController,
   updateExtractionController,
-  getExtractionHistoryController
+  getExtractionHistoryController,
+  getCandidateCVDownloadController,
+  uploadCandidatePhotoController
 } from '../controllers/candidateController';
 
 const router = Router();
+
+// Configure multer for photo uploads
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB max
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (allowedMimeTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, PNG, and WebP images are allowed'));
+    }
+  },
+});
 
 // All routes require authentication
 // router.use(authenticate);
@@ -29,6 +48,12 @@ router.patch('/bulk/status', bulkUpdateCandidateStatusController);
 
 // Get single candidate
 router.get('/:id', getCandidateController);
+
+// Get CV download for candidate
+router.get('/:id/documents/cv/download', getCandidateCVDownloadController);
+
+// Upload profile photo for candidate
+router.post('/:id/photo', photoUpload.single('photo'), uploadCandidatePhotoController);
 
 // Update candidate
 router.put('/:id', validateCandidate, updateCandidateController);

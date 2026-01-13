@@ -8,6 +8,7 @@ const cors_1 = __importDefault(require("cors"));
 const helmet_1 = __importDefault(require("helmet"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const env_1 = require("./config/env");
+const database_1 = require("./config/database");
 const routes_1 = __importDefault(require("./routes"));
 const errorHandling_1 = require("./utils/errorHandling");
 const gmailPollingWorker_1 = require("./workers/gmailPollingWorker");
@@ -36,6 +37,32 @@ try {
     app.use(express_1.default.text({ limit: '100mb' }));
     app.use(express_1.default.urlencoded({ extended: true, limit: '100mb' }));
     app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+    app.get('/health/supabase', async (_req, res) => {
+        try {
+            const supabase = (0, database_1.supabaseAdminClient)();
+            // Lightweight connectivity/permission check. Avoid returning any data.
+            const { error } = await supabase
+                .from('candidates')
+                .select('id', { head: true, count: 'exact' })
+                .limit(1);
+            if (error) {
+                return res.status(500).json({
+                    status: 'error',
+                    service: 'supabase',
+                    message: error.message,
+                    code: error.code || null
+                });
+            }
+            return res.json({ status: 'ok', service: 'supabase' });
+        }
+        catch (err) {
+            return res.status(500).json({
+                status: 'error',
+                service: 'supabase',
+                message: err?.message || 'Unknown error'
+            });
+        }
+    });
     logger.info('Loading routes...');
     app.use('/api', routes_1.default);
     logger.info('Routes loaded successfully');

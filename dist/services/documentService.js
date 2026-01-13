@@ -99,6 +99,54 @@ async function uploadDocument(data, userId) {
     catch (timelineError) {
         console.error('Failed to log timeline event:', timelineError);
     }
+    // Update candidate checklist flags based on document type
+    try {
+        const updateFlags = {};
+        const type = data.doc_type.toLowerCase();
+        const now = new Date().toISOString();
+        if (type.includes('passport')) {
+            updateFlags.passport_received = true;
+            updateFlags.passport_received_at = now;
+        }
+        else if (type.includes('cnic') || type.includes('id card')) {
+            updateFlags.cnic_received = true;
+            updateFlags.cnic_received_at = now;
+        }
+        else if (type.includes('degree') || type.includes('diploma') || type.includes('transcript')) {
+            updateFlags.degree_received = true;
+            updateFlags.degree_received_at = now;
+        }
+        else if (type.includes('medical')) {
+            updateFlags.medical_received = true;
+            updateFlags.medical_received_at = now;
+        }
+        else if (type.includes('visa')) {
+            updateFlags.visa_received = true;
+            updateFlags.visa_received_at = now;
+        }
+        else if (type === 'cv' || type.includes('resume')) {
+            updateFlags.cv_received = true;
+            updateFlags.cv_received_at = now;
+        }
+        else if (type === 'photo' || type.includes('profile photo')) {
+            updateFlags.photo_received = true;
+            updateFlags.photo_received_at = now;
+        }
+        else if (type === 'certificate' || type.includes('certificate')) {
+            updateFlags.certificate_received = true;
+            updateFlags.certificate_received_at = now;
+        }
+        if (Object.keys(updateFlags).length > 0) {
+            await db
+                .from('candidates')
+                .update(updateFlags)
+                .eq('id', data.candidate_id);
+        }
+    }
+    catch (flagError) {
+        console.error('Failed to update candidate flags:', flagError);
+        // Don't fail the upload if flag update fails
+    }
     return document;
 }
 /**

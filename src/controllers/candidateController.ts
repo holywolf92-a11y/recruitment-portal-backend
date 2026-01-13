@@ -197,6 +197,148 @@ export async function getExtractionHistoryController(req: Request, res: Response
   }
 }
 
+export async function getCandidateCVDownloadController(req: Request, res: Response) {
+  try {
+    const userId = 'test-user-id';
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ error: 'Candidate ID is required' });
+    }
+
+    // Import supabase and utility for signed URLs
+    const { supabaseAdminClient } = require('../config/database');
+    const db = supabaseAdminClient();
+
+    // Find CV document for this candidate
+    const { data: cvDoc, error: docError } = await db
+      .from('candidate_documents')
+      .select('*')
+      .eq('candidate_id', id)
+      .eq('document_type', 'cv')
+      .order('received_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (docError || !cvDoc) {
+      return res.status(404).json({ error: 'CV not found for this candidate' });
+    }
+
+    // Generate signed URL for download
+    try {
+      const { data, error: urlError } = await db.storage
+        .from('documents')
+        .createSignedUrl(cvDoc.storage_path, 300); // 5 minute expiry for download
+
+      if (urlError || !data?.signedUrl) {
+        return res.status(500).json({ error: 'Failed to generate download URL' });
+      }
+
+      return res.json({
+        download_url: data.signedUrl,
+        filename: cvDoc.file_name,
+        document_id: cvDoc.id
+      });
+    } catch (urlGenError: any) {
+      console.error('Error generating signed URL:', urlGenError);
+      return res.status(500).json({ error: 'Failed to generate download link' });
+    }
+  } catch (error: any) {
+    console.error('Error fetching CV download URL:', error);
+    res.status(500).json({ error: 'Failed to fetch CV download URL' });
+  }
+}
+
+export async function uploadCandidatePhotoController(req: Request, res: Response) {
+  try {
+    const userId = 'test-user-id';
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ error: 'Candidate ID is required' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No photo file uploaded' });
+    }
+
+    const { supabaseAdminClient } = require('../config/database');
+    const db = supabaseAdminClient();
+
+    // Verify candidate exists
+    const { data: candidate, error: candidateError } = await db
+      .from('candidates')
+      .select('id, name')
+      .eq('id', id)
+      .single();
+
+    if (candidateError || !candidate) {
+      return res.status(404).json({ error: 'Candidate not found' });
+    }
+
+    // Generate storage path: candidates/{id}/photo/{filename}
+    const timestamp = Date.now();
+    const ext = req.file.originalname.split('.').pop() || 'jpg';
+    const filename = `profile_${timestamp}.${ext}`;
+    const storagePath = `candidates/${id}/photo/${filename}`;
+    const bucket = 'documents';
+
+    // Upload to Supabase Storage
+    const { data: uploadData, error: uploadError } = await db.storage
+      .from(bucket)
+      .upload(storagePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        upsert: true,
+      });
+
+    if (uploadError) {
+      console.error('Upload error:', uploadError);
+      return res.status(500).json({ error: 'Failed to upload photo to storage' });
+    }
+
+    // Update candidate record with photo path
+    const { error: updateError } = await db
+      .from('candidates')
+      .update({
+        profile_photo_bucket: bucket,
+        profile_photo_path: storagePath,
+        photo_received: true,
+        photo_received_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id);
+
+    if (updateError) {
+      console.error('Update error:', updateError);
+      return res.status(500).json({ error: 'Failed to update candidate with photo' });
+    }
+
+    // Generate signed URL for display
+    const { data: signedUrlData, error: urlError } = await db.storage
+      .from(bucket)
+      .createSignedUrl(storagePath, 3600); // 1 hour expiry
+
+    if (urlError) {
+      console.error('Signed URL error:', urlError);
+      // Photo uploaded successfully but URL generation failed
+      return res.json({
+        message: 'Photo uploaded successfully',
+        photo_path: storagePath,
+        photo_url: null
+      });
+    }
+
+    return res.json({
+      message: 'Photo uploaded successfully',
+      photo_path: storagePath,
+      photo_url: signedUrlData.signedUrl
+    });
+  } catch (error: any) {
+    console.error('Error uploading candidate photo:', error);
+    res.status(500).json({ error: 'Failed to upload photo' });
+  }
+}
+
 export async function bulkUpdateCandidateStatusController(req: Request, res: Response) {
   try {
     const userId = 'test-user-id';

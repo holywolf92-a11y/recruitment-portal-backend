@@ -103,6 +103,7 @@ export async function checkForDuplicates(cnic?: string, passport?: string, exclu
 
 export interface CreateCandidateData {
   name: string;
+  father_name?: string;
   email?: string;
   phone?: string;
   date_of_birth?: string;
@@ -111,6 +112,16 @@ export interface CreateCandidateData {
   address?: string;
   cnic?: string;
   passport?: string;
+  // Checklist items
+  passport_received?: boolean;
+  cnic_received?: boolean;
+  police_character_certificate_received?: boolean;
+  medical_certificate_received?: boolean;
+  protector_stamp_received?: boolean;
+  visa_stamped?: boolean;
+  ticket_purchased?: boolean;
+  biometric_done?: boolean;
+  insurance_purchased?: boolean;
 }
 
 export async function createCandidate(data: CreateCandidateData, userId?: string) {
@@ -134,6 +145,7 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
   const candidateData = {
     candidate_code: candidateCode,
     name: data.name,
+    father_name: data.father_name,
     email: data.email,
     phone: phoneNormalized,
     date_of_birth: data.date_of_birth,
@@ -142,6 +154,16 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     address: data.address,
     cnic_normalized: cnicNormalized,
     passport_normalized: passportNormalized,
+    // Include checklist items if provided (defaults handled by DB)
+    passport_received: data.passport_received,
+    cnic_received: data.cnic_received,
+    police_character_certificate_received: data.police_character_certificate_received,
+    medical_certificate_received: data.medical_certificate_received,
+    protector_stamp_received: data.protector_stamp_received,
+    visa_stamped: data.visa_stamped,
+    ticket_purchased: data.ticket_purchased,
+    biometric_done: data.biometric_done,
+    insurance_purchased: data.insurance_purchased,
   };
 
   const { data: candidate, error } = await db

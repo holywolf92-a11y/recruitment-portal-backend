@@ -123,6 +123,32 @@ export async function uploadDocument(data: UploadDocumentData, userId: string): 
     console.error('Failed to log timeline event:', timelineError);
   }
 
+  // Update candidate checklist flags based on document type
+  try {
+    const updateFlags: any = {};
+    const type = data.doc_type.toLowerCase();
+    
+    if (type.includes('passport')) updateFlags.passport_received = true;
+    else if (type.includes('cnic') || type.includes('id card')) updateFlags.cnic_received = true;
+    else if (type.includes('medical')) updateFlags.medical_certificate_received = true;
+    else if (type.includes('visa')) updateFlags.visa_stamped = true;
+    else if (type.includes('police') || type.includes('character')) updateFlags.police_character_certificate_received = true;
+    else if (type.includes('protector')) updateFlags.protector_stamp_received = true;
+    else if (type.includes('insurance')) updateFlags.insurance_purchased = true;
+    else if (type.includes('ticket')) updateFlags.ticket_purchased = true;
+    else if (type.includes('biometric')) updateFlags.biometric_done = true;
+
+    if (Object.keys(updateFlags).length > 0) {
+      await db
+        .from('candidates')
+        .update(updateFlags)
+        .eq('id', data.candidate_id);
+    }
+  } catch (flagError) {
+    console.error('Failed to update candidate flags:', flagError);
+    // Don't fail the upload if flag update fails
+  }
+
   return document;
 }
 

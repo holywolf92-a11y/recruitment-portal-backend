@@ -2,6 +2,7 @@ import { supabaseAdminClient } from '../config/database';
 
 interface ExtractionData {
   nationality?: string;
+  father_name?: string;
   position?: string;
   experience_years?: number;
   country_of_interest?: string;

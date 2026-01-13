@@ -28,14 +28,25 @@ try {
   app.use(helmet());
   app.use(cors());
   // Increase body size limits for file uploads (base64-encoded PDFs, etc.)
-  app.use(express.json({
-    limit: '100mb',
-    verify: (req: any, _res, buf) => {
-      req.rawBody = buf.toString('utf8');
+  // Skip body parsing for multipart/form-data (handled by multer)
+  app.use((req, res, next) => {
+    if (req.headers['content-type']?.startsWith('multipart/form-data')) {
+      return next();
     }
-  }));
+    express.json({
+      limit: '100mb',
+      verify: (req: any, _res, buf) => {
+        req.rawBody = buf.toString('utf8');
+      }
+    })(req, res, next);
+  });
+  app.use((req, res, next) => {
+    if (req.headers['content-type']?.startsWith('multipart/form-data')) {
+      return next();
+    }
+    express.urlencoded({ extended: true, limit: '100mb' })(req, res, next);
+  });
   app.use(express.text({ limit: '100mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

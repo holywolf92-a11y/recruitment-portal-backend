@@ -28,14 +28,25 @@ try {
     app.use((0, helmet_1.default)());
     app.use((0, cors_1.default)());
     // Increase body size limits for file uploads (base64-encoded PDFs, etc.)
-    app.use(express_1.default.json({
-        limit: '100mb',
-        verify: (req, _res, buf) => {
-            req.rawBody = buf.toString('utf8');
+    // Skip body parsing for multipart/form-data (handled by multer)
+    app.use((req, res, next) => {
+        if (req.headers['content-type']?.startsWith('multipart/form-data')) {
+            return next();
         }
-    }));
+        express_1.default.json({
+            limit: '100mb',
+            verify: (req, _res, buf) => {
+                req.rawBody = buf.toString('utf8');
+            }
+        })(req, res, next);
+    });
+    app.use((req, res, next) => {
+        if (req.headers['content-type']?.startsWith('multipart/form-data')) {
+            return next();
+        }
+        express_1.default.urlencoded({ extended: true, limit: '100mb' })(req, res, next);
+    });
     app.use(express_1.default.text({ limit: '100mb' }));
-    app.use(express_1.default.urlencoded({ extended: true, limit: '100mb' }));
     app.get('/health', (_req, res) => res.json({ status: 'ok' }));
     app.get('/health/supabase', async (_req, res) => {
         try {

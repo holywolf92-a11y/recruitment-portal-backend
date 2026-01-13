@@ -45,7 +45,6 @@ export async function extractCandidateData(
         extracted_at: new Date().toISOString()
       })
       .eq('id', candidateId)
-      .eq('user_id', userId)
       .select()
       .single();
 
@@ -148,7 +147,6 @@ export async function updateExtraction(
         extracted_at: new Date().toISOString()
       })
       .eq('id', candidateId)
-      .eq('user_id', userId)
       .select()
       .single();
 
@@ -186,7 +184,6 @@ export async function getExtractionHistory(candidateId: string, userId: string) 
       .from('extraction_history')
       .select('*')
       .eq('candidate_id', candidateId)
-      .eq('user_id', userId)
       .order('extracted_at', { ascending: false });
 
     if (error) {
@@ -212,17 +209,26 @@ async function logExtractionHistory(
 ) {
   try {
     const db = supabaseAdminClient();
+
+    const payload: any = {
+      candidate_id: candidateId,
+      extracted_data: extractedData,
+      confidence_scores: extractedData.extraction_confidence || {},
+      notes,
+      extracted_at: new Date().toISOString(),
+    };
+
+    if (source === 'human-reviewed') {
+      payload.approved = true;
+      payload.reviewed_at = new Date().toISOString();
+    } else if (source === 'rejected') {
+      payload.approved = false;
+      payload.reviewed_at = new Date().toISOString();
+    }
+
     const { error } = await db
       .from('extraction_history')
-      .insert({
-        candidate_id: candidateId,
-        extracted_data: extractedData,
-        extraction_source: source,
-        extraction_confidence: extractedData.extraction_confidence || {},
-        notes,
-        user_id: userId,
-        extracted_at: new Date().toISOString()
-      });
+      .insert(payload);
 
     if (error) {
       console.error('Failed to log extraction history:', error);

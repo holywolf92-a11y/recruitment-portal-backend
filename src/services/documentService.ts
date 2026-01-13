@@ -144,6 +144,15 @@ export async function uploadDocument(data: UploadDocumentData, userId: string): 
     } else if (type.includes('visa')) {
       updateFlags.visa_received = true;
       updateFlags.visa_received_at = now;
+    } else if (type === 'cv' || type.includes('resume')) {
+      updateFlags.cv_received = true;
+      updateFlags.cv_received_at = now;
+    } else if (type === 'photo' || type.includes('profile photo')) {
+      updateFlags.photo_received = true;
+      updateFlags.photo_received_at = now;
+    } else if (type === 'certificate' || type.includes('certificate')) {
+      updateFlags.certificate_received = true;
+      updateFlags.certificate_received_at = now;
     }
 
     if (Object.keys(updateFlags).length > 0) {

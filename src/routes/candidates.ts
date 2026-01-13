@@ -7,6 +7,7 @@ import {
   listCandidatesController,
   updateCandidateController,
   deleteCandidateController,
+  bulkUpdateCandidateStatusController,
   extractCandidateDataController,
   updateExtractionController,
   getExtractionHistoryController
@@ -22,6 +23,9 @@ router.post('/', validateCandidate, createCandidateController);
 
 // List candidates with optional filters
 router.get('/', listCandidatesController);
+
+// Bulk operations
+router.patch('/bulk/status', bulkUpdateCandidateStatusController);
 
 // Get single candidate
 router.get('/:id', getCandidateController);

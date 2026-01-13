@@ -6,6 +6,7 @@ import {
   listCandidates,
   updateCandidate,
   deleteCandidate,
+  bulkUpdateCandidateStatus,
   CreateCandidateData,
   CandidateFilters
 } from '../services/candidateService';
@@ -61,6 +62,9 @@ export async function listCandidatesController(req: Request, res: Response) {
     const filters: CandidateFilters = {
       search: req.query.search as string,
       status: req.query.status as string,
+      position: req.query.position as string,
+      country_of_interest: req.query.country_of_interest as string,
+      documents: req.query.documents as string,
       limit: req.query.limit ? parseInt(req.query.limit as string) : undefined,
       offset: req.query.offset ? parseInt(req.query.offset as string) : undefined,
     };
@@ -190,5 +194,25 @@ export async function getExtractionHistoryController(req: Request, res: Response
   } catch (error: any) {
     console.error('Error fetching extraction history:', error);
     res.status(500).json({ error: 'Failed to fetch extraction history' });
+  }
+}
+
+export async function bulkUpdateCandidateStatusController(req: Request, res: Response) {
+  try {
+    const userId = 'test-user-id';
+
+    const { candidateIds, status } = req.body || {};
+    if (!Array.isArray(candidateIds) || candidateIds.length === 0) {
+      return res.status(400).json({ error: 'candidateIds must be a non-empty array' });
+    }
+    if (!status) {
+      return res.status(400).json({ error: 'status is required' });
+    }
+
+    const result = await bulkUpdateCandidateStatus(candidateIds, status, userId);
+    return res.json(result);
+  } catch (error: any) {
+    console.error('Error bulk updating candidate status:', error);
+    return res.status(400).json({ error: error.message || 'Failed to bulk update status' });
   }
 }

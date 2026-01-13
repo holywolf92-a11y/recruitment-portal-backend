@@ -104,6 +104,11 @@ export async function checkForDuplicates(cnic?: string, passport?: string, exclu
 export interface CreateCandidateData {
   name: string;
   father_name?: string;
+  status?: 'Applied' | 'Pending' | 'Deployed' | 'Cancelled' | string;
+  source?: 'WhatsApp' | 'Email' | 'Form' | 'Manual' | string;
+  ai_score?: number;
+  auto_extracted?: boolean;
+  needs_review?: boolean;
   email?: string;
   phone?: string;
   date_of_birth?: string;
@@ -112,12 +117,31 @@ export interface CreateCandidateData {
   address?: string;
   cnic?: string;
   passport?: string;
+
+  // CV extraction/profile fields (migration 011)
+  nationality?: string;
+  position?: string;
+  experience_years?: number;
+  country_of_interest?: string;
+  skills?: string;
+  languages?: string;
+  education?: string;
+  certifications?: string;
+  previous_employment?: string;
+  passport_expiry?: string;
+  professional_summary?: string;
+
   // Document checklist items (Migration 010)
   passport_received?: boolean;
   cnic_received?: boolean;
   degree_received?: boolean;
   medical_received?: boolean;
   visa_received?: boolean;
+
+  // Candidate card doc flags (migration 012)
+  cv_received?: boolean;
+  photo_received?: boolean;
+  certificate_received?: boolean;
 }
 
 export async function createCandidate(data: CreateCandidateData, userId?: string) {
@@ -142,6 +166,11 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     candidate_code: candidateCode,
     name: data.name,
     father_name: data.father_name,
+    status: data.status,
+    source: data.source,
+    ai_score: data.ai_score,
+    auto_extracted: data.auto_extracted,
+    needs_review: data.needs_review,
     email: data.email,
     phone: phoneNormalized,
     date_of_birth: data.date_of_birth,
@@ -150,12 +179,30 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     address: data.address,
     cnic_normalized: cnicNormalized,
     passport_normalized: passportNormalized,
+
+    nationality: data.nationality,
+    position: data.position,
+    experience_years: data.experience_years,
+    country_of_interest: data.country_of_interest,
+    skills: data.skills,
+    languages: data.languages,
+    education: data.education,
+    certifications: data.certifications,
+    previous_employment: data.previous_employment,
+    passport_expiry: data.passport_expiry,
+    professional_summary: data.professional_summary,
+
     // Include checklist items if provided (defaults handled by DB)
     passport_received: data.passport_received,
     cnic_received: data.cnic_received,
     degree_received: data.degree_received,
     medical_received: data.medical_received,
     visa_received: data.visa_received,
+
+    // Candidate card doc flags (optional)
+    cv_received: data.cv_received,
+    photo_received: data.photo_received,
+    certificate_received: data.certificate_received,
   };
 
   const { data: candidate, error } = await db
@@ -205,6 +252,9 @@ export async function getCandidateById(id: string, userId: string) {
 export interface CandidateFilters {
   search?: string;
   status?: string;
+  position?: string;
+  country_of_interest?: string;
+  documents?: 'complete' | 'missing' | string;
   limit?: number;
   offset?: number;
 }
@@ -216,6 +266,36 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
   // Apply search filter (name, email, candidate_code)
   if (filters.search) {
     query = query.or(`name.ilike.%${filters.search}%,email.ilike.%${filters.search}%,candidate_code.ilike.%${filters.search}%`);
+  }
+
+  // Apply status filter
+  if (filters.status && filters.status !== 'all') {
+    query = query.eq('status', filters.status);
+  }
+
+  // Apply profession (position) filter
+  if (filters.position && filters.position !== 'all') {
+    query = query.eq('position', filters.position);
+  }
+
+  // Apply country-of-interest filter
+  if (filters.country_of_interest && filters.country_of_interest !== 'all') {
+    query = query.eq('country_of_interest', filters.country_of_interest);
+  }
+
+  // Apply document completeness filter (card-required docs)
+  // Complete means: CV + Passport + Certificate + Photo + Medical are present.
+  if (filters.documents === 'complete') {
+    query = query
+      .eq('cv_received', true)
+      .eq('passport_received', true)
+      .eq('certificate_received', true)
+      .eq('photo_received', true)
+      .eq('medical_received', true);
+  } else if (filters.documents === 'missing') {
+    query = query.or(
+      'cv_received.eq.false,passport_received.eq.false,certificate_received.eq.false,photo_received.eq.false,medical_received.eq.false'
+    );
   }
 
   // Apply pagination
@@ -237,6 +317,36 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
     total: count,
     limit: filters.limit,
     offset: filters.offset
+  };
+}
+
+export async function bulkUpdateCandidateStatus(
+  candidateIds: string[],
+  status: 'Applied' | 'Pending' | 'Deployed' | 'Cancelled' | string,
+  userId: string
+) {
+  const db = supabaseAdminClient();
+
+  if (!Array.isArray(candidateIds) || candidateIds.length === 0) {
+    throw new Error('candidateIds must be a non-empty array');
+  }
+
+  const allowed = new Set(['Applied', 'Pending', 'Deployed', 'Cancelled']);
+  if (!allowed.has(status)) {
+    throw new Error(`Invalid status: ${status}`);
+  }
+
+  const { data, error } = await db
+    .from('candidates')
+    .update({ status, updated_at: new Date().toISOString() })
+    .in('id', candidateIds)
+    .select('id,status');
+
+  if (error) throw error;
+
+  return {
+    updated: (data || []).length,
+    candidates: data || [],
   };
 }
 

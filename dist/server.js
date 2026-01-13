@@ -26,14 +26,15 @@ try {
     const PORT = parseInt(process.env.PORT || '1000', 10);
     app.use((0, helmet_1.default)());
     app.use((0, cors_1.default)());
-    // Capture raw body for signature validation (e.g., Meta WhatsApp webhooks)
+    // Increase body size limits for file uploads (base64-encoded PDFs, etc.)
     app.use(express_1.default.json({
-        limit: '50mb',
+        limit: '100mb',
         verify: (req, _res, buf) => {
             req.rawBody = buf.toString('utf8');
         }
     }));
-    app.use(express_1.default.urlencoded({ extended: true, limit: '50mb' }));
+    app.use(express_1.default.text({ limit: '100mb' }));
+    app.use(express_1.default.urlencoded({ extended: true, limit: '100mb' }));
     app.get('/health', (_req, res) => res.json({ status: 'ok' }));
     logger.info('Loading routes...');
     app.use('/api', routes_1.default);

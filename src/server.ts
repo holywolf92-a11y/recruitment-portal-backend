@@ -26,14 +26,15 @@ try {
 
   app.use(helmet());
   app.use(cors());
-  // Capture raw body for signature validation (e.g., Meta WhatsApp webhooks)
+  // Increase body size limits for file uploads (base64-encoded PDFs, etc.)
   app.use(express.json({
-    limit: '50mb',
+    limit: '100mb',
     verify: (req: any, _res, buf) => {
       req.rawBody = buf.toString('utf8');
     }
   }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  app.use(express.text({ limit: '100mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

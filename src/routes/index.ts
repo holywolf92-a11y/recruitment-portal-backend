@@ -16,6 +16,7 @@ import testHelperRoutes from './testHelpers';
 import parsingJobsRoutes from './parsingJobs';
 import queueHealthRoutes from './queueHealth';
 import storageHealthRoutes from './storageHealth';
+import verificationLogsRoutes from './verificationLogs';
 
 const router = Router();
 
@@ -36,5 +37,6 @@ router.use('/test', testHelperRoutes);
 router.use('/parsing-jobs', parsingJobsRoutes);
 router.use('/health', queueHealthRoutes);
 router.use('/health/storage', storageHealthRoutes);
+router.use('/verification-logs', verificationLogsRoutes);
 
 export default router;

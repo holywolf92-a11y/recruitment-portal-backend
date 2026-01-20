@@ -9,6 +9,7 @@ import { errorHandler, createLogger } from './utils/errorHandling';
 import { startGmailPolling } from './workers/gmailPollingWorker';
 import { startCvParserWorker } from './workers/cvParserWorker';
 import { startDocumentLinkWorker } from './workers/documentLinkWorker';
+import { startDocumentVerificationWorker } from './workers/documentVerificationWorker';
 
 dotenv.config();
 validateEnv();
@@ -116,6 +117,10 @@ try {
         // Start Document Link worker alongside CV parser
         startDocumentLinkWorker();
         logger.info('Document Link worker started');
+        
+        // Start Document Verification worker
+        startDocumentVerificationWorker();
+        logger.info('Document Verification worker started');
       } catch (err) {
         logger.error('Failed to start workers', err);
       }

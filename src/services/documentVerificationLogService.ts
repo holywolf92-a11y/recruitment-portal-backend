@@ -350,6 +350,9 @@ export class DocumentVerificationLogService {
   }
 }
 
+// Export singleton instance
+export const documentVerificationLogService = new DocumentVerificationLogService();
+
 /**
  * Generate a unique request ID for tracing
  */

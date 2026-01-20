@@ -23,7 +23,7 @@ import { DOCUMENT_CATEGORY_DISPLAY_NAMES } from '../config/documentCategories';
  */
 export async function uploadCandidateDocumentController(req: Request, res: Response) {
   try {
-    const userId = req.user?.id || 'test-user-id'; // TODO: Get from auth middleware
+    const userId = (req as any).user?.id || 'system'; // Get from auth middleware if available
 
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });

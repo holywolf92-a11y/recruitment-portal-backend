@@ -40,7 +40,6 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string) 
       ),
       passport_expiry: candidate.passport_expiry || undefined,
       professional_summary: candidate.professional_summary || candidate.summary || undefined,
-      profile_photo_url: candidate.profile_photo_url || undefined,
     };
 
     // Create candidate (system-created, no specific userId)

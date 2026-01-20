@@ -50,6 +50,10 @@ CREATE TABLE unmatched_documents (
   file_name TEXT NOT NULL,
   document_type TEXT, -- From DocumentClassifier
 
+  -- Match attempt metadata
+  match_reason TEXT NOT NULL DEFAULT 'no_match', -- 'no_match' | 'multiple_matches' | 'ambiguous' | 'cross_candidate_conflict'
+  match_details JSONB, -- Store potential matches and their scores
+
   -- Extracted metadata
   extracted_cnic TEXT,
   extracted_email TEXT,

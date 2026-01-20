@@ -45,7 +45,6 @@ COMMENT ON COLUMN candidates.profile_photo_url IS 'Optional direct URL to profil
 -- Drop table if it exists from previous failed migration
 DROP TABLE IF EXISTS unmatched_documents CASCADE;
 
--- Create fresh unmatched_documents table
 CREATE TABLE unmatched_documents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   document_id UUID REFERENCES candidate_documents(id) ON DELETE CASCADE,
@@ -73,6 +72,44 @@ CREATE TABLE unmatched_documents (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE TABLE unmatched_documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  
+  -- Link to attachment and source
+  inbox_attachment_id UUID UNIQUE REFERENCES inbox_attachments(id) ON DELETE CASCADE,
+  source TEXT DEFAULT 'unknown', -- 'email' | 'web' | 'api' | 'unknown'
+  
+  -- Storage location (CRITICAL: code inserts these columns)
+  storage_bucket TEXT NOT NULL,
+  storage_path TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  document_type TEXT, -- From DocumentClassifier
+  
+  -- Extracted metadata
+  extracted_cnic TEXT,
+  extracted_email TEXT,
+  extracted_phone TEXT,
+  extracted_name TEXT,
+  extracted_father_name TEXT,
+  
+  -- Status and review (CRITICAL: code uses status column)
+  status TEXT DEFAULT 'pending_link', -- 'pending_link' | 'linked' | 'rejected'
+  needs_manual_review BOOLEAN DEFAULT TRUE,
+  review_reasons TEXT[], -- Array of reasons why review is needed
+  
+  -- Manual review resolution
+  reviewed_at TIMESTAMPTZ,
+  reviewed_by TEXT,
+  resolution_action TEXT, -- 'linked_to_candidate' | 'created_new_candidate' | 'rejected'
+  linked_candidate_id UUID REFERENCES candidates(id) ON DELETE SET NULL,
+  
+  -- Timestamps
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- Drop table if it exists from previous failed migration
+DROP TABLE IF EXISTS unmatched_documents CASCADE;
+
 -- Create fresh unmatched_documents table with ALL required columns
 CREATE TABLE unmatched_documents (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

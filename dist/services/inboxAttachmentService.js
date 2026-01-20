@@ -179,6 +179,14 @@ async function listAttachmentsForMessage(messageId) {
 async function deleteAttachment(id) {
     try {
         const db = (0, database_1.supabaseAdminClient)();
+        // First, get the attachment to find the linked candidate
+        const { data: attachment } = await db
+            .from('inbox_attachments')
+            .select('candidate_id')
+            .eq('id', id)
+            .single();
+        const candidateId = attachment?.candidate_id;
+        // Delete the attachment
         const { data, error } = await db
             .from('inbox_attachments')
             .delete()
@@ -190,6 +198,20 @@ async function deleteAttachment(id) {
                 throw new errorHandling_1.NotFoundError('Inbox attachment');
             }
             throw error;
+        }
+        // If attachment had a linked candidate, delete the candidate as well
+        if (candidateId) {
+            try {
+                await db
+                    .from('candidates')
+                    .delete()
+                    .eq('id', candidateId);
+                logger.info(`Deleted candidate ${candidateId} along with attachment ${id}`);
+            }
+            catch (candidateDeleteError) {
+                logger.warn(`Failed to delete candidate ${candidateId}:`, candidateDeleteError);
+                // Don't throw - attachment is already deleted
+            }
         }
         return data;
     }

@@ -218,6 +218,17 @@ export async function listAttachmentsForMessage(messageId: string) {
 export async function deleteAttachment(id: string) {
   try {
     const db = supabaseAdminClient();
+    
+    // First, get the attachment to find the linked candidate
+    const { data: attachment } = await db
+      .from('inbox_attachments')
+      .select('candidate_id')
+      .eq('id', id)
+      .single();
+    
+    const candidateId = attachment?.candidate_id;
+    
+    // Delete the attachment
     const { data, error } = await db
       .from('inbox_attachments')
       .delete()
@@ -231,6 +242,21 @@ export async function deleteAttachment(id: string) {
       }
       throw error;
     }
+    
+    // If attachment had a linked candidate, delete the candidate as well
+    if (candidateId) {
+      try {
+        await db
+          .from('candidates')
+          .delete()
+          .eq('id', candidateId);
+        logger.info(`Deleted candidate ${candidateId} along with attachment ${id}`);
+      } catch (candidateDeleteError) {
+        logger.warn(`Failed to delete candidate ${candidateId}:`, candidateDeleteError);
+        // Don't throw - attachment is already deleted
+      }
+    }
+    
     return data;
   } catch (err) {
     logger.warn('Falling back to memory deleteAttachment due to DB error');

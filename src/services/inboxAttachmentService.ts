@@ -228,7 +228,14 @@ export async function deleteAttachment(id: string) {
     
     const candidateId = attachment?.candidate_id;
     
-    // Delete the attachment
+    // Clean up orphaned parsing_jobs (no foreign key, manual cleanup needed)
+    await db
+      .from('parsing_jobs')
+      .delete()
+      .eq('attachment_id', id);
+    logger.info(`Deleted parsing jobs for attachment ${id}`);
+    
+    // Delete the attachment (this will CASCADE to unmatched_documents if exists)
     const { data, error } = await db
       .from('inbox_attachments')
       .delete()
@@ -243,14 +250,15 @@ export async function deleteAttachment(id: string) {
       throw error;
     }
     
-    // If attachment had a linked candidate, delete the candidate as well
+    // If attachment had a linked candidate, delete the candidate and all related data
     if (candidateId) {
       try {
+        // Delete candidate (CASCADE will delete: candidate_documents, timeline_events, job_order_candidates, etc.)
         await db
           .from('candidates')
           .delete()
           .eq('id', candidateId);
-        logger.info(`Deleted candidate ${candidateId} along with attachment ${id}`);
+        logger.info(`Deleted candidate ${candidateId} and all related records along with attachment ${id}`);
       } catch (candidateDeleteError) {
         logger.warn(`Failed to delete candidate ${candidateId}:`, candidateDeleteError);
         // Don't throw - attachment is already deleted

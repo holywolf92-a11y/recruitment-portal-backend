@@ -51,16 +51,42 @@ async function generateCandidateCode() {
     const db = (0, database_1.supabaseAdminClient)();
     // Get the current year
     const currentYear = new Date().getFullYear();
-    // Get the count of candidates created this year
-    const { count } = await db
-        .from('candidates')
-        .select('*', { count: 'exact', head: true })
-        .gte('created_at', `${currentYear}-01-01T00:00:00.000Z`)
-        .lt('created_at', `${currentYear + 1}-01-01T00:00:00.000Z`);
-    // Generate the next sequential number (padded to 3 digits)
-    const sequenceNumber = (count || 0) + 1;
-    const paddedNumber = sequenceNumber.toString().padStart(3, '0');
-    return `FL-${currentYear}-${paddedNumber}`;
+    // Retry logic to handle race conditions
+    for (let attempt = 0; attempt < 10; attempt++) {
+        // Get the highest existing candidate code for this year
+        const { data: existingCandidates } = await db
+            .from('candidates')
+            .select('candidate_code')
+            .like('candidate_code', `FL-${currentYear}-%`)
+            .order('candidate_code', { ascending: false })
+            .limit(1);
+        let sequenceNumber = 1;
+        if (existingCandidates && existingCandidates.length > 0) {
+            const lastCode = existingCandidates[0].candidate_code;
+            const match = lastCode.match(/FL-\d{4}-(\d{3})/);
+            if (match) {
+                sequenceNumber = parseInt(match[1], 10) + 1;
+            }
+        }
+        // Add random offset on retry to avoid collision
+        if (attempt > 0) {
+            sequenceNumber += attempt;
+        }
+        const paddedNumber = sequenceNumber.toString().padStart(3, '0');
+        const candidateCode = `FL-${currentYear}-${paddedNumber}`;
+        // Check if this code already exists
+        const { data: existing } = await db
+            .from('candidates')
+            .select('id')
+            .eq('candidate_code', candidateCode)
+            .maybeSingle();
+        if (!existing) {
+            return candidateCode;
+        }
+    }
+    // Fallback: use timestamp-based unique code
+    const timestamp = Date.now().toString().slice(-6);
+    return `FL-${currentYear}-${timestamp}`;
 }
 // Check for duplicates based on CNIC or passport
 async function checkForDuplicates(cnic, passport, excludeId) {

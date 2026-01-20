@@ -131,7 +131,7 @@ export async function uploadCandidateDocument(
       storage_path: storagePath,
       file_name: data.file_name,
       mime_type: data.mime_type,
-      source: data.source || 'web',
+      source: data.source || 'manual', // Use 'manual' as safe default (constraint allows it)
       status: 'received', // Legacy field
       verification_status: VERIFICATION_STATUS.PENDING_AI, // New AI workflow status
       received_at: new Date().toISOString(),

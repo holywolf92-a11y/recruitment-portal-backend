@@ -10,6 +10,13 @@ import {
   getDocumentSignedUrlController,
   deleteDocumentController
 } from '../controllers/documentController';
+import {
+  uploadCandidateDocumentController,
+  getCandidateDocumentController,
+  listCandidateDocumentsControllerNew,
+  getCandidateDocumentDownloadUrlController,
+  deleteCandidateDocumentController
+} from '../controllers/documentController';
 
 const logger = createLogger('DocumentsRouter');
 
@@ -43,6 +50,29 @@ const upload = multer({
 
 // All routes require authentication
 // router.use(authenticate);
+
+// ============================================================================
+// NEW ROUTES - AI Document Verification System
+// ============================================================================
+
+// Upload document with AI verification
+router.post('/candidate-documents', upload.single('file'), uploadCandidateDocumentController);
+
+// Get candidate document by ID
+router.get('/candidate-documents/:id', getCandidateDocumentController);
+
+// Get signed URL for download
+router.get('/candidate-documents/:id/download', getCandidateDocumentDownloadUrlController);
+
+// Delete candidate document
+router.delete('/candidate-documents/:id', deleteCandidateDocumentController);
+
+// List documents for a candidate (with category filtering)
+router.get('/candidates/:candidateId/documents', listCandidateDocumentsControllerNew);
+
+// ============================================================================
+// LEGACY ROUTES - Old documents table (kept for backward compatibility)
+// ============================================================================
 
 // Upload document
 router.post('/', upload.single('file'), uploadDocumentController);

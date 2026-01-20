@@ -113,16 +113,24 @@ class DocumentLinkService {
         const messageId = message?.external_message_id || attachment.inbox_message_id;
         // Generate unmatched storage path
         const unmatchedPath = documentClassifier_1.DocumentClassifier.generateUnmatchedPath(source, messageId, attachment.file_name);
-        // Move file to unmatched area
-        await this.moveFileInStorage(attachment.storage_bucket, attachment.storage_path, unmatchedPath);
-        // Create unmatched_documents record
+        // Move file to unmatched area (only if not already there)
+        // Files uploaded via web already go to unmatched_documents, so avoid unnecessary move
+        const isAlreadyInUnmatchedLocation = attachment.storage_path.startsWith('unmatched_documents/');
+        if (!isAlreadyInUnmatchedLocation) {
+            await this.moveFileInStorage(attachment.storage_bucket, attachment.storage_path, unmatchedPath);
+        }
+        else {
+            logger.info(`File already in unmatched location, skipping move: ${attachment.storage_path}`);
+        }
+        // Create unmatched_documents record (use actual storage path)
+        const finalPath = isAlreadyInUnmatchedLocation ? attachment.storage_path : unmatchedPath;
         const { error } = await db
             .from('unmatched_documents')
             .insert({
             inbox_attachment_id: attachment.id,
             document_type: attachment.document_type || 'unknown',
             storage_bucket: attachment.storage_bucket,
-            storage_path: unmatchedPath,
+            storage_path: finalPath,
             file_name: attachment.file_name,
             source: source,
             extracted_email: input.extractedEmail,
@@ -138,10 +146,10 @@ class DocumentLinkService {
             logger.error('Failed to create unmatched_documents record', error);
             throw new errorHandling_1.AppError('Failed to store unmatched document', errorHandling_1.ErrorType.DATABASE, 500);
         }
-        // Update inbox_attachments storage path
+        // Update inbox_attachments storage path (use current path if already in unmatched location)
         await db
             .from('inbox_attachments')
-            .update({ storage_path: unmatchedPath })
+            .update({ storage_path: finalPath })
             .eq('id', attachment.id);
     }
     /**

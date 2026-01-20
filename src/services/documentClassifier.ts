@@ -154,6 +154,6 @@ export class DocumentClassifier {
     fileName: string
   ): string {
     const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    return `unmatched-documents/${source}/${messageId}/${sanitizedFileName}`;
+    return `unmatched_documents/${source}/${messageId}/${sanitizedFileName}`;
   }
 }

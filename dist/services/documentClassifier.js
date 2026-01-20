@@ -114,7 +114,7 @@ class DocumentClassifier {
      */
     static generateUnmatchedPath(source, messageId, fileName) {
         const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-        return `unmatched-documents/${source}/${messageId}/${sanitizedFileName}`;
+        return `unmatched_documents/${source}/${messageId}/${sanitizedFileName}`;
     }
 }
 exports.DocumentClassifier = DocumentClassifier;

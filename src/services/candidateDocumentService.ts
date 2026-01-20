@@ -125,6 +125,8 @@ export async function uploadCandidateDocument(
     // Create candidate_documents record with status = PENDING_AI
     const documentData = {
       candidate_id: data.candidate_id,
+      // Provide a safe default to satisfy NOT NULL constraint
+      document_type: 'other',
       storage_bucket: STORAGE_BUCKET,
       storage_path: storagePath,
       file_name: data.file_name,

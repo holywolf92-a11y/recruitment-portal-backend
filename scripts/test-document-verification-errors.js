@@ -15,14 +15,12 @@
  * - Worker running
  */
 
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import FormData from 'form-data';
-import fetch from 'node-fetch';
+const fs = require('fs');
+const path = require('path');
+const FormData = require('form-data');
+const fetch = require('node-fetch');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// __dirname is available in CommonJS by default
 
 // Configuration
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
@@ -89,8 +87,8 @@ async function testFileValidation() {
   try {
     const candidate = await createTestCandidate({
       name: 'File Test User',
-      email: 'filetest@example.com',
-      status: 'active'
+      email: `filetest.${Math.random().toString(36).slice(2,8)}@example.com`,
+      status: 'Applied'
     });
 
     // Test 1.1: Unsupported file type
@@ -104,7 +102,7 @@ async function testFileValidation() {
       formData.append('candidate_id', candidate.id);
       formData.append('source', 'Error Test');
 
-      const response = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
+      const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
         method: 'POST',
         body: formData,
         headers: formData.getHeaders()
@@ -130,7 +128,7 @@ async function testFileValidation() {
       formData.append('candidate_id', candidate.id);
       formData.append('source', 'Error Test');
 
-      const response = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
+      const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
         method: 'POST',
         body: formData,
         headers: formData.getHeaders()
@@ -155,7 +153,7 @@ async function testFileValidation() {
       formData.append('candidate_id', candidate.id);
       formData.append('source', 'Error Test');
 
-      const response = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
+      const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
         method: 'POST',
         body: formData,
         headers: formData.getHeaders()
@@ -180,7 +178,7 @@ async function testFileValidation() {
       formData.append('source', 'Error Test');
       // No candidate_id
 
-      const response = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
+      const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
         method: 'POST',
         body: formData,
         headers: formData.getHeaders()
@@ -208,8 +206,8 @@ async function testAIServiceErrors() {
   try {
     const candidate = await createTestCandidate({
       name: 'AI Error Test',
-      email: 'aierror@example.com',
-      status: 'active'
+      email: `aierror.${Math.random().toString(36).slice(2,8)}@example.com`,
+      status: 'Applied'
     });
 
     // Test 2.1: Corrupted file (should fail OCR/AI processing)
@@ -223,7 +221,7 @@ async function testAIServiceErrors() {
     formData.append('candidate_id', candidate.id);
     formData.append('source', 'Error Test');
 
-    const uploadResponse = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
+    const uploadResponse = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',
       body: formData,
       headers: formData.getHeaders()
@@ -237,7 +235,7 @@ async function testAIServiceErrors() {
       await sleep(10000); // 10 seconds
 
       // Check final status
-      const statusResponse = await fetch(`${BACKEND_URL}/api/candidate-documents/${documentId}`);
+      const statusResponse = await fetch(`${BACKEND_URL}/api/documents/candidate-documents/${documentId}`);
       const statusData = await statusResponse.json();
       const finalStatus = statusData.document.verification_status;
 
@@ -275,8 +273,8 @@ async function testIdentityVerificationErrors() {
     log('\n3.1: Document with no identity information...', 'blue');
     const candidate1 = await createTestCandidate({
       name: 'No ID Test',
-      email: 'noid@example.com',
-      status: 'active'
+      email: `noid.${Math.random().toString(36).slice(2,8)}@example.com`,
+      status: 'Applied'
     });
 
     // Create a simple text document with no IDs
@@ -289,7 +287,7 @@ async function testIdentityVerificationErrors() {
     formData1.append('candidate_id', candidate1.id);
     formData1.append('source', 'Error Test');
 
-    const uploadResponse1 = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
+    const uploadResponse1 = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',
       body: formData1,
       headers: formData1.getHeaders()
@@ -299,7 +297,7 @@ async function testIdentityVerificationErrors() {
       const data1 = await uploadResponse1.json();
       await sleep(10000);
 
-      const statusResponse1 = await fetch(`${BACKEND_URL}/api/candidate-documents/${data1.document.id}`);
+      const statusResponse1 = await fetch(`${BACKEND_URL}/api/documents/candidate-documents/${data1.document.id}`);
       const statusData1 = await statusResponse1.json();
 
       logTest('No Identity Fields Handling',
@@ -312,9 +310,9 @@ async function testIdentityVerificationErrors() {
     log('\n3.2: Document with only name (no IDs)...', 'blue');
     const candidate2 = await createTestCandidate({
       name: 'Jane Doe',
-      email: 'jane@example.com',
+      email: `jane.${Math.random().toString(36).slice(2,8)}@example.com`,
       phone: '+92-300-0000000',
-      status: 'active'
+      status: 'Applied'
     });
 
     const partialIdDoc = Buffer.from('Jane Doe Resume\nSoftware Engineer\nNo CNIC or Passport');
@@ -326,7 +324,7 @@ async function testIdentityVerificationErrors() {
     formData2.append('candidate_id', candidate2.id);
     formData2.append('source', 'Error Test');
 
-    const uploadResponse2 = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
+    const uploadResponse2 = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',
       body: formData2,
       headers: formData2.getHeaders()
@@ -336,7 +334,7 @@ async function testIdentityVerificationErrors() {
       const data2 = await uploadResponse2.json();
       await sleep(10000);
 
-      const statusResponse2 = await fetch(`${BACKEND_URL}/api/candidate-documents/${data2.document.id}`);
+      const statusResponse2 = await fetch(`${BACKEND_URL}/api/documents/candidate-documents/${data2.document.id}`);
       const statusData2 = await statusResponse2.json();
 
       logTest('Partial Identity Handling',
@@ -349,9 +347,9 @@ async function testIdentityVerificationErrors() {
     log('\n3.3: Document with multiple different CNICs...', 'blue');
     const candidate3 = await createTestCandidate({
       name: 'Multi ID Test',
-      email: 'multiid@example.com',
-      cnic: '11111-1111111-1',
-      status: 'active'
+      email: `multiid.${Math.random().toString(36).slice(2,8)}@example.com`,
+      cnic: `${Math.floor(10000 + Math.random()*90000)}-${Math.floor(1000000 + Math.random()*9000000)}-${Math.floor(1 + Math.random()*9)}`,
+      status: 'Applied'
     });
 
     const multiIdDoc = Buffer.from(`
@@ -368,7 +366,7 @@ async function testIdentityVerificationErrors() {
     formData3.append('candidate_id', candidate3.id);
     formData3.append('source', 'Error Test');
 
-    const uploadResponse3 = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
+    const uploadResponse3 = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',
       body: formData3,
       headers: formData3.getHeaders()
@@ -378,7 +376,7 @@ async function testIdentityVerificationErrors() {
       const data3 = await uploadResponse3.json();
       await sleep(10000);
 
-      const statusResponse3 = await fetch(`${BACKEND_URL}/api/candidate-documents/${data3.document.id}`);
+      const statusResponse3 = await fetch(`${BACKEND_URL}/api/documents/candidate-documents/${data3.document.id}`);
       const statusData3 = await statusResponse3.json();
 
       logTest('Multiple Identities Handling',
@@ -466,8 +464,8 @@ async function testConcurrentUploads() {
   try {
     const candidate = await createTestCandidate({
       name: 'Stress Test User',
-      email: 'stress@example.com',
-      status: 'active'
+      email: `stress.${Math.random().toString(36).slice(2,8)}@example.com`,
+      status: 'Applied'
     });
 
     log('\nUploading 5 documents concurrently...', 'blue');
@@ -483,7 +481,7 @@ async function testConcurrentUploads() {
       formData.append('source', 'Stress Test');
 
       uploadPromises.push(
-        fetch(`${BACKEND_URL}/api/candidate-documents`, {
+        fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
           method: 'POST',
           body: formData,
           headers: formData.getHeaders()
@@ -537,8 +535,8 @@ async function testRateLimiting() {
   try {
     const candidate = await createTestCandidate({
       name: 'Rate Limit Test',
-      email: 'ratelimit@example.com',
-      status: 'active'
+      email: `ratelimit.${Math.random().toString(36).slice(2,8)}@example.com`,
+      status: 'Applied'
     });
 
     log('\nUploading 15 documents to test rate limiting (10/min limit)...', 'blue');
@@ -554,7 +552,7 @@ async function testRateLimiting() {
       formData.append('source', 'Rate Test');
 
       uploads.push(
-        fetch(`${BACKEND_URL}/api/candidate-documents`, {
+        fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
           method: 'POST',
           body: formData,
           headers: formData.getHeaders()

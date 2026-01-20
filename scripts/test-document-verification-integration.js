@@ -15,14 +15,12 @@
  * - Valid test documents in test-files/
  */
 
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import FormData from 'form-data';
-import fetch from 'node-fetch';
+const fs = require('fs');
+const path = require('path');
+const FormData = require('form-data');
+const fetch = require('node-fetch');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// __dirname is available in CommonJS by default
 
 // Configuration
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
@@ -72,6 +70,29 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Helper: Ensure a text test file exists (fallback when PDF/JPG missing)
+function ensureTestTextFile(fileName, content) {
+  const fullPath = path.join(TEST_FILES_DIR, fileName);
+  if (!fs.existsSync(fullPath)) {
+    fs.writeFileSync(fullPath, content, { encoding: 'utf8' });
+    log(`  Created fallback test file: ${fileName}`, 'yellow');
+  }
+  return fullPath;
+}
+
+// Helper: Generate random CNIC-like string
+function randomCnic() {
+  const part1 = Math.floor(10000 + Math.random() * 90000); // 5 digits
+  const part2 = Math.floor(1000000 + Math.random() * 9000000); // 7 digits
+  const part3 = Math.floor(1 + Math.random() * 9); // 1 digit
+  return `${part1}-${part2}-${part3}`;
+}
+
+function randomEmail(prefix) {
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `${prefix}.${rand}@example.com`;
+}
+
 // Helper: Upload document
 async function uploadDocument(candidateId, filePath, fileName) {
   try {
@@ -80,7 +101,7 @@ async function uploadDocument(candidateId, filePath, fileName) {
     formData.append('candidate_id', candidateId);
     formData.append('source', 'Integration Test');
 
-    const response = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
+    const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',
       body: formData,
       headers: formData.getHeaders()
@@ -103,7 +124,7 @@ async function uploadDocument(candidateId, filePath, fileName) {
 async function pollDocumentStatus(documentId, maxAttempts = MAX_POLL_ATTEMPTS) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await fetch(`${BACKEND_URL}/api/candidate-documents/${documentId}`);
+      const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents/${documentId}`);
       
       if (!response.ok) {
         throw new Error(`Status check failed: ${response.status}`);
@@ -179,22 +200,25 @@ async function testHappyPath() {
     // Create test candidate
     const candidate = await createTestCandidate({
       name: 'John Doe',
-      email: 'john.doe@example.com',
+      email: randomEmail('john.doe'),
       phone: '+92-300-1234567',
-      cnic: '12345-1234567-1',
-      status: 'active'
+      cnic: randomCnic(),
+      status: 'Applied'
     });
     log(`Created test candidate: ${candidate.id}`, 'blue');
 
     // Upload CV
-    const testFile = path.join(TEST_FILES_DIR, 'sample-cv.pdf');
+    let testFile = path.join(TEST_FILES_DIR, 'sample-cv.pdf');
+    let uploadName = 'sample-cv.pdf';
     if (!fs.existsSync(testFile)) {
-      logTest('Happy Path', false, 'Test file not found: sample-cv.pdf');
-      return;
+      // Fallback to text file
+      testFile = ensureTestTextFile('sample-cv.txt',
+        'John Doe\nCNIC: 12345-1234567-1\nEmail: john.doe@example.com\nPhone: +92-300-1234567\n');
+      uploadName = 'sample-cv.txt';
     }
 
-    log('Uploading CV...', 'blue');
-    const document = await uploadDocument(candidate.id, testFile, 'sample-cv.pdf');
+    log(`Uploading CV (${uploadName})...`, 'blue');
+    const document = await uploadDocument(candidate.id, testFile, uploadName);
     
     logTest('Document Upload', document.id !== undefined, `Document ID: ${document.id}`);
     logTest('Initial Status = PENDING_AI', document.verification_status === 'pending_ai');
@@ -242,22 +266,25 @@ async function testIdentityMismatch() {
     // Create candidate with specific CNIC
     const candidate = await createTestCandidate({
       name: 'Jane Smith',
-      email: 'jane.smith@example.com',
+      email: randomEmail('jane.smith'),
       phone: '+92-301-7654321',
-      cnic: '54321-7654321-9',
-      status: 'active'
+      cnic: randomCnic(),
+      status: 'Applied'
     });
     log(`Created test candidate: ${candidate.id}`, 'blue');
 
     // Upload document with different identity
-    const testFile = path.join(TEST_FILES_DIR, 'passport-mismatch.pdf');
+    let testFile = path.join(TEST_FILES_DIR, 'passport-mismatch.pdf');
+    let uploadName = 'passport-mismatch.pdf';
     if (!fs.existsSync(testFile)) {
-      log('Skipping test - passport-mismatch.pdf not found', 'yellow');
-      return;
+      // Fallback to text file
+      testFile = ensureTestTextFile('passport-mismatch.txt',
+        'PASSPORT\nName: Different Person\nPassport No: XY9876543\nCNIC: 99999-9999999-9');
+      uploadName = 'passport-mismatch.txt';
     }
 
     log('Uploading document with mismatched identity...', 'blue');
-    const document = await uploadDocument(candidate.id, testFile, 'passport-mismatch.pdf');
+    const document = await uploadDocument(candidate.id, testFile, uploadName);
 
     // Poll for completion
     const finalDocument = await pollDocumentStatus(document.id);
@@ -289,8 +316,8 @@ async function testLowConfidence() {
   try {
     const candidate = await createTestCandidate({
       name: 'Test User',
-      email: 'test@example.com',
-      status: 'active'
+      email: randomEmail('test'),
+      status: 'Applied'
     });
 
     const testFile = path.join(TEST_FILES_DIR, 'blurry-document.jpg');
@@ -325,29 +352,32 @@ async function testMultipleDocumentTypes() {
   logSection('TEST 4: Multiple Document Types - Category Detection');
 
   const testFiles = [
-    { name: 'sample-cv.pdf', expectedCategory: 'cv_resume' },
-    { name: 'passport.pdf', expectedCategory: 'passport' },
-    { name: 'certificate.pdf', expectedCategory: 'certificates' },
-    { name: 'photo.jpg', expectedCategory: 'photos' }
+    { name: 'sample-cv.pdf', fallback: 'sample-cv.txt', content: 'CV\nJohn Doe', expectedCategory: 'cv_resume' },
+    { name: 'passport.pdf', fallback: 'passport.txt', content: 'PASSPORT\nAB1234567', expectedCategory: 'passport' },
+    { name: 'certificate.pdf', fallback: 'certificate.txt', content: 'CERTIFICATE\nAchievement', expectedCategory: 'certificates' },
+    { name: 'photo.jpg', fallback: 'photo.txt', content: 'PHOTO\nHeadshot', expectedCategory: 'photos' }
   ];
 
   try {
     const candidate = await createTestCandidate({
       name: 'Multi Doc Test',
-      email: 'multidoc@example.com',
-      status: 'active'
+      email: randomEmail('multidoc'),
+      status: 'Applied'
     });
 
     for (const testFile of testFiles) {
-      const filePath = path.join(TEST_FILES_DIR, testFile.name);
+      let filePath = path.join(TEST_FILES_DIR, testFile.name);
+      let uploadName = testFile.name;
       
       if (!fs.existsSync(filePath)) {
-        log(`Skipping ${testFile.name} - file not found`, 'yellow');
-        continue;
+        // Fallback to text
+        filePath = ensureTestTextFile(testFile.fallback, testFile.content);
+        uploadName = testFile.fallback;
+        log(`Using fallback ${uploadName} for ${testFile.name}`, 'yellow');
       }
 
-      log(`\nTesting ${testFile.name}...`, 'blue');
-      const document = await uploadDocument(candidate.id, filePath, testFile.name);
+      log(`\nTesting ${uploadName}...`, 'blue');
+      const document = await uploadDocument(candidate.id, filePath, uploadName);
       const finalDocument = await pollDocumentStatus(document.id);
 
       logTest(`${testFile.name} - Category Detected`, 
@@ -370,17 +400,18 @@ async function testVerificationLogsAPI() {
   try {
     const candidate = await createTestCandidate({
       name: 'Logs Test User',
-      email: 'logs@example.com',
-      status: 'active'
+      email: randomEmail('logs'),
+      status: 'Applied'
     });
 
-    const testFile = path.join(TEST_FILES_DIR, 'sample-cv.pdf');
+    let testFile = path.join(TEST_FILES_DIR, 'sample-cv.pdf');
+    let uploadName = 'sample-cv.pdf';
     if (!fs.existsSync(testFile)) {
-      log('Skipping test - sample-cv.pdf not found', 'yellow');
-      return;
+      testFile = ensureTestTextFile('sample-cv.txt', 'John Doe\nCV');
+      uploadName = 'sample-cv.txt';
     }
 
-    const document = await uploadDocument(candidate.id, testFile, 'sample-cv.pdf');
+    const document = await uploadDocument(candidate.id, testFile, uploadName);
     await pollDocumentStatus(document.id);
 
     // Test 1: Get logs by document ID
@@ -426,17 +457,18 @@ async function testRequestTracing() {
   try {
     const candidate = await createTestCandidate({
       name: 'Trace Test',
-      email: 'trace@example.com',
-      status: 'active'
+      email: randomEmail('trace'),
+      status: 'Applied'
     });
 
-    const testFile = path.join(TEST_FILES_DIR, 'sample-cv.pdf');
+    let testFile = path.join(TEST_FILES_DIR, 'sample-cv.pdf');
+    let uploadName = 'sample-cv.pdf';
     if (!fs.existsSync(testFile)) {
-      log('Skipping test - sample-cv.pdf not found', 'yellow');
-      return;
+      testFile = ensureTestTextFile('sample-cv.txt', 'John Doe\nCV');
+      uploadName = 'sample-cv.txt';
     }
 
-    const document = await uploadDocument(candidate.id, testFile, 'sample-cv.pdf');
+    const document = await uploadDocument(candidate.id, testFile, uploadName);
     await pollDocumentStatus(document.id);
 
     // Get all logs

@@ -11,6 +11,9 @@
     "test:inbox": "node scripts/testInboxApi.js",
     "test:webhook-security": "node scripts/testWebhookSecurity.js",
     "test:performance": "node scripts/testPerformance.js",
+    "test:integration": "node scripts/test-document-verification-integration.js",
+    "test:errors": "node scripts/test-document-verification-errors.js",
+    "test:all": "npm run test:integration && npm run test:errors",
     "smoke:cv": "node scripts/smoke-cv-parsing.js",
     "smoke:local-queue": "node scripts/smoke-local-queue.js"
   },

@@ -19,12 +19,27 @@ function signHmac(body) {
 async function createCandidateFromParsedData(parsed, attachmentId) {
     try {
         const candidate = parsed.candidate || {};
-        // Build candidate data from parsed CV
+        // Build candidate data from parsed CV - map all fields from Python parser
         const candidateData = {
             name: candidate.full_name || 'Unknown',
             email: candidate.email || undefined,
             phone: candidate.phone || undefined,
             address: candidate.location || undefined,
+            nationality: candidate.nationality || undefined,
+            position: candidate.position || undefined,
+            experience_years: candidate.experience_years || undefined,
+            country_of_interest: candidate.country_of_interest || 'missing',
+            skills: Array.isArray(candidate.skills) ? candidate.skills.join(', ') : undefined,
+            languages: Array.isArray(candidate.languages) ? candidate.languages.join(', ') : undefined,
+            education: Array.isArray(candidate.education) && candidate.education.length > 0
+                ? candidate.education.map((e) => `${e.degree} from ${e.institution}`).join('; ')
+                : undefined,
+            certifications: Array.isArray(candidate.certifications) ? candidate.certifications.join(', ') : undefined,
+            previous_employment: candidate.previous_employment || (Array.isArray(candidate.experience) && candidate.experience.length > 0
+                ? candidate.experience.map((e) => `${e.title} at ${e.company}`).join('; ')
+                : undefined),
+            passport_expiry: candidate.passport_expiry || undefined,
+            professional_summary: candidate.professional_summary || candidate.summary || undefined,
         };
         // Create candidate (system-created, no specific userId)
         const newCandidate = await (0, candidateService_1.createCandidate)(candidateData);

@@ -44,6 +44,9 @@ CREATE TABLE unmatched_documents (
   inbox_attachment_id UUID UNIQUE REFERENCES inbox_attachments(id) ON DELETE CASCADE,
   source TEXT DEFAULT 'unknown', -- 'email' | 'web' | 'api' | 'unknown'
 
+  -- Optional direct link to candidate_documents (legacy support)
+  document_id UUID REFERENCES candidate_documents(id) ON DELETE CASCADE,
+
   -- Storage location (CRITICAL: code inserts these columns)
   storage_bucket TEXT NOT NULL,
   storage_path TEXT NOT NULL,

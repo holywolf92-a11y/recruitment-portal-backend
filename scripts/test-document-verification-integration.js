@@ -229,7 +229,7 @@ async function testHappyPath() {
 
     logTest('Status Changed', finalDocument.verification_status !== 'pending_ai');
     logTest('Category Detected', finalDocument.category !== null, `Category: ${finalDocument.category}`);
-    logTest('Confidence Score', finalDocument.confidence_score >= 0, `Confidence: ${finalDocument.confidence_score}`);
+    logTest('Confidence Score', finalDocument.confidence !== undefined && finalDocument.confidence >= 0, `Confidence: ${finalDocument.confidence}`);
     
     // Check verification logs
     const logs = await getVerificationLogs(document.id);
@@ -245,7 +245,7 @@ async function testHappyPath() {
     log('\nFinal Document State:', 'cyan');
     log(`  Status: ${finalDocument.verification_status}`, 'yellow');
     log(`  Category: ${finalDocument.category}`, 'yellow');
-    log(`  Confidence: ${finalDocument.confidence_score}`, 'yellow');
+    log(`  Confidence: ${finalDocument.confidence}`, 'yellow');
     log(`  Reason: ${finalDocument.verification_reason_code}`, 'yellow');
     if (finalDocument.mismatch_fields?.length > 0) {
       log(`  Mismatches: ${finalDocument.mismatch_fields.join(', ')}`, 'yellow');
@@ -336,8 +336,8 @@ async function testLowConfidence() {
       `Status: ${finalDocument.verification_status}`
     );
     logTest('Low Confidence Detected', 
-      finalDocument.confidence_score < 0.70,
-      `Confidence: ${finalDocument.confidence_score}`
+      finalDocument.confidence !== undefined && finalDocument.confidence < 0.70,
+      `Confidence: ${finalDocument.confidence}`
     );
 
   } catch (error) {

@@ -472,7 +472,10 @@ export async function deleteCandidateDocument(documentId: string): Promise<void>
       if (docCategory === 'passport' || docType === 'passport' || fileName.includes('passport')) {
         updateFlags.passport_received = true;
       }
-      if (docCategory === 'certificates' || docCategory === 'certificate' || docType === 'certificate' || fileName.includes('certificate')) {
+      // Check for certificates - handle both singular and plural, and also check for 'cert' abbreviation
+      if (docCategory === 'certificates' || docCategory === 'certificate' || docCategory === 'cert' || 
+          docType === 'certificate' || docType === 'cert' || 
+          fileName.includes('certificate') || fileName.includes('cert')) {
         updateFlags.certificate_received = true;
       }
       if (docCategory === 'photos' || docCategory === 'photo' || docType === 'photo' || fileName.includes('photo')) {
@@ -485,12 +488,25 @@ export async function deleteCandidateDocument(documentId: string): Promise<void>
 
     // Update candidate flags
     if (Object.keys(updateFlags).length > 0) {
-      await db
+      const { error: updateError } = await db
         .from('candidates')
         .update(updateFlags)
         .eq('id', candidateId);
       
-      console.log(`[DeleteDocument] Updated candidate flags for ${candidateId} after deletion:`, Object.keys(updateFlags).filter(k => k.endsWith('_received')));
+      if (updateError) {
+        console.error(`[DeleteDocument] Failed to update flags:`, updateError);
+      } else {
+        console.log(`[DeleteDocument] Updated candidate flags for ${candidateId} after deletion:`, {
+          cv: updateFlags.cv_received,
+          passport: updateFlags.passport_received,
+          certificate: updateFlags.certificate_received,
+          photo: updateFlags.photo_received,
+          medical: updateFlags.medical_received,
+        });
+        console.log(`[DeleteDocument] Found ${allDocs.length} remaining documents for candidate ${candidateId}`);
+      }
+    } else {
+      console.log(`[DeleteDocument] No flags to update for candidate ${candidateId}`);
     }
   } catch (flagError: any) {
     console.error('[DeleteDocument] Failed to update candidate flags after deletion:', flagError);

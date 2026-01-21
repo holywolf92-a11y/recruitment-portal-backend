@@ -52,9 +52,15 @@ export class IdentityMatchingService {
         .from('candidates')
         .select('id, name, father_name, cnic, cnic_normalized, passport, passport_normalized, email, phone, phone_normalized')
         .eq('id', candidateId)
-        .single();
+        .maybeSingle(); // Use maybeSingle() instead of single() to handle missing records gracefully
 
-      if (error || !candidate) {
+      if (error) {
+        console.error(`[IdentityMatchingService] Database error fetching candidate ${candidateId}:`, error);
+        throw new Error(`Database error fetching candidate: ${error.message}`);
+      }
+
+      if (!candidate) {
+        console.error(`[IdentityMatchingService] Candidate ${candidateId} not found in database`);
         throw new Error(`Candidate not found: ${candidateId}`);
       }
 
@@ -240,6 +246,25 @@ export class IdentityMatchingService {
         };
       }
 
+      // PRIORITY 5: Name-only matching (if we got here, no strong identifiers matched)
+      // If name matches and no mismatches found, we can verify with lower confidence
+      if (extractedIdentity.name) {
+        const nameMatch = this.fuzzyNameMatch(extractedIdentity.name, candidate.name);
+        if (nameMatch && mismatchFields.length === 0) {
+          // Name matches and no mismatches - verify with lower confidence
+          return {
+            matched: true,
+            matched_on: ['name'],
+            confidence: 0.70, // Lower confidence for name-only match
+            reason_code: VERIFICATION_REASON_CODES.VERIFIED,
+            candidate_fields: {
+              name: candidate.name,
+            },
+            notes: 'Verified by name only (no strong identifiers found in document)',
+          };
+        }
+      }
+
       // No strong identifiers found in document - UNVERIFIABLE
       return {
         matched: false,
@@ -249,7 +274,7 @@ export class IdentityMatchingService {
         candidate_fields: {
           name: candidate.name,
         },
-        notes: 'No strong identity fields (CNIC, passport, email) found in document',
+        notes: 'No strong identity fields (CNIC, passport, email, phone) found in document',
       };
     } catch (error: any) {
       console.error('[IdentityMatchingService] Error matching identity:', error);

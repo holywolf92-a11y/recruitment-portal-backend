@@ -161,6 +161,10 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     if (!base64Content || base64Content.length < 4) {
       throw new Error(`Invalid base64 content: length=${base64Content?.length || 0}`);
     }
+    
+    // Log base64 preview for debugging (first 50 chars)
+    console.log(`[DocumentVerification] Base64 preview (first 50 chars): ${base64Content.substring(0, 50)}`);
+    console.log(`[DocumentVerification] Base64 length: ${base64Content.length}`);
 
     // =============================================================================
     // STEP 3: Call AI categorization service

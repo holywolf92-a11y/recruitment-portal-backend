@@ -144,16 +144,29 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     }
 
     // Convert file to base64 for AI service
-    const arrayBuffer = await fileData.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    // Ensure we get binary data, not text
+    let buffer: Buffer;
+    
+    if (fileData instanceof Blob) {
+      const arrayBuffer = await fileData.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+    } else if (fileData instanceof ArrayBuffer) {
+      buffer = Buffer.from(fileData);
+    } else if (Buffer.isBuffer(fileData)) {
+      buffer = fileData;
+    } else {
+      // Fallback: try to convert to buffer
+      buffer = Buffer.from(fileData as any);
+    }
     
     // Validate file is not empty
     if (buffer.length === 0) {
       throw new Error('Downloaded file is empty');
     }
     
-    // Log file size for debugging
+    // Log file size and raw content preview for debugging
     console.log(`[DocumentVerification] File size: ${buffer.length} bytes, fileName: ${fileName}`);
+    console.log(`[DocumentVerification] Raw content preview (first 50 bytes as hex): ${buffer.toString('hex').substring(0, 100)}`);
     
     const base64Content = buffer.toString('base64');
     

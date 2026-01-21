@@ -89,6 +89,7 @@ async function callAICategorizationService(
     }
 
     const result = await response.json();
+    console.log('[AI Categorization] Raw parser response:', JSON.stringify(result, null, 2));
     return result;
   } catch (error: any) {
     console.error('[AI Categorization] Service call failed:', error);

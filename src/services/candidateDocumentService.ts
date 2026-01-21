@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { VERIFICATION_STATUS, DocumentCategory } from '../config/documentCategories';
 import { DocumentVerificationLogService, generateRequestId } from './documentVerificationLogService';
 import { documentVerificationQueue } from '../config/queue';
-import { AppError } from '../utils/errorHandling';
+import { AppError, ErrorType } from '../utils/errorHandling';
 
 export interface CandidateDocument {
   id: string;
@@ -83,22 +83,22 @@ export async function uploadCandidateDocument(
     if (!data.file_name || !data.mime_type || !data.buffer) {
       const errMsg = 'Missing file_name, mime_type, or buffer';
       await logService.logError(requestId, errMsg, undefined, undefined, data.candidate_id);
-      throw new AppError(errMsg, 'VALIDATION_ERROR', 400);
+      throw new AppError(errMsg, ErrorType.VALIDATION, 400);
     }
     if (data.buffer.length === 0) {
       const errMsg = 'File is empty';
       await logService.logError(requestId, errMsg, undefined, undefined, data.candidate_id);
-      throw new AppError(errMsg, 'VALIDATION_ERROR', 400);
+      throw new AppError(errMsg, ErrorType.VALIDATION, 400);
     }
     if (data.buffer.length > maxSize) {
       const errMsg = 'File exceeds 10MB size limit';
       await logService.logError(requestId, errMsg, undefined, undefined, data.candidate_id);
-      throw new AppError(errMsg, 'VALIDATION_ERROR', 400);
+      throw new AppError(errMsg, ErrorType.VALIDATION, 400);
     }
     if (!allowedTypes.includes(data.mime_type)) {
       const errMsg = `Unsupported file type: ${data.mime_type}`;
       await logService.logError(requestId, errMsg, undefined, undefined, data.candidate_id);
-      throw new AppError(errMsg, 'VALIDATION_ERROR', 400);
+      throw new AppError(errMsg, ErrorType.VALIDATION, 400);
     }
 
     // Generate unique request ID for tracing

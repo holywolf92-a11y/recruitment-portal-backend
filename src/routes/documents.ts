@@ -57,7 +57,23 @@ const upload = multer({
 
 // Upload document with AI verification
 import { asyncHandler } from '../utils/errorHandling';
-router.post('/candidate-documents', upload.single('file'), asyncHandler(uploadCandidateDocumentController));
+
+// Multer error handler middleware
+const handleMulterError = (err: any, req: any, res: any, next: any) => {
+  if (err instanceof multer.MulterError) {
+    return next(err); // Pass to global error handler
+  }
+  if (err) {
+    return next(err); // Pass other errors (like fileFilter errors)
+  }
+  next();
+};
+
+router.post('/candidate-documents', 
+  upload.single('file'),
+  handleMulterError,
+  asyncHandler(uploadCandidateDocumentController)
+);
 
 // Get candidate document by ID
 router.get('/candidate-documents/:id', getCandidateDocumentController);

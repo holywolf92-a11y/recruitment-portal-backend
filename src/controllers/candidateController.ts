@@ -199,6 +199,12 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
       return res.status(500).json({ error: `Failed to fetch documents: ${docsError.message}` });
     }
 
+    // Check inbox_attachments for CVs (when candidate was created from CV inbox)
+    const { data: inboxAttachments, error: inboxError } = await db
+      .from('inbox_attachments')
+      .select('attachment_type, file_name, candidate_id, linked_candidate_id')
+      .or(`candidate_id.eq.${id},linked_candidate_id.eq.${id}`);
+
     // Also check the old documents table for CVs (legacy support)
     const { data: oldDocuments, error: oldDocsError } = await db
       .from('documents')
@@ -206,10 +212,16 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
       .eq('candidate_id', id)
       .eq('deleted_at', null);
 
-    // Combine both document sources
+    // Combine all document sources
     const allDocs = [
-      ...(documents || []).map(d => ({ category: d.category, type: null, file_name: d.file_name })),
-      ...(oldDocuments || []).map(d => ({ category: null, type: d.doc_type, file_name: d.file_name }))
+      ...(documents || []).map(d => ({ category: d.category, type: null, file_name: d.file_name, source: 'candidate_documents' })),
+      ...(inboxAttachments || []).map(d => ({ 
+        category: null, 
+        type: d.attachment_type, 
+        file_name: d.file_name,
+        source: 'inbox_attachments'
+      })),
+      ...(oldDocuments || []).map(d => ({ category: null, type: d.doc_type, file_name: d.file_name, source: 'documents' }))
     ];
 
     // Determine which flags to set based on actual documents
@@ -224,17 +236,23 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
       const docType = (doc.type || '').toLowerCase();
       const fileName = (doc.file_name || '').toLowerCase();
 
-      // Check category first (new system)
+      // Check category first (new system - candidate_documents)
       if (category === 'cv_resume' || category === 'cv') {
         updateFlags.cv_received = true;
         updateFlags.cv_received_at = now;
-        foundCategories.push('CV (from category)');
+        foundCategories.push('CV (from candidate_documents category)');
       } 
-      // Check doc_type (old system)
-      else if (docType === 'cv' || docType.includes('resume') || docType.includes('cv')) {
+      // Check attachment_type from inbox_attachments (CVs from inbox)
+      else if (docType === 'cv' || docType === 'CV') {
         updateFlags.cv_received = true;
         updateFlags.cv_received_at = now;
-        foundCategories.push('CV (from doc_type)');
+        foundCategories.push('CV (from inbox_attachments)');
+      }
+      // Check doc_type (old documents table)
+      else if (docType && (docType.includes('resume') || docType.includes('cv'))) {
+        updateFlags.cv_received = true;
+        updateFlags.cv_received_at = now;
+        foundCategories.push('CV (from documents table)');
       }
       // Check filename as fallback
       else if (fileName.includes('cv') || fileName.includes('resume')) {

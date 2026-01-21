@@ -273,29 +273,30 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
 
       // Log identity verification result (only if matching succeeded)
       if (matchResult) {
-      await documentVerificationLogService.logIdentityVerificationCompleted(
-        requestId,
-        documentId,
-        candidateId,
-        matchResult.matched ? VERIFICATION_STATUS.VERIFIED : VERIFICATION_STATUS.NEEDS_REVIEW,
-        matchResult.reason_code,
-        matchResult.mismatch_fields,
-        matchResult
-      );
+        await documentVerificationLogService.logIdentityVerificationCompleted(
+          requestId,
+          documentId,
+          candidateId,
+          matchResult.matched ? VERIFICATION_STATUS.VERIFIED : VERIFICATION_STATUS.NEEDS_REVIEW,
+          matchResult.reason_code,
+          matchResult.mismatch_fields,
+          matchResult
+        );
 
-      // Determine verification status based on identity match
-      if (matchResult.matched) {
-        finalStatus = VERIFICATION_STATUS.VERIFIED;
-        reasonCode = VERIFICATION_REASON_CODES.VERIFIED;
-      } else if (matchResult.reason_code === VERIFICATION_REASON_CODES.NO_ID_FOUND) {
-        // No IDs found - needs manual review
-        finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
-        reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
-      } else {
-        // Identity mismatch - rejected
-        finalStatus = VERIFICATION_STATUS.REJECTED_MISMATCH;
-        reasonCode = matchResult.reason_code;
-        mismatchFields = matchResult.mismatch_fields || [];
+        // Determine verification status based on identity match
+        if (matchResult.matched) {
+          finalStatus = VERIFICATION_STATUS.VERIFIED;
+          reasonCode = VERIFICATION_REASON_CODES.VERIFIED;
+        } else if (matchResult.reason_code === VERIFICATION_REASON_CODES.NO_ID_FOUND) {
+          // No IDs found - needs manual review
+          finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
+          reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+        } else {
+          // Identity mismatch - rejected
+          finalStatus = VERIFICATION_STATUS.REJECTED_MISMATCH;
+          reasonCode = matchResult.reason_code;
+          mismatchFields = matchResult.mismatch_fields || [];
+        }
       }
     } else {
       // No identity fields extracted - needs manual review

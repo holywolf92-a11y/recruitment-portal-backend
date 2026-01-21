@@ -249,12 +249,30 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
 
     if (aiResult.extracted_identity && Object.keys(aiResult.extracted_identity).length > 0) {
       // Run identity matching
-      matchResult = await identityMatchingService.matchIdentity(
-        candidateId,
-        aiResult.extracted_identity
-      );
+      try {
+        matchResult = await identityMatchingService.matchIdentity(
+          candidateId,
+          aiResult.extracted_identity
+        );
+      } catch (matchError: any) {
+        // If identity matching fails (e.g., candidate not found), treat as needs review
+        console.error(`[DocumentVerification] Identity matching failed for candidate ${candidateId}:`, matchError);
+        finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
+        reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+        
+        await documentVerificationLogService.logIdentityVerificationCompleted(
+          requestId,
+          documentId,
+          candidateId,
+          VERIFICATION_STATUS.NEEDS_REVIEW,
+          reasonCode,
+          undefined,
+          { notes: `Identity matching error: ${matchError.message}` }
+        );
+      }
 
-      // Log identity verification result
+      // Log identity verification result (only if matching succeeded)
+      if (matchResult) {
       await documentVerificationLogService.logIdentityVerificationCompleted(
         requestId,
         documentId,

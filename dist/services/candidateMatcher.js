@@ -167,8 +167,9 @@ class CandidateMatcher {
                 }
             }
         }
-        // Priority 5: Name-only matching (fallback when CNIC/email/phone not available)
-        if (criteria.name && !criteria.cnic && !criteria.email && !criteria.phone) {
+        // Priority 5: Name-only matching (fallback when CNIC/email/phone don't match or not available)
+        // Try name matching if we have a name - this is a fallback when other methods didn't find a match
+        if (criteria.name) {
             const normalizedName = this.normalizeName(criteria.name);
             const { data, error } = await db
                 .from('candidates')
@@ -178,11 +179,12 @@ class CandidateMatcher {
                 const matches = data.filter(c => {
                     const candidateName = this.normalizeName(c.name || '');
                     const similarity = this.calculateSimilarity(normalizedName, candidateName);
-                    // Use high similarity threshold for name-only matching (0.90)
-                    return similarity >= 0.90;
+                    // Use slightly lower threshold (0.85) for better matching when CNIC/email/phone don't match
+                    return similarity >= 0.85;
                 });
                 if (matches.length === 1) {
-                    logger.info(`Matched candidate by name only: ${criteria.name}`);
+                    const actualSimilarity = this.calculateSimilarity(normalizedName, this.normalizeName(matches[0].name || ''));
+                    logger.info(`Matched candidate by name only: "${criteria.name}" -> "${matches[0].name}" (similarity: ${actualSimilarity.toFixed(3)})`);
                     return {
                         candidateId: matches[0].id,
                         matchedBy: 'name',
@@ -193,16 +195,20 @@ class CandidateMatcher {
                     };
                 }
                 else if (matches.length > 1) {
-                    logger.warn(`Multiple candidates found for name: ${criteria.name}`);
+                    logger.warn(`Multiple candidates found for name: "${criteria.name}" (${matches.length} matches)`);
+                    // If multiple matches, return the first one but flag for review
                     return {
-                        candidateId: null,
-                        matchedBy: null,
-                        confidence: 0,
+                        candidateId: matches[0].id,
+                        matchedBy: 'name',
+                        confidence: 0.75,
                         multipleMatches: true,
                         matchCount: matches.length,
                         needsManualReview: true,
                         reviewReasons: [`Multiple candidates (${matches.length}) match name: ${criteria.name}`]
                     };
+                }
+                else {
+                    logger.info(`No name matches found for: "${criteria.name}" (checked ${data.length} candidates)`);
                 }
             }
         }

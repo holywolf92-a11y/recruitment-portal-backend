@@ -73,7 +73,7 @@ export async function linkExistingCVFromInbox(candidateId: string): Promise<Cand
     console.error('[LinkCV] Failed to create candidate_documents record:', insertError);
     throw new AppError(
       `Failed to link CV: ${insertError?.message || 'Unknown error'}`,
-      ErrorType.INTERNAL_ERROR,
+      ErrorType.DATABASE,
       500
     );
   }

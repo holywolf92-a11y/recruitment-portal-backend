@@ -62,7 +62,7 @@ async function linkExistingCVFromInbox(candidateId) {
         .single();
     if (insertError || !newDocument) {
         console.error('[LinkCV] Failed to create candidate_documents record:', insertError);
-        throw new errorHandling_1.AppError(`Failed to link CV: ${insertError?.message || 'Unknown error'}`, errorHandling_1.ErrorType.INTERNAL_ERROR, 500);
+        throw new errorHandling_1.AppError(`Failed to link CV: ${insertError?.message || 'Unknown error'}`, errorHandling_1.ErrorType.DATABASE, 500);
     }
     // Update inbox_attachment to link to candidate if not already linked
     if (!inboxCV.linked_candidate_id) {

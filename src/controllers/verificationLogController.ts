@@ -132,6 +132,7 @@ export async function getVerificationTimeline(req: Request, res: Response) {
       success: true,
       total: timeline?.length || 0,
       filters: { candidateId, documentId, limit: limitNum },
+      logs: timeline || [], // Test expects 'logs' not 'timeline'
       timeline: timeline || [],
     });
   } catch (error: any) {
@@ -197,7 +198,12 @@ export async function getVerificationStatsByCandidate(req: Request, res: Respons
     return res.json({
       success: true,
       candidate_id: candidateId,
-      statistics: {
+      stats: { // Test expects 'stats' not 'statistics'
+        total_documents: documents?.length || 0,
+        by_status: statusCounts,
+        by_category: categoryCounts,
+      },
+      statistics: { // Keep both for compatibility
         total_documents: documents?.length || 0,
         by_status: statusCounts,
         by_category: categoryCounts,

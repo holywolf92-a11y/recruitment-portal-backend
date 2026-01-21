@@ -102,6 +102,49 @@ function createLogger(context) {
  */
 function errorHandler(err, req, res, next) {
     const logger = createLogger('ErrorHandler');
+    // Handle Multer errors (file upload errors)
+    if (err.code && err.code.startsWith('LIMIT_')) {
+        logger.error(`Multer error: ${err.code}`, err, {
+            path: req.path,
+            method: req.method,
+        });
+        let message = 'File upload error';
+        let statusCode = 400;
+        switch (err.code) {
+            case 'LIMIT_FILE_SIZE':
+                message = 'File too large. Maximum file size is 10MB.';
+                statusCode = 413;
+                break;
+            case 'LIMIT_FILE_COUNT':
+                message = 'Too many files uploaded.';
+                statusCode = 400;
+                break;
+            case 'LIMIT_UNEXPECTED_FILE':
+                message = 'Unexpected file field.';
+                statusCode = 400;
+                break;
+            default:
+                message = err.message || 'File upload error';
+        }
+        return res.status(statusCode).json({
+            error: message,
+            type: ErrorType.VALIDATION,
+            code: err.code,
+            timestamp: new Date().toISOString(),
+        });
+    }
+    // Handle file filter errors (from multer fileFilter)
+    if (err.message && err.message.includes('Invalid file type')) {
+        logger.error('File type validation error', err, {
+            path: req.path,
+            method: req.method,
+        });
+        return res.status(400).json({
+            error: err.message,
+            type: ErrorType.VALIDATION,
+            timestamp: new Date().toISOString(),
+        });
+    }
     // Log error
     if (err instanceof AppError) {
         logger.error(`${err.type}: ${err.message}`, err, {
@@ -116,7 +159,15 @@ function errorHandler(err, req, res, next) {
             method: req.method,
         });
     }
-    // Send response
+    // Handle thrown errors with statusCode (from upload validation, etc.)
+    if (err.statusCode && typeof err.statusCode === 'number') {
+        return res.status(err.statusCode).json({
+            error: err.message || 'Request failed',
+            type: err.type || 'VALIDATION_ERROR',
+            timestamp: new Date().toISOString(),
+        });
+    }
+    // Send response for AppError
     if (err instanceof AppError) {
         return res.status(err.statusCode).json({
             error: err.message,

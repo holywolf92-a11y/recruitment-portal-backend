@@ -14,6 +14,7 @@ const errorHandling_1 = require("./utils/errorHandling");
 const gmailPollingWorker_1 = require("./workers/gmailPollingWorker");
 const cvParserWorker_1 = require("./workers/cvParserWorker");
 const documentLinkWorker_1 = require("./workers/documentLinkWorker");
+const documentVerificationWorker_1 = require("./workers/documentVerificationWorker");
 dotenv_1.default.config();
 (0, env_1.validateEnv)();
 const logger = (0, errorHandling_1.createLogger)('Server');
@@ -107,6 +108,9 @@ try {
                 // Start Document Link worker alongside CV parser
                 (0, documentLinkWorker_1.startDocumentLinkWorker)();
                 logger.info('Document Link worker started');
+                // Start Document Verification worker
+                (0, documentVerificationWorker_1.startDocumentVerificationWorker)();
+                logger.info('Document Verification worker started');
             }
             catch (err) {
                 logger.error('Failed to start workers', err);

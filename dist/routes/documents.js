@@ -9,6 +9,7 @@ const errorHandling_1 = require("../utils/errorHandling");
 const database_1 = require("../config/database");
 // import { authenticate } from '../middleware/auth';
 const documentController_1 = require("../controllers/documentController");
+const documentController_2 = require("../controllers/documentController");
 const logger = (0, errorHandling_1.createLogger)('DocumentsRouter');
 const router = (0, express_1.Router)();
 // Configure multer for memory storage
@@ -38,6 +39,33 @@ const upload = (0, multer_1.default)({
 });
 // All routes require authentication
 // router.use(authenticate);
+// ============================================================================
+// NEW ROUTES - AI Document Verification System
+// ============================================================================
+// Upload document with AI verification
+const errorHandling_2 = require("../utils/errorHandling");
+// Multer error handler middleware
+const handleMulterError = (err, req, res, next) => {
+    if (err instanceof multer_1.default.MulterError) {
+        return next(err); // Pass to global error handler
+    }
+    if (err) {
+        return next(err); // Pass other errors (like fileFilter errors)
+    }
+    next();
+};
+router.post('/candidate-documents', upload.single('file'), handleMulterError, (0, errorHandling_2.asyncHandler)(documentController_2.uploadCandidateDocumentController));
+// Get candidate document by ID
+router.get('/candidate-documents/:id', documentController_2.getCandidateDocumentController);
+// Get signed URL for download
+router.get('/candidate-documents/:id/download', documentController_2.getCandidateDocumentDownloadUrlController);
+// Delete candidate document
+router.delete('/candidate-documents/:id', documentController_2.deleteCandidateDocumentController);
+// List documents for a candidate (with category filtering)
+router.get('/candidates/:candidateId/documents', documentController_2.listCandidateDocumentsControllerNew);
+// ============================================================================
+// LEGACY ROUTES - Old documents table (kept for backward compatibility)
+// ============================================================================
 // Upload document
 router.post('/', upload.single('file'), documentController_1.uploadDocumentController);
 // Get document metadata

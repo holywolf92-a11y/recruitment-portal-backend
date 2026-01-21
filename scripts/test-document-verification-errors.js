@@ -100,7 +100,7 @@ async function testFileValidation() {
         contentType: 'application/x-msdownload'
       });
       formData.append('candidate_id', candidate.id);
-      formData.append('source', 'Error Test');
+      formData.append('source', 'api');
 
       const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
         method: 'POST',
@@ -126,7 +126,7 @@ async function testFileValidation() {
         contentType: 'application/pdf'
       });
       formData.append('candidate_id', candidate.id);
-      formData.append('source', 'Error Test');
+      formData.append('source', 'api');
 
       const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
         method: 'POST',
@@ -151,7 +151,7 @@ async function testFileValidation() {
         contentType: 'application/pdf'
       });
       formData.append('candidate_id', candidate.id);
-      formData.append('source', 'Error Test');
+      formData.append('source', 'api');
 
       const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
         method: 'POST',
@@ -175,7 +175,7 @@ async function testFileValidation() {
         filename: 'test.pdf',
         contentType: 'application/pdf'
       });
-      formData.append('source', 'Error Test');
+      formData.append('source', 'api');
       // No candidate_id
 
       const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
@@ -219,7 +219,7 @@ async function testAIServiceErrors() {
       contentType: 'application/pdf'
     });
     formData.append('candidate_id', candidate.id);
-    formData.append('source', 'Error Test');
+    formData.append('source', 'api');
 
     const uploadResponse = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',
@@ -285,7 +285,7 @@ async function testIdentityVerificationErrors() {
       contentType: 'text/plain'
     });
     formData1.append('candidate_id', candidate1.id);
-    formData1.append('source', 'Error Test');
+    formData1.append('source', 'api');
 
     const uploadResponse1 = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',
@@ -322,7 +322,7 @@ async function testIdentityVerificationErrors() {
       contentType: 'text/plain'
     });
     formData2.append('candidate_id', candidate2.id);
-    formData2.append('source', 'Error Test');
+    formData2.append('source', 'api');
 
     const uploadResponse2 = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',
@@ -364,7 +364,7 @@ async function testIdentityVerificationErrors() {
       contentType: 'text/plain'
     });
     formData3.append('candidate_id', candidate3.id);
-    formData3.append('source', 'Error Test');
+    formData3.append('source', 'api');
 
     const uploadResponse3 = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',
@@ -406,7 +406,7 @@ async function testDatabaseErrors() {
       contentType: 'application/pdf'
     });
     formData.append('candidate_id', fakeId);
-    formData.append('source', 'Error Test');
+    formData.append('source', 'api');
 
     const response = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
       method: 'POST',
@@ -427,7 +427,7 @@ async function testDatabaseErrors() {
       contentType: 'application/pdf'
     });
     formData2.append('candidate_id', 'not-a-valid-uuid');
-    formData2.append('source', 'Error Test');
+    formData2.append('source', 'api');
 
     const response2 = await fetch(`${BACKEND_URL}/api/candidate-documents`, {
       method: 'POST',
@@ -478,7 +478,7 @@ async function testConcurrentUploads() {
         contentType: 'text/plain'
       });
       formData.append('candidate_id', candidate.id);
-      formData.append('source', 'Stress Test');
+      formData.append('source', 'api');
 
       uploadPromises.push(
         fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
@@ -549,7 +549,7 @@ async function testRateLimiting() {
         contentType: 'text/plain'
       });
       formData.append('candidate_id', candidate.id);
-      formData.append('source', 'Rate Test');
+      formData.append('source', 'api');
 
       uploads.push(
         fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {

@@ -259,6 +259,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         console.error(`[DocumentVerification] Identity matching failed for candidate ${candidateId}:`, matchError);
         finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
         reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+        mismatchFields = ['identity_matching_error'];
         
         await documentVerificationLogService.logIdentityVerificationCompleted(
           requestId,
@@ -266,7 +267,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           candidateId,
           VERIFICATION_STATUS.NEEDS_REVIEW,
           reasonCode,
-          undefined,
+          mismatchFields,
           { notes: `Identity matching error: ${matchError.message}` }
         );
       }
@@ -336,6 +337,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       .from('candidate_documents')
       .update({
         category: finalCategory,
+        confidence: aiResult.confidence, // Ensure confidence is saved
         verification_status: finalStatus as VerificationStatus,
         verification_reason_code: reasonCode,
         mismatch_fields: mismatchFields.length > 0 ? mismatchFields : null,

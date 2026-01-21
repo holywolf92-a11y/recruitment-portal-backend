@@ -99,7 +99,7 @@ async function uploadDocument(candidateId, filePath, fileName) {
     const formData = new FormData();
     formData.append('file', fs.createReadStream(filePath), fileName);
     formData.append('candidate_id', candidateId);
-    formData.append('source', 'Integration Test');
+    formData.append('source', 'api'); // Use 'api' - valid constraint value
 
     const response = await fetch(`${BACKEND_URL}/api/documents/candidate-documents`, {
       method: 'POST',

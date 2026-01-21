@@ -13,7 +13,7 @@ interface MatchCriteria {
 
 interface MatchResult {
   candidateId: string | null;
-  matchedBy: 'cnic' | 'email' | 'phone' | 'name_father' | null;
+  matchedBy: 'cnic' | 'email' | 'phone' | 'name_father' | 'name' | null;
   confidence: number;
   multipleMatches: boolean;
   matchCount: number;
@@ -190,6 +190,48 @@ export class CandidateMatcher {
             matchCount: matches.length,
             needsManualReview: true,
             reviewReasons: [`Multiple candidates (${matches.length}) match name+father: ${criteria.name} / ${criteria.fatherName}`]
+          };
+        }
+      }
+    }
+
+    // Priority 5: Name-only matching (fallback when CNIC/email/phone not available)
+    if (criteria.name && !criteria.cnic && !criteria.email && !criteria.phone) {
+      const normalizedName = this.normalizeName(criteria.name);
+      
+      const { data, error } = await db
+        .from('candidates')
+        .select('id, name')
+        .not('name', 'is', null);
+
+      if (!error && data && data.length > 0) {
+        const matches = data.filter(c => {
+          const candidateName = this.normalizeName(c.name || '');
+          const similarity = this.calculateSimilarity(normalizedName, candidateName);
+          // Use high similarity threshold for name-only matching (0.90)
+          return similarity >= 0.90;
+        });
+
+        if (matches.length === 1) {
+          logger.info(`Matched candidate by name only: ${criteria.name}`);
+          return {
+            candidateId: matches[0].id,
+            matchedBy: 'name',
+            confidence: 0.80,
+            multipleMatches: false,
+            matchCount: 1,
+            needsManualReview: false
+          };
+        } else if (matches.length > 1) {
+          logger.warn(`Multiple candidates found for name: ${criteria.name}`);
+          return {
+            candidateId: null,
+            matchedBy: null,
+            confidence: 0,
+            multipleMatches: true,
+            matchCount: matches.length,
+            needsManualReview: true,
+            reviewReasons: [`Multiple candidates (${matches.length}) match name: ${criteria.name}`]
           };
         }
       }

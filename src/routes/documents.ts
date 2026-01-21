@@ -71,7 +71,7 @@ const handleMulterError = (err: any, req: any, res: any, next: any) => {
 
 // Upload endpoint with extended timeout for large files
 router.post('/candidate-documents', 
-  (req, res, next) => {
+  (req: Request, res: Response, next: any) => {
     // Set timeout to 5 minutes for this specific route
     req.setTimeout(300000, () => {
       if (!res.headersSent) {

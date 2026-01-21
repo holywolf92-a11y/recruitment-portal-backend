@@ -73,20 +73,26 @@ async function uploadCandidateDocument(data) {
             await logService.logError(requestId, errMsg, undefined, undefined, data.candidate_id);
             throw new errorHandling_1.AppError(errMsg, errorHandling_1.ErrorType.VALIDATION, 400);
         }
-        // Generate unique request ID for tracing
-        console.log(`[UploadDocument] Starting upload for candidate ${data.candidate_id}, request_id: ${requestId}`);
-        // Log upload started
-        await logService.logUploadStarted(requestId, data.candidate_id, data.file_name, data.mime_type, data.buffer.length, data.uploaded_by_user_id);
-        // Verify candidate exists
+        // Validate candidate_id format first (before any logging)
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(data.candidate_id) || data.candidate_id === '00000000-0000-0000-0000-000000000000') {
+            const errMsg = 'Invalid candidate_id format';
+            throw new errorHandling_1.AppError(errMsg, errorHandling_1.ErrorType.VALIDATION, 400);
+        }
+        // Verify candidate exists BEFORE logging (to avoid foreign key violations)
         const { data: candidate, error: candidateError } = await db
             .from('candidates')
             .select('id')
             .eq('id', data.candidate_id)
             .single();
         if (candidateError || !candidate) {
-            await logService.logError(requestId, 'Candidate not found', undefined, undefined, data.candidate_id);
-            throw new Error('Candidate not found');
+            const errMsg = `Candidate not found: ${data.candidate_id}`;
+            throw new errorHandling_1.AppError(errMsg, errorHandling_1.ErrorType.VALIDATION, 404);
         }
+        // Generate unique request ID for tracing
+        console.log(`[UploadDocument] Starting upload for candidate ${data.candidate_id}, request_id: ${requestId}`);
+        // Log upload started (now safe because candidate exists)
+        await logService.logUploadStarted(requestId, data.candidate_id, data.file_name, data.mime_type, data.buffer.length, data.uploaded_by_user_id);
         // Generate storage path
         const storagePath = generateStoragePath(data.candidate_id, data.file_name);
         // Upload to Supabase Storage (private bucket)

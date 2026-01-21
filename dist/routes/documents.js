@@ -54,7 +54,16 @@ const handleMulterError = (err, req, res, next) => {
     }
     next();
 };
-router.post('/candidate-documents', upload.single('file'), handleMulterError, (0, errorHandling_2.asyncHandler)(documentController_2.uploadCandidateDocumentController));
+// Upload endpoint with extended timeout for large files
+router.post('/candidate-documents', (req, res, next) => {
+    // Set timeout to 5 minutes for this specific route
+    req.setTimeout(300000, () => {
+        if (!res.headersSent) {
+            res.status(408).json({ error: 'Upload timeout. Please try again with a smaller file.' });
+        }
+    });
+    next();
+}, upload.single('file'), handleMulterError, (0, errorHandling_2.asyncHandler)(documentController_2.uploadCandidateDocumentController));
 // Get candidate document by ID
 router.get('/candidate-documents/:id', documentController_2.getCandidateDocumentController);
 // Get signed URL for download

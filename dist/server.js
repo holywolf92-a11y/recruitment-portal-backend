@@ -28,6 +28,16 @@ try {
     const PORT = parseInt(process.env.PORT || '1000', 10);
     app.use((0, helmet_1.default)());
     app.use((0, cors_1.default)());
+    // Increase request timeout for file uploads (5 minutes)
+    app.use((req, res, next) => {
+        // Set timeout to 5 minutes for file uploads
+        req.setTimeout(300000, () => {
+            if (!res.headersSent) {
+                res.status(408).json({ error: 'Request timeout' });
+            }
+        });
+        next();
+    });
     // Increase body size limits for file uploads (base64-encoded PDFs, etc.)
     // Skip body parsing for multipart/form-data (handled by multer)
     app.use((req, res, next) => {

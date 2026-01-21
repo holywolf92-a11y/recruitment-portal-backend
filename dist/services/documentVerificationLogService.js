@@ -223,15 +223,29 @@ class DocumentVerificationLogService {
      * Get logs by document ID
      */
     async getLogsByDocumentId(documentId) {
-        const { data, error } = await this.db
+        // First, get one log with document_id to find the request_id
+        // This includes upload_started which is logged before document_id exists
+        const { data: docLog, error: docLogError } = await this.db
+            .from('document_verification_logs')
+            .select('request_id')
+            .eq('document_id', documentId)
+            .limit(1)
+            .single();
+        if (docLogError || !docLog) {
+            // If no logs found with document_id, return empty array
+            return [];
+        }
+        const requestId = docLog.request_id;
+        // Get all logs with this request_id (includes upload_started which has no document_id)
+        const { data: allLogs, error: allLogsError } = await this.db
             .from('document_verification_logs')
             .select('*')
-            .eq('document_id', documentId)
+            .eq('request_id', requestId)
             .order('created_at', { ascending: true });
-        if (error) {
-            throw new Error(`Failed to fetch logs: ${error.message}`);
+        if (allLogsError) {
+            throw new Error(`Failed to fetch logs: ${allLogsError.message}`);
         }
-        return data || [];
+        return allLogs || [];
     }
     /**
      * Get logs by candidate ID

@@ -178,6 +178,79 @@ export async function updateExtractionController(req: Request, res: Response) {
   }
 }
 
+/**
+ * Update candidate document flags based on actual documents
+ * POST /api/candidates/:id/update-document-flags
+ */
+export async function updateDocumentFlagsController(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const db = supabaseAdminClient();
+
+    // Get all verified documents for this candidate
+    const { data: documents, error: docsError } = await db
+      .from('candidate_documents')
+      .select('category, verification_status')
+      .eq('candidate_id', id)
+      .in('verification_status', ['verified', 'needs_review']);
+
+    if (docsError) {
+      return res.status(500).json({ error: `Failed to fetch documents: ${docsError.message}` });
+    }
+
+    // Determine which flags to set
+    const updateFlags: any = {};
+    const now = new Date().toISOString();
+
+    for (const doc of documents || []) {
+      const category = (doc.category || '').toLowerCase();
+
+      if (category === 'cv_resume' || category === 'cv') {
+        updateFlags.cv_received = true;
+        updateFlags.cv_received_at = now;
+      } else if (category === 'passport') {
+        updateFlags.passport_received = true;
+        updateFlags.passport_received_at = now;
+      } else if (category === 'certificates' || category === 'certificate') {
+        updateFlags.certificate_received = true;
+        updateFlags.certificate_received_at = now;
+      } else if (category === 'photos' || category === 'photo') {
+        updateFlags.photo_received = true;
+        updateFlags.photo_received_at = now;
+      } else if (category === 'medical_reports' || category === 'medical') {
+        updateFlags.medical_received = true;
+        updateFlags.medical_received_at = now;
+      }
+    }
+
+    if (Object.keys(updateFlags).length > 0) {
+      const { error: updateError } = await db
+        .from('candidates')
+        .update(updateFlags)
+        .eq('id', id);
+
+      if (updateError) {
+        return res.status(500).json({ error: `Failed to update flags: ${updateError.message}` });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Document flags updated',
+        flags: Object.keys(updateFlags).filter(k => k.endsWith('_received')),
+      });
+    } else {
+      return res.json({
+        success: true,
+        message: 'No documents found to update flags',
+        flags: [],
+      });
+    }
+  } catch (error: any) {
+    console.error('Error updating document flags:', error);
+    res.status(500).json({ error: error.message || 'Failed to update document flags' });
+  }
+}
+
 export async function getExtractionHistoryController(req: Request, res: Response) {
   try {
     const userId = 'test-user-id';

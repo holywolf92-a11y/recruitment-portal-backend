@@ -47,4 +47,6 @@ router.delete('/:id', candidateController_1.deleteCandidateController);
 router.post('/:id/extract', candidateController_1.extractCandidateDataController);
 router.put('/:id/extraction', candidateController_1.updateExtractionController);
 router.get('/:id/extraction-history', candidateController_1.getExtractionHistoryController);
+// Update document flags based on actual documents
+router.post('/:id/update-document-flags', candidateController_1.updateDocumentFlagsController);
 exports.default = router;

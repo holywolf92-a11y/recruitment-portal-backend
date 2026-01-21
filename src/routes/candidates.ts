@@ -13,7 +13,8 @@ import {
   updateExtractionController,
   getExtractionHistoryController,
   getCandidateCVDownloadController,
-  uploadCandidatePhotoController
+  uploadCandidatePhotoController,
+  updateDocumentFlagsController
 } from '../controllers/candidateController';
 
 const router = Router();
@@ -65,5 +66,8 @@ router.delete('/:id', deleteCandidateController);
 router.post('/:id/extract', extractCandidateDataController);
 router.put('/:id/extraction', updateExtractionController);
 router.get('/:id/extraction-history', getExtractionHistoryController);
+
+// Update document flags based on actual documents
+router.post('/:id/update-document-flags', updateDocumentFlagsController);
 
 export default router;

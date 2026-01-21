@@ -188,13 +188,12 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
     const { id } = req.params;
     const db = supabaseAdminClient();
 
-    // Get ALL documents for this candidate (including pending_ai, verified, needs_review)
-    // This ensures we catch documents that are still being processed
+    // Get ALL documents for this candidate (including all statuses)
+    // This ensures we catch documents regardless of verification status
     const { data: documents, error: docsError } = await db
       .from('candidate_documents')
       .select('category, verification_status, file_name')
-      .eq('candidate_id', id)
-      .in('verification_status', ['pending_ai', 'verified', 'needs_review']);
+      .eq('candidate_id', id);
 
     if (docsError) {
       return res.status(500).json({ error: `Failed to fetch documents: ${docsError.message}` });

@@ -50,7 +50,7 @@ export class IdentityMatchingService {
       const db = supabaseAdminClient();
       const { data: candidate, error } = await db
         .from('candidates')
-        .select('id, name, father_name, cnic, cnic_normalized, passport, passport_normalized, email, phone, phone_normalized')
+        .select('id, name, father_name, cnic_normalized, passport_normalized, email, phone, phone_normalized')
         .eq('id', candidateId)
         .maybeSingle(); // Use maybeSingle() instead of single() to handle missing records gracefully
 
@@ -85,18 +85,16 @@ export class IdentityMatchingService {
             reason_code: VERIFICATION_REASON_CODES.VERIFIED,
             candidate_fields: {
               name: candidate.name,
-              cnic: candidate.cnic,
-              passport_no: candidate.passport,
               email: candidate.email,
               phone: candidate.phone,
             },
           };
         } else if (candidate.cnic_normalized && extractedCnic !== candidate.cnic_normalized) {
           // CNIC exists but doesn't match - Check if it belongs to someone else
-          const { data: otherCandidate } = await db
-            .from('candidates')
-            .select('id, name, cnic')
-            .eq('cnic_normalized', extractedCnic)
+        const { data: otherCandidate } = await db
+          .from('candidates')
+          .select('id, name')
+          .eq('cnic_normalized', extractedCnic)
             .neq('id', candidateId)
             .maybeSingle();
 
@@ -111,7 +109,6 @@ export class IdentityMatchingService {
               mismatch_fields: mismatchFields,
               candidate_fields: {
                 name: candidate.name,
-                cnic: candidate.cnic,
               },
               notes: `CNIC belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
             };
@@ -134,7 +131,6 @@ export class IdentityMatchingService {
             reason_code: VERIFICATION_REASON_CODES.VERIFIED,
             candidate_fields: {
               name: candidate.name,
-              passport_no: candidate.passport,
               email: candidate.email,
               phone: candidate.phone,
             },
@@ -143,7 +139,7 @@ export class IdentityMatchingService {
           // Passport exists but doesn't match - Check if it belongs to someone else
           const { data: otherCandidate } = await db
             .from('candidates')
-            .select('id, name, passport')
+            .select('id, name')
             .eq('passport_normalized', extractedPassport)
             .neq('id', candidateId)
             .maybeSingle();
@@ -159,7 +155,6 @@ export class IdentityMatchingService {
               mismatch_fields: mismatchFields,
               candidate_fields: {
                 name: candidate.name,
-                passport_no: candidate.passport,
               },
               notes: `Passport belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
             };
@@ -237,8 +232,6 @@ export class IdentityMatchingService {
           mismatch_fields: mismatchFields,
           candidate_fields: {
             name: candidate.name,
-            cnic: candidate.cnic,
-            passport_no: candidate.passport,
             email: candidate.email,
             phone: candidate.phone,
           },
@@ -338,7 +331,7 @@ export class IdentityMatchingService {
       if (normalizedCnic) {
         let query = db
           .from('candidates')
-          .select('id, name, cnic')
+          .select('id, name')
           .eq('cnic_normalized', normalizedCnic);
 
         if (excludeCandidateId) {
@@ -364,7 +357,7 @@ export class IdentityMatchingService {
       if (normalizedPassport) {
         let query = db
           .from('candidates')
-          .select('id, name, passport')
+          .select('id, name')
           .eq('passport_normalized', normalizedPassport);
 
         if (excludeCandidateId) {

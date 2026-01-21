@@ -357,14 +357,14 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
   } catch (error: any) {
     console.error(`[DocumentVerification] Error processing document ${documentId}:`, error);
 
-    // Log error
+    // Log error (parameters: requestId, errorMessage, errorStack?, documentId?, candidateId?, metadata?)
     await documentVerificationLogService.logError(
       requestId,
+      error.message || 'Unknown error',
+      error.stack,
       documentId,
       candidateId,
-      'document_verification_failed',
-      error.message,
-      error.stack
+      { error_type: 'document_verification_failed' }
     );
 
     // Update document with failed status

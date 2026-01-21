@@ -31,8 +31,20 @@ export async function uploadCandidateDocumentController(req: Request, res: Respo
 
   const { candidate_id, source } = req.body;
 
+  // Validate candidate_id is provided
   if (!candidate_id) {
     throw new Error('candidate_id is required');
+  }
+
+  // Validate candidate_id is a valid UUID format (not null UUID)
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(candidate_id)) {
+    throw new Error('candidate_id must be a valid UUID');
+  }
+
+  // Reject null UUID
+  if (candidate_id === '00000000-0000-0000-0000-000000000000') {
+    throw new Error('candidate_id cannot be null UUID');
   }
 
   const uploadData: UploadCandidateDocumentData = {

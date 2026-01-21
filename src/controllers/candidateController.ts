@@ -200,10 +200,23 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
     }
 
     // Check inbox_attachments for CVs (when candidate was created from CV inbox)
+    // Check both candidate_id and linked_candidate_id fields
+    // Also check attachment_kind and document_type for CV identification (matching CV download logic)
     const { data: inboxAttachments, error: inboxError } = await db
       .from('inbox_attachments')
-      .select('attachment_type, file_name, candidate_id, linked_candidate_id')
+      .select('attachment_type, attachment_kind, document_type, file_name, candidate_id, linked_candidate_id')
       .or(`candidate_id.eq.${id},linked_candidate_id.eq.${id}`);
+
+    // Log inbox attachments found for debugging
+    if (inboxAttachments && inboxAttachments.length > 0) {
+      console.log(`[UpdateDocumentFlags] Found ${inboxAttachments.length} inbox attachments for candidate ${id}:`, 
+        inboxAttachments.map(a => ({ 
+          type: a.attachment_type, 
+          kind: a.attachment_kind, 
+          doc_type: a.document_type,
+          file: a.file_name 
+        })));
+    }
 
     // Also check the old documents table for CVs (legacy support)
     const { data: oldDocuments, error: oldDocsError } = await db
@@ -214,14 +227,30 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
 
     // Combine all document sources
     const allDocs = [
-      ...(documents || []).map(d => ({ category: d.category, type: null, file_name: d.file_name, source: 'candidate_documents' })),
+      ...(documents || []).map(d => ({ 
+        category: d.category, 
+        type: null, 
+        attachment_kind: null,
+        document_type: null,
+        file_name: d.file_name, 
+        source: 'candidate_documents' 
+      })),
       ...(inboxAttachments || []).map(d => ({ 
         category: null, 
         type: d.attachment_type, 
+        attachment_kind: d.attachment_kind,
+        document_type: d.document_type,
         file_name: d.file_name,
         source: 'inbox_attachments'
       })),
-      ...(oldDocuments || []).map(d => ({ category: null, type: d.doc_type, file_name: d.file_name, source: 'documents' }))
+      ...(oldDocuments || []).map(d => ({ 
+        category: null, 
+        type: d.doc_type, 
+        attachment_kind: null,
+        document_type: null,
+        file_name: d.file_name, 
+        source: 'documents' 
+      }))
     ];
 
     // Determine which flags to set based on actual documents
@@ -234,6 +263,8 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
     for (const doc of allDocs) {
       const category = (doc.category || '').toLowerCase();
       const docType = (doc.type || '').toLowerCase();
+      const attachmentKind = (doc.attachment_kind || '').toLowerCase();
+      const documentType = (doc.document_type || '').toLowerCase();
       const fileName = (doc.file_name || '').toLowerCase();
 
       // Check category first (new system - candidate_documents)
@@ -242,11 +273,23 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
         updateFlags.cv_received_at = now;
         foundCategories.push('CV (from candidate_documents category)');
       } 
-      // Check attachment_type from inbox_attachments (CVs from inbox)
+      // Check attachment_kind from inbox_attachments (CVs from inbox) - this is the key field!
+      else if (attachmentKind === 'cv') {
+        updateFlags.cv_received = true;
+        updateFlags.cv_received_at = now;
+        foundCategories.push('CV (from inbox_attachments.attachment_kind)');
+      }
+      // Check attachment_type from inbox_attachments
       else if (docType === 'cv' || docType === 'CV') {
         updateFlags.cv_received = true;
         updateFlags.cv_received_at = now;
-        foundCategories.push('CV (from inbox_attachments)');
+        foundCategories.push('CV (from inbox_attachments.attachment_type)');
+      }
+      // Check document_type from inbox_attachments
+      else if (documentType === 'cv') {
+        updateFlags.cv_received = true;
+        updateFlags.cv_received_at = now;
+        foundCategories.push('CV (from inbox_attachments.document_type)');
       }
       // Check doc_type (old documents table)
       else if (docType && (docType.includes('resume') || docType.includes('cv'))) {

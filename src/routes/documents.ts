@@ -69,7 +69,17 @@ const handleMulterError = (err: any, req: any, res: any, next: any) => {
   next();
 };
 
+// Upload endpoint with extended timeout for large files
 router.post('/candidate-documents', 
+  (req, res, next) => {
+    // Set timeout to 5 minutes for this specific route
+    req.setTimeout(300000, () => {
+      if (!res.headersSent) {
+        res.status(408).json({ error: 'Upload timeout. Please try again with a smaller file.' });
+      }
+    });
+    next();
+  },
   upload.single('file'),
   handleMulterError,
   asyncHandler(uploadCandidateDocumentController)

@@ -28,6 +28,18 @@ try {
 
   app.use(helmet());
   app.use(cors());
+  
+  // Increase request timeout for file uploads (5 minutes)
+  app.use((req, res, next) => {
+    // Set timeout to 5 minutes for file uploads
+    req.setTimeout(300000, () => {
+      if (!res.headersSent) {
+        res.status(408).json({ error: 'Request timeout' });
+      }
+    });
+    next();
+  });
+  
   // Increase body size limits for file uploads (base64-encoded PDFs, etc.)
   // Skip body parsing for multipart/form-data (handled by multer)
   app.use((req, res, next) => {

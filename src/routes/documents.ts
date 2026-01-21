@@ -56,7 +56,8 @@ const upload = multer({
 // ============================================================================
 
 // Upload document with AI verification
-router.post('/candidate-documents', upload.single('file'), uploadCandidateDocumentController);
+import { asyncHandler } from '../utils/errorHandling';
+router.post('/candidate-documents', upload.single('file'), asyncHandler(uploadCandidateDocumentController));
 
 // Get candidate document by ID
 router.get('/candidate-documents/:id', getCandidateDocumentController);

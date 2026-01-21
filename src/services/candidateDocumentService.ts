@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { VERIFICATION_STATUS, DocumentCategory } from '../config/documentCategories';
 import { DocumentVerificationLogService, generateRequestId } from './documentVerificationLogService';
 import { documentVerificationQueue } from '../config/queue';
+import { AppError } from '../utils/errorHandling';
 
 export interface CandidateDocument {
   id: string;
@@ -66,7 +67,40 @@ export async function uploadCandidateDocument(
   const logService = new DocumentVerificationLogService();
   const requestId = generateRequestId();
 
+
   try {
+    // File validation
+    const allowedTypes = [
+      'application/pdf',
+      'image/jpeg',
+      'image/png',
+      'image/jpg',
+      'text/plain',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ];
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (!data.file_name || !data.mime_type || !data.buffer) {
+      const errMsg = 'Missing file_name, mime_type, or buffer';
+      await logService.logError(requestId, errMsg, undefined, undefined, data.candidate_id);
+      throw new AppError(errMsg, 'VALIDATION_ERROR', 400);
+    }
+    if (data.buffer.length === 0) {
+      const errMsg = 'File is empty';
+      await logService.logError(requestId, errMsg, undefined, undefined, data.candidate_id);
+      throw new AppError(errMsg, 'VALIDATION_ERROR', 400);
+    }
+    if (data.buffer.length > maxSize) {
+      const errMsg = 'File exceeds 10MB size limit';
+      await logService.logError(requestId, errMsg, undefined, undefined, data.candidate_id);
+      throw new AppError(errMsg, 'VALIDATION_ERROR', 400);
+    }
+    if (!allowedTypes.includes(data.mime_type)) {
+      const errMsg = `Unsupported file type: ${data.mime_type}`;
+      await logService.logError(requestId, errMsg, undefined, undefined, data.candidate_id);
+      throw new AppError(errMsg, 'VALIDATION_ERROR', 400);
+    }
+
     // Generate unique request ID for tracing
     console.log(`[UploadDocument] Starting upload for candidate ${data.candidate_id}, request_id: ${requestId}`);
 
@@ -209,7 +243,6 @@ export async function uploadCandidateDocument(
     };
   } catch (error: any) {
     console.error('[UploadDocument] Upload failed:', error);
-    
     // Log error if not already logged
     try {
       await logService.logError(
@@ -222,7 +255,6 @@ export async function uploadCandidateDocument(
     } catch (logError) {
       console.error('[UploadDocument] Failed to log error:', logError);
     }
-    
     throw error;
   }
 }

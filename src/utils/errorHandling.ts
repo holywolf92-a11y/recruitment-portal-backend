@@ -132,7 +132,16 @@ export function errorHandler(err: any, req: any, res: any, next: any) {
     });
   }
 
-  // Send response
+  // Handle thrown errors with statusCode (from upload validation, etc.)
+  if (err.statusCode && typeof err.statusCode === 'number') {
+    return res.status(err.statusCode).json({
+      error: err.message || 'Request failed',
+      type: err.type || 'VALIDATION_ERROR',
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  // Send response for AppError
   if (err instanceof AppError) {
     return res.status(err.statusCode).json({
       error: err.message,

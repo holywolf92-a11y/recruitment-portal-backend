@@ -22,51 +22,44 @@ import { DOCUMENT_CATEGORY_DISPLAY_NAMES } from '../config/documentCategories';
  * POST /api/candidate-documents
  */
 export async function uploadCandidateDocumentController(req: Request, res: Response) {
-  try {
-    const userId = (req as any).user?.id || 'system'; // Get from auth middleware if available
+  const userId = (req as any).user?.id || 'system'; // Get from auth middleware if available
 
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    const { candidate_id, source } = req.body;
-
-    if (!candidate_id) {
-      return res.status(400).json({ error: 'candidate_id is required' });
-    }
-
-    const uploadData: UploadCandidateDocumentData = {
-      candidate_id,
-      file_name: req.file.originalname,
-      mime_type: req.file.mimetype,
-      buffer: req.file.buffer,
-      source: source || 'web',
-      uploaded_by_user_id: userId,
-    };
-
-    const { document, request_id } = await uploadCandidateDocument(uploadData);
-
-    res.status(201).json({
-      success: true,
-      document: {
-        id: document.id,
-        candidate_id: document.candidate_id,
-        file_name: document.file_name,
-        mime_type: document.mime_type,
-        verification_status: document.verification_status,
-        category: document.category,
-        created_at: document.created_at,
-      },
-      request_id,
-      message: 'Document uploaded successfully. AI verification in progress.',
-    });
-  } catch (error: any) {
-    console.error('Error uploading candidate document:', error);
-    res.status(400).json({
-      success: false,
-      error: error.message || 'Failed to upload document',
-    });
+  if (!req.file) {
+    // Let this error propagate to global error handler
+    throw new Error('No file uploaded');
   }
+
+  const { candidate_id, source } = req.body;
+
+  if (!candidate_id) {
+    throw new Error('candidate_id is required');
+  }
+
+  const uploadData: UploadCandidateDocumentData = {
+    candidate_id,
+    file_name: req.file.originalname,
+    mime_type: req.file.mimetype,
+    buffer: req.file.buffer,
+    source: source || 'web',
+    uploaded_by_user_id: userId,
+  };
+
+  const { document, request_id } = await uploadCandidateDocument(uploadData);
+
+  res.status(201).json({
+    success: true,
+    document: {
+      id: document.id,
+      candidate_id: document.candidate_id,
+      file_name: document.file_name,
+      mime_type: document.mime_type,
+      verification_status: document.verification_status,
+      category: document.category,
+      created_at: document.created_at,
+    },
+    request_id,
+    message: 'Document uploaded successfully. AI verification in progress.',
+  });
 }
 
 /**

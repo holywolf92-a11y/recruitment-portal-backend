@@ -144,20 +144,9 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     }
 
     // Convert file to base64 for AI service
-    // Ensure we get binary data, not text
-    let buffer: Buffer;
-    
-    if (fileData instanceof Blob) {
-      const arrayBuffer = await fileData.arrayBuffer();
-      buffer = Buffer.from(arrayBuffer);
-    } else if (fileData instanceof ArrayBuffer) {
-      buffer = Buffer.from(fileData);
-    } else if (Buffer.isBuffer(fileData)) {
-      buffer = fileData;
-    } else {
-      // Fallback: try to convert to buffer
-      buffer = Buffer.from(fileData as any);
-    }
+    // Supabase storage.download() returns a Blob, so we need to convert it to ArrayBuffer first
+    const arrayBuffer = await (fileData as Blob).arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
     
     // Validate file is not empty
     if (buffer.length === 0) {

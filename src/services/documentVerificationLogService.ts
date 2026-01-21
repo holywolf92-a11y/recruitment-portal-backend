@@ -318,17 +318,34 @@ export class DocumentVerificationLogService {
    * Get logs by document ID
    */
   async getLogsByDocumentId(documentId: string): Promise<DocumentVerificationLog[]> {
-    const { data, error } = await this.db
+    // First, get one log with document_id to find the request_id
+    // This includes upload_started which is logged before document_id exists
+    const { data: docLog, error: docLogError } = await this.db
       .from('document_verification_logs')
-      .select('*')
+      .select('request_id')
       .eq('document_id', documentId)
-      .order('created_at', { ascending: true });
+      .limit(1)
+      .single();
 
-    if (error) {
-      throw new Error(`Failed to fetch logs: ${error.message}`);
+    if (docLogError || !docLog) {
+      // If no logs found with document_id, return empty array
+      return [];
     }
 
-    return data || [];
+    const requestId = docLog.request_id;
+
+    // Get all logs with this request_id (includes upload_started which has no document_id)
+    const { data: allLogs, error: allLogsError } = await this.db
+      .from('document_verification_logs')
+      .select('*')
+      .eq('request_id', requestId)
+      .order('created_at', { ascending: true });
+
+    if (allLogsError) {
+      throw new Error(`Failed to fetch logs: ${allLogsError.message}`);
+    }
+
+    return allLogs || [];
   }
 
   /**

@@ -146,7 +146,21 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     // Convert file to base64 for AI service
     const arrayBuffer = await fileData.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    
+    // Validate file is not empty
+    if (buffer.length === 0) {
+      throw new Error('Downloaded file is empty');
+    }
+    
+    // Log file size for debugging
+    console.log(`[DocumentVerification] File size: ${buffer.length} bytes, fileName: ${fileName}`);
+    
     const base64Content = buffer.toString('base64');
+    
+    // Validate base64 encoding
+    if (!base64Content || base64Content.length < 4) {
+      throw new Error(`Invalid base64 content: length=${base64Content?.length || 0}`);
+    }
 
     // =============================================================================
     // STEP 3: Call AI categorization service

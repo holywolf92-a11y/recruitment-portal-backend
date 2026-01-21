@@ -65,12 +65,22 @@ async function callAICategorizationService(
   mimeType: string
 ): Promise<AICategorizationResponse> {
   try {
+    // Log what we're about to send
+    console.log(`[AI Categorization] Preparing request - fileName: ${fileName}, mimeType: ${mimeType}`);
+    console.log(`[AI Categorization] Base64 content length: ${fileContent.length}, first 50 chars: ${fileContent.substring(0, 50)}`);
+    
     const requestBody = JSON.stringify({
       file_content: fileContent,
       file_name: fileName,
       mime_type: mimeType,
       operation: 'categorize_document', // New operation for document categorization
     });
+    
+    // Verify JSON stringify didn't corrupt the base64
+    const parsed = JSON.parse(requestBody);
+    if (parsed.file_content !== fileContent) {
+      console.error(`[AI Categorization] ERROR: JSON.stringify corrupted base64! Original length: ${fileContent.length}, Parsed length: ${parsed.file_content.length}`);
+    }
 
     const signature = signHmac(requestBody);
 
@@ -145,6 +155,8 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
 
     // Convert file to base64 for AI service
     // Supabase storage.download() returns a Blob, so we need to convert it to ArrayBuffer first
+    console.log(`[DocumentVerification] FileData type: ${typeof fileData}, is Blob: ${fileData instanceof Blob}`);
+    
     const arrayBuffer = await (fileData as Blob).arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
     
@@ -156,6 +168,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     // Log file size and raw content preview for debugging
     console.log(`[DocumentVerification] File size: ${buffer.length} bytes, fileName: ${fileName}`);
     console.log(`[DocumentVerification] Raw content preview (first 50 bytes as hex): ${buffer.toString('hex').substring(0, 100)}`);
+    console.log(`[DocumentVerification] Raw content preview (first 50 bytes as text): ${buffer.toString('utf8', 0, Math.min(50, buffer.length))}`);
     
     const base64Content = buffer.toString('base64');
     
@@ -167,6 +180,12 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     // Log base64 preview for debugging (first 50 chars)
     console.log(`[DocumentVerification] Base64 preview (first 50 chars): ${base64Content.substring(0, 50)}`);
     console.log(`[DocumentVerification] Base64 length: ${base64Content.length}`);
+    
+    // Verify base64 is valid (only base64 chars)
+    const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+    if (!base64Regex.test(base64Content)) {
+      console.error(`[DocumentVerification] WARNING: Base64 contains invalid characters! First 100 chars: ${base64Content.substring(0, 100)}`);
+    }
 
     // =============================================================================
     // STEP 3: Call AI categorization service

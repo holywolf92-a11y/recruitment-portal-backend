@@ -70,6 +70,8 @@ router.get('/candidate-documents/:id', documentController_2.getCandidateDocument
 router.get('/candidate-documents/:id/download', documentController_2.getCandidateDocumentDownloadUrlController);
 // Delete candidate document
 router.delete('/candidate-documents/:id', documentController_2.deleteCandidateDocumentController);
+// Reprocess document verification (re-run AI verification with updated logic)
+router.post('/candidate-documents/:id/reprocess', documentController_2.reprocessCandidateDocumentController);
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', documentController_2.listCandidateDocumentsControllerNew);
 // ============================================================================

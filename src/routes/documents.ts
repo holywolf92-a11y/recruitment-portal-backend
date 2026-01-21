@@ -15,7 +15,8 @@ import {
   getCandidateDocumentController,
   listCandidateDocumentsControllerNew,
   getCandidateDocumentDownloadUrlController,
-  deleteCandidateDocumentController
+  deleteCandidateDocumentController,
+  reprocessCandidateDocumentController
 } from '../controllers/documentController';
 
 const logger = createLogger('DocumentsRouter');
@@ -93,6 +94,9 @@ router.get('/candidate-documents/:id/download', getCandidateDocumentDownloadUrlC
 
 // Delete candidate document
 router.delete('/candidate-documents/:id', deleteCandidateDocumentController);
+
+// Reprocess document verification (re-run AI verification with updated logic)
+router.post('/candidate-documents/:id/reprocess', reprocessCandidateDocumentController);
 
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', listCandidateDocumentsControllerNew);

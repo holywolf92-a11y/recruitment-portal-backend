@@ -13,8 +13,10 @@ import {
   listCandidateDocumentsByCandidate,
   getCandidateDocumentSignedUrl,
   deleteCandidateDocument,
+  reprocessDocumentVerification,
   UploadCandidateDocumentData
 } from '../services/candidateDocumentService';
+import { asyncHandler } from '../utils/errorHandling';
 import { DOCUMENT_CATEGORY_DISPLAY_NAMES } from '../config/documentCategories';
 
 /**
@@ -182,6 +184,31 @@ export async function deleteCandidateDocumentController(req: Request, res: Respo
   } catch (error: any) {
     console.error('Error deleting candidate document:', error);
     res.status(500).json({ error: error.message || 'Failed to delete document' });
+  }
+}
+
+/**
+ * Reprocess document verification (re-run AI verification)
+ * POST /api/candidate-documents/:id/reprocess
+ */
+export async function reprocessCandidateDocumentController(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ error: 'Document ID is required' });
+    }
+
+    const result = await reprocessDocumentVerification(id);
+
+    res.json({
+      success: true,
+      message: 'Document verification reprocessing initiated',
+      request_id: result.request_id,
+    });
+  } catch (error: any) {
+    console.error('Error reprocessing candidate document:', error);
+    res.status(500).json({ error: error.message || 'Failed to reprocess document' });
   }
 }
 

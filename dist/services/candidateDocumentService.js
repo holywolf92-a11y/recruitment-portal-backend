@@ -9,6 +9,7 @@ exports.listCandidateDocumentsByCandidate = listCandidateDocumentsByCandidate;
 exports.getCandidateDocumentSignedUrl = getCandidateDocumentSignedUrl;
 exports.deleteCandidateDocument = deleteCandidateDocument;
 exports.updateDocumentVerification = updateDocumentVerification;
+exports.reprocessDocumentVerification = reprocessDocumentVerification;
 const database_1 = require("../config/database");
 const crypto_1 = __importDefault(require("crypto"));
 const documentCategories_1 = require("../config/documentCategories");
@@ -275,4 +276,67 @@ async function updateDocumentVerification(documentId, updates) {
         throw new Error(`Failed to update document: ${error.message}`);
     }
     return data;
+}
+/**
+ * Reprocess document verification - re-enqueue AI verification job
+ * This is useful when matching logic is updated and we want to re-process existing documents
+ */
+async function reprocessDocumentVerification(documentId) {
+    const db = (0, database_1.supabaseAdminClient)();
+    const logService = new documentVerificationLogService_1.DocumentVerificationLogService();
+    const requestId = (0, documentVerificationLogService_1.generateRequestId)();
+    try {
+        // Get document details
+        const { data: document, error: docError } = await db
+            .from('candidate_documents')
+            .select('id, candidate_id, storage_path, file_name, mime_type, storage_bucket')
+            .eq('id', documentId)
+            .single();
+        if (docError || !document) {
+            throw new errorHandling_1.AppError('Document not found', errorHandling_1.ErrorType.NOT_FOUND, 404);
+        }
+        // Reset document status to pending_ai
+        await db
+            .from('candidate_documents')
+            .update({
+            verification_status: documentCategories_1.VERIFICATION_STATUS.PENDING_AI,
+            verification_reason_code: null,
+            mismatch_fields: null,
+            ai_processing_started_at: null,
+            ai_processing_completed_at: null,
+            verification_completed_at: null,
+            updated_at: new Date().toISOString(),
+        })
+            .eq('id', documentId);
+        // Enqueue AI processing job
+        const jobData = {
+            requestId,
+            documentId: document.id,
+            candidateId: document.candidate_id,
+            storageBucket: document.storage_bucket || STORAGE_BUCKET,
+            storagePath: document.storage_path,
+            fileName: document.file_name,
+            mimeType: document.mime_type || 'application/pdf',
+        };
+        await queue_1.documentVerificationQueue.add('verify-document', jobData, {
+            attempts: 3,
+            backoff: {
+                type: 'exponential',
+                delay: 2000,
+            },
+        });
+        console.log(`[ReprocessDocument] Re-enqueued AI verification job for document ${documentId}`);
+        // Log reprocess event (using logUploadStarted to track the reprocess)
+        await logService.logUploadStarted(requestId, document.candidate_id, document.file_name, document.mime_type || 'application/pdf', 0 // file size not needed for reprocess
+        );
+        return {
+            success: true,
+            request_id: requestId,
+        };
+    }
+    catch (error) {
+        console.error('[ReprocessDocument] Failed to reprocess document:', error);
+        await logService.logError(requestId, `Failed to reprocess document: ${error.message}`, error.stack, documentId, undefined);
+        throw error;
+    }
 }

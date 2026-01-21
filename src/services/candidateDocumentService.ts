@@ -403,3 +403,85 @@ export async function updateDocumentVerification(
 
   return data as CandidateDocument;
 }
+
+/**
+ * Reprocess document verification - re-enqueue AI verification job
+ * This is useful when matching logic is updated and we want to re-process existing documents
+ */
+export async function reprocessDocumentVerification(documentId: string): Promise<{ success: boolean; request_id: string }> {
+  const db = supabaseAdminClient();
+  const logService = new DocumentVerificationLogService();
+  const requestId = generateRequestId();
+
+  try {
+    // Get document details
+    const { data: document, error: docError } = await db
+      .from('candidate_documents')
+      .select('id, candidate_id, storage_path, file_name, mime_type, storage_bucket')
+      .eq('id', documentId)
+      .single();
+
+    if (docError || !document) {
+      throw new AppError('Document not found', ErrorType.NOT_FOUND, 404);
+    }
+
+    // Reset document status to pending_ai
+    await db
+      .from('candidate_documents')
+      .update({
+        verification_status: VERIFICATION_STATUS.PENDING_AI,
+        verification_reason_code: null,
+        mismatch_fields: null,
+        ai_processing_started_at: null,
+        ai_processing_completed_at: null,
+        verification_completed_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', documentId);
+
+    // Enqueue AI processing job
+    const jobData = {
+      requestId,
+      documentId: document.id,
+      candidateId: document.candidate_id,
+      storageBucket: document.storage_bucket || STORAGE_BUCKET,
+      storagePath: document.storage_path,
+      fileName: document.file_name,
+      mimeType: document.mime_type || 'application/pdf',
+    };
+
+    await documentVerificationQueue.add('verify-document', jobData, {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 2000,
+      },
+    });
+
+    console.log(`[ReprocessDocument] Re-enqueued AI verification job for document ${documentId}`);
+
+    // Log reprocess event (using logUploadStarted to track the reprocess)
+    await logService.logUploadStarted(
+      requestId,
+      document.candidate_id,
+      document.file_name,
+      document.mime_type || 'application/pdf',
+      0 // file size not needed for reprocess
+    );
+
+    return {
+      success: true,
+      request_id: requestId,
+    };
+  } catch (error: any) {
+    console.error('[ReprocessDocument] Failed to reprocess document:', error);
+    await logService.logError(
+      requestId,
+      `Failed to reprocess document: ${error.message}`,
+      error.stack,
+      documentId,
+      undefined
+    );
+    throw error;
+  }
+}

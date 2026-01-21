@@ -5,6 +5,7 @@ exports.getCandidateDocumentController = getCandidateDocumentController;
 exports.listCandidateDocumentsControllerNew = listCandidateDocumentsControllerNew;
 exports.getCandidateDocumentDownloadUrlController = getCandidateDocumentDownloadUrlController;
 exports.deleteCandidateDocumentController = deleteCandidateDocumentController;
+exports.reprocessCandidateDocumentController = reprocessCandidateDocumentController;
 exports.uploadDocumentController = uploadDocumentController;
 exports.getDocumentController = getDocumentController;
 exports.listCandidateDocumentsController = listCandidateDocumentsController;
@@ -153,6 +154,28 @@ async function deleteCandidateDocumentController(req, res) {
     catch (error) {
         console.error('Error deleting candidate document:', error);
         res.status(500).json({ error: error.message || 'Failed to delete document' });
+    }
+}
+/**
+ * Reprocess document verification (re-run AI verification)
+ * POST /api/candidate-documents/:id/reprocess
+ */
+async function reprocessCandidateDocumentController(req, res) {
+    try {
+        const { id } = req.params;
+        if (!id) {
+            return res.status(400).json({ error: 'Document ID is required' });
+        }
+        const result = await (0, candidateDocumentService_1.reprocessDocumentVerification)(id);
+        res.json({
+            success: true,
+            message: 'Document verification reprocessing initiated',
+            request_id: result.request_id,
+        });
+    }
+    catch (error) {
+        console.error('Error reprocessing candidate document:', error);
+        res.status(500).json({ error: error.message || 'Failed to reprocess document' });
     }
 }
 // ============================================================================

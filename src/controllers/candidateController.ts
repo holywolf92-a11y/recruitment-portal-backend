@@ -188,39 +188,81 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
     const { id } = req.params;
     const db = supabaseAdminClient();
 
-    // Get all verified documents for this candidate
+    // Get ALL documents for this candidate (including pending_ai, verified, needs_review)
+    // This ensures we catch documents that are still being processed
     const { data: documents, error: docsError } = await db
       .from('candidate_documents')
-      .select('category, verification_status')
+      .select('category, verification_status, file_name')
       .eq('candidate_id', id)
-      .in('verification_status', ['verified', 'needs_review']);
+      .in('verification_status', ['pending_ai', 'verified', 'needs_review']);
 
     if (docsError) {
       return res.status(500).json({ error: `Failed to fetch documents: ${docsError.message}` });
     }
 
-    // Determine which flags to set
+    // Also check the old documents table for CVs (legacy support)
+    const { data: oldDocuments, error: oldDocsError } = await db
+      .from('documents')
+      .select('doc_type, file_name')
+      .eq('candidate_id', id)
+      .eq('deleted_at', null);
+
+    // Combine both document sources
+    const allDocs = [
+      ...(documents || []).map(d => ({ category: d.category, type: null, file_name: d.file_name })),
+      ...(oldDocuments || []).map(d => ({ category: null, type: d.doc_type, file_name: d.file_name }))
+    ];
+
+    // Determine which flags to set based on actual documents
     const updateFlags: any = {};
     const now = new Date().toISOString();
 
-    for (const doc of documents || []) {
-      const category = (doc.category || '').toLowerCase();
+    // Track what we found for logging
+    const foundCategories: string[] = [];
 
+    for (const doc of allDocs) {
+      const category = (doc.category || '').toLowerCase();
+      const docType = (doc.type || '').toLowerCase();
+      const fileName = (doc.file_name || '').toLowerCase();
+
+      // Check category first (new system)
       if (category === 'cv_resume' || category === 'cv') {
         updateFlags.cv_received = true;
         updateFlags.cv_received_at = now;
-      } else if (category === 'passport') {
+        foundCategories.push('CV (from category)');
+      } 
+      // Check doc_type (old system)
+      else if (docType === 'cv' || docType.includes('resume') || docType.includes('cv')) {
+        updateFlags.cv_received = true;
+        updateFlags.cv_received_at = now;
+        foundCategories.push('CV (from doc_type)');
+      }
+      // Check filename as fallback
+      else if (fileName.includes('cv') || fileName.includes('resume')) {
+        updateFlags.cv_received = true;
+        updateFlags.cv_received_at = now;
+        foundCategories.push('CV (from filename)');
+      }
+
+      if (category === 'passport' || docType === 'passport' || fileName.includes('passport')) {
         updateFlags.passport_received = true;
         updateFlags.passport_received_at = now;
-      } else if (category === 'certificates' || category === 'certificate') {
+        foundCategories.push('Passport');
+      }
+      if (category === 'certificates' || category === 'certificate' || docType === 'certificate' || fileName.includes('certificate')) {
         updateFlags.certificate_received = true;
         updateFlags.certificate_received_at = now;
-      } else if (category === 'photos' || category === 'photo') {
+        foundCategories.push('Certificate');
+      }
+      if (category === 'photos' || category === 'photo' || docType === 'photo' || fileName.includes('photo')) {
         updateFlags.photo_received = true;
         updateFlags.photo_received_at = now;
-      } else if (category === 'medical_reports' || category === 'medical') {
+        foundCategories.push('Photo');
+      }
+      if (category === 'medical_reports' || category === 'medical' || docType === 'medical' || fileName.includes('medical')) {
         updateFlags.medical_received = true;
         updateFlags.medical_received_at = now;
+        foundCategories.push('Medical');
       }
     }
 
@@ -238,6 +280,8 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
         success: true,
         message: 'Document flags updated',
         flags: Object.keys(updateFlags).filter(k => k.endsWith('_received')),
+        found_documents: foundCategories,
+        total_documents: allDocs.length,
       });
     } else {
       return res.json({

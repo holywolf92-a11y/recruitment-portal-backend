@@ -67,16 +67,12 @@ export async function extractCandidateData(
 }
 
 /**
- * Call Python parser service to extract CV data
+ * Call Python parser service to extract CV data via HTTP
  */
 async function callPythonParser(cvUrl: string): Promise<{ success: boolean; data?: ExtractionData; error?: string }> {
   try {
-    const { exec } = require('child_process');
-    const { promisify } = require('util');
-    const execAsync = promisify(exec);
-    
-    // Path to Python script
-    const pythonScript = require('path').join(__dirname, '../../..', 'python-parser', 'extract_cv.py');
+    const PY_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app';
+    const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
     
     // If the CV URL is a storage path (not starting with http), convert to signed URL
     let extractUrl = cvUrl;
@@ -101,27 +97,57 @@ async function callPythonParser(cvUrl: string): Promise<{ success: boolean; data
       }
     }
     
-    // Execute Python script
-    const { stdout, stderr } = await execAsync(`python "${pythonScript}" "${extractUrl}"`);
+    // Create HMAC signature for authentication (matching worker format)
+    const crypto = require('crypto');
+    const payload = JSON.stringify({ file_url: extractUrl });
+    const signature = crypto
+      .createHmac('sha256', HMAC_SECRET)
+      .update(payload)
+      .digest('hex');
     
-    if (stderr) {
-      console.error('Python parser stderr:', stderr);
+    // Call Python parser service via HTTP
+    const response = await fetch(`${PY_URL}/parse-cv`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-signature': signature,
+      },
+      body: payload,
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Python parser service error: ${response.status} ${errorText}`);
     }
     
-    // Parse result
-    const result = JSON.parse(stdout);
+    const parsed = await response.json();
     
-    if (result.error) {
-      return { success: false, error: result.error };
-    }
+    // Map the parsed data to ExtractionData format
+    const candidateData = parsed.candidate || parsed;
+    const extractedData: ExtractionData = {
+      nationality: candidateData.nationality,
+      father_name: candidateData.father_name,
+      position: candidateData.position,
+      experience_years: candidateData.experience_years,
+      country_of_interest: candidateData.country_of_interest,
+      skills: candidateData.skills || [],
+      languages: candidateData.languages || [],
+      education: candidateData.education,
+      certifications: candidateData.certifications || [],
+      previous_employment: candidateData.previous_employment,
+      passport_expiry: candidateData.passport_expiry,
+      professional_summary: candidateData.professional_summary || candidateData.summary,
+      extraction_confidence: candidateData.confidence || {},
+      extraction_source: 'python-parser-v1',
+    };
     
-    return { success: true, data: result };
+    return { success: true, data: extractedData };
     
   } catch (error: any) {
-    console.error('Failed to call Python parser:', error);
+    console.error('Failed to call Python parser service:', error);
     return { 
       success: false, 
-      error: error.message || 'Python parser execution failed' 
+      error: error.message || 'Python parser service call failed' 
     };
   }
 }

@@ -10,6 +10,7 @@ import {
   CreateCandidateData,
   CandidateFilters
 } from '../services/candidateService';
+import { supabaseAdminClient } from '../config/database';
 
 export async function createCandidateController(req: Request, res: Response) {
   try {

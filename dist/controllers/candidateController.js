@@ -14,6 +14,7 @@ exports.uploadCandidatePhotoController = uploadCandidatePhotoController;
 exports.bulkUpdateCandidateStatusController = bulkUpdateCandidateStatusController;
 // import { AuthRequest } from '../middleware/auth';
 const candidateService_1 = require("../services/candidateService");
+const database_1 = require("../config/database");
 async function createCandidateController(req, res) {
     try {
         // For now, use a placeholder user ID for testing
@@ -170,7 +171,7 @@ async function updateExtractionController(req, res) {
 async function updateDocumentFlagsController(req, res) {
     try {
         const { id } = req.params;
-        const db = supabaseAdminClient();
+        const db = (0, database_1.supabaseAdminClient)();
         // Get all verified documents for this candidate
         const { data: documents, error: docsError } = await db
             .from('candidate_documents')

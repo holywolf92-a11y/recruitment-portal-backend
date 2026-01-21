@@ -171,67 +171,76 @@ async function processDocumentVerification(job) {
         let reasonCode = documentCategories_1.VERIFICATION_REASON_CODES.VERIFIED;
         let mismatchFields = [];
         if (aiResult.extracted_identity && Object.keys(aiResult.extracted_identity).length > 0) {
-            // Run identity matching
+            // PRIORITY: Match by extracted identity FIRST (document contains real data, not system-generated ID)
+            // The document has name, CNIC, passport, email, phone - use these to find the correct candidate
+            console.log(`[DocumentVerification] Attempting to find candidate by extracted identity from document...`);
             try {
-                matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity);
-            }
-            catch (matchError) {
-                // If candidate not found, try to find candidate by extracted identity fields
-                if (matchError.message?.includes('Candidate not found')) {
-                    console.log(`[DocumentVerification] Candidate ${candidateId} not found, attempting to find by extracted identity...`);
+                // Try to find candidate using extracted identity (name, email, phone, passport, CNIC)
+                const matchCriteria = {
+                    cnic: aiResult.extracted_identity.cnic,
+                    email: aiResult.extracted_identity.email,
+                    phone: aiResult.extracted_identity.phone,
+                    name: aiResult.extracted_identity.name,
+                    fatherName: aiResult.extracted_identity.father_name,
+                };
+                const candidateMatch = await candidateMatcher_1.CandidateMatcher.findCandidate(matchCriteria);
+                if (candidateMatch.candidateId && !candidateMatch.needsManualReview) {
+                    // Found candidate by extracted identity - use this candidate ID (even if different from provided one)
+                    console.log(`[DocumentVerification] Found candidate ${candidateMatch.candidateId} by ${candidateMatch.matchedBy} from document, updating...`);
+                    // Update document's candidate_id to the correct one
+                    await db
+                        .from('candidate_documents')
+                        .update({ candidate_id: candidateMatch.candidateId })
+                        .eq('id', documentId);
+                    // Update candidateId for rest of processing
+                    candidateId = candidateMatch.candidateId;
+                    // Now run identity matching with the correct candidate ID
+                    matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity);
+                    console.log(`[DocumentVerification] Identity matching successful: ${matchResult.matched ? 'VERIFIED' : 'NEEDS_REVIEW'}`);
+                }
+                else {
+                    // Could not find candidate by extracted identity - try using provided candidate_id as fallback
+                    console.log(`[DocumentVerification] Could not find candidate by extracted identity, trying provided candidate_id ${candidateId}...`);
                     try {
-                        // Try to find candidate using extracted identity (name, email, phone, passport, CNIC)
-                        const matchCriteria = {
-                            cnic: aiResult.extracted_identity.cnic,
-                            email: aiResult.extracted_identity.email,
-                            phone: aiResult.extracted_identity.phone,
-                            name: aiResult.extracted_identity.name,
-                            fatherName: aiResult.extracted_identity.father_name,
-                        };
-                        const candidateMatch = await candidateMatcher_1.CandidateMatcher.findCandidate(matchCriteria);
-                        if (candidateMatch.candidateId && !candidateMatch.needsManualReview) {
-                            // Found candidate by alternate matching - update document and retry identity matching
-                            console.log(`[DocumentVerification] Found candidate ${candidateMatch.candidateId} by ${candidateMatch.matchedBy}, updating document...`);
-                            // Update document's candidate_id
-                            await db
-                                .from('candidate_documents')
-                                .update({ candidate_id: candidateMatch.candidateId })
-                                .eq('id', documentId);
-                            // Update candidateId for rest of processing
-                            candidateId = candidateMatch.candidateId;
-                            // Retry identity matching with correct candidate ID
-                            matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity);
-                            console.log(`[DocumentVerification] Identity matching successful after auto-match: ${matchResult.matched ? 'VERIFIED' : 'NEEDS_REVIEW'}`);
-                        }
-                        else {
-                            // Could not find candidate - needs manual review
-                            console.log(`[DocumentVerification] Could not find candidate by extracted identity, marking for review`);
+                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity);
+                    }
+                    catch (matchError) {
+                        // Provided candidate_id also doesn't exist - needs manual review
+                        if (matchError.message?.includes('Candidate not found')) {
+                            console.log(`[DocumentVerification] Provided candidate_id ${candidateId} also not found, marking for review`);
                             finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
                             reasonCode = documentCategories_1.VERIFICATION_REASON_CODES.NO_ID_FOUND;
                             mismatchFields = ['candidate_not_found'];
                             await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, {
-                                notes: `Candidate not found. Attempted matching by: ${JSON.stringify(matchCriteria)}`,
+                                notes: `Candidate not found. Attempted matching by: ${JSON.stringify(matchCriteria)}. Provided candidate_id also not found.`,
                                 auto_match_attempted: true,
                                 match_result: candidateMatch
                             });
                         }
-                    }
-                    catch (autoMatchError) {
-                        // Auto-matching failed - needs manual review
-                        console.error(`[DocumentVerification] Auto-matching failed:`, autoMatchError);
-                        finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
-                        reasonCode = documentCategories_1.VERIFICATION_REASON_CODES.NO_ID_FOUND;
-                        mismatchFields = ['identity_matching_error'];
-                        await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, { notes: `Identity matching error: ${matchError.message}. Auto-match also failed: ${autoMatchError.message}` });
+                        else {
+                            // Other identity matching errors
+                            console.error(`[DocumentVerification] Identity matching failed:`, matchError);
+                            finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
+                            reasonCode = documentCategories_1.VERIFICATION_REASON_CODES.NO_ID_FOUND;
+                            mismatchFields = ['identity_matching_error'];
+                            await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, { notes: `Identity matching error: ${matchError.message}` });
+                        }
                     }
                 }
-                else {
-                    // Other identity matching errors - treat as needs review
-                    console.error(`[DocumentVerification] Identity matching failed for candidate ${candidateId}:`, matchError);
+            }
+            catch (autoMatchError) {
+                // Auto-matching failed - try provided candidate_id as fallback
+                console.error(`[DocumentVerification] Auto-matching failed, trying provided candidate_id:`, autoMatchError);
+                try {
+                    matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity);
+                }
+                catch (matchError) {
+                    // Both failed - needs manual review
+                    console.error(`[DocumentVerification] Both auto-match and provided candidate_id failed`);
                     finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
                     reasonCode = documentCategories_1.VERIFICATION_REASON_CODES.NO_ID_FOUND;
                     mismatchFields = ['identity_matching_error'];
-                    await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, { notes: `Identity matching error: ${matchError.message}` });
+                    await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, { notes: `Auto-match failed: ${autoMatchError.message}. Identity matching also failed: ${matchError.message}` });
                 }
             }
             // Log identity verification result (only if matching succeeded)

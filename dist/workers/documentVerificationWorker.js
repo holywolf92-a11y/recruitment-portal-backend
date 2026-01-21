@@ -299,6 +299,44 @@ async function processDocumentVerification(job) {
             verification_completed_at: new Date().toISOString(),
         })
             .eq('id', documentId);
+        // Update candidate document flags based on final category
+        // This ensures the candidate card shows correct document status
+        try {
+            const updateFlags = {};
+            const category = finalCategory?.toLowerCase() || '';
+            const now = new Date().toISOString();
+            if (category === 'cv_resume' || category === 'cv') {
+                updateFlags.cv_received = true;
+                updateFlags.cv_received_at = now;
+            }
+            else if (category === 'passport') {
+                updateFlags.passport_received = true;
+                updateFlags.passport_received_at = now;
+            }
+            else if (category === 'certificates' || category === 'certificate') {
+                updateFlags.certificate_received = true;
+                updateFlags.certificate_received_at = now;
+            }
+            else if (category === 'photos' || category === 'photo') {
+                updateFlags.photo_received = true;
+                updateFlags.photo_received_at = now;
+            }
+            else if (category === 'medical_reports' || category === 'medical') {
+                updateFlags.medical_received = true;
+                updateFlags.medical_received_at = now;
+            }
+            if (Object.keys(updateFlags).length > 0) {
+                await db
+                    .from('candidates')
+                    .update(updateFlags)
+                    .eq('id', candidateId);
+                console.log(`[DocumentVerification] Updated candidate flags for ${candidateId}:`, Object.keys(updateFlags));
+            }
+        }
+        catch (flagError) {
+            console.error('[DocumentVerification] Failed to update candidate flags:', flagError);
+            // Don't fail the verification if flag update fails
+        }
         // Log final status change
         await documentVerificationLogService_1.documentVerificationLogService.log({
             request_id: requestId,

@@ -161,6 +161,44 @@ async function uploadCandidateDocument(data) {
             // Don't fail the upload, but log the error
             await logService.logError(requestId, `Failed to enqueue AI job: ${queueError.message}`, queueError.stack, document.id, data.candidate_id);
         }
+        // Update candidate document flags based on category
+        // This ensures the candidate card shows correct document status
+        try {
+            const updateFlags = {};
+            const category = document.category?.toLowerCase() || '';
+            const now = new Date().toISOString();
+            if (category === 'cv_resume' || category === 'cv') {
+                updateFlags.cv_received = true;
+                updateFlags.cv_received_at = now;
+            }
+            else if (category === 'passport') {
+                updateFlags.passport_received = true;
+                updateFlags.passport_received_at = now;
+            }
+            else if (category === 'certificates' || category === 'certificate') {
+                updateFlags.certificate_received = true;
+                updateFlags.certificate_received_at = now;
+            }
+            else if (category === 'photos' || category === 'photo') {
+                updateFlags.photo_received = true;
+                updateFlags.photo_received_at = now;
+            }
+            else if (category === 'medical_reports' || category === 'medical') {
+                updateFlags.medical_received = true;
+                updateFlags.medical_received_at = now;
+            }
+            if (Object.keys(updateFlags).length > 0) {
+                await db
+                    .from('candidates')
+                    .update(updateFlags)
+                    .eq('id', data.candidate_id);
+                console.log(`[UploadDocument] Updated candidate flags for ${data.candidate_id}:`, Object.keys(updateFlags));
+            }
+        }
+        catch (flagError) {
+            console.error('[UploadDocument] Failed to update candidate flags:', flagError);
+            // Don't fail the upload if flag update fails
+        }
         return {
             document: document,
             request_id: requestId,

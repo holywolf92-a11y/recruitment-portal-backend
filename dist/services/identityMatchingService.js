@@ -22,7 +22,7 @@ class IdentityMatchingService {
             const db = (0, database_1.supabaseAdminClient)();
             const { data: candidate, error } = await db
                 .from('candidates')
-                .select('id, name, father_name, cnic_normalized, passport_normalized, email, phone, phone_normalized')
+                .select('id, name, father_name, cnic_normalized, passport_normalized, email, phone')
                 .eq('id', candidateId)
                 .maybeSingle(); // Use maybeSingle() instead of single() to handle missing records gracefully
             if (error) {
@@ -159,7 +159,9 @@ class IdentityMatchingService {
             }
             // PRIORITY 4: Phone + Name Matching
             if (extractedPhone && extractedIdentity.name) {
-                const phoneMatch = candidate.phone_normalized && extractedPhone === candidate.phone_normalized;
+                // Normalize candidate phone for comparison
+                const candidatePhoneNormalized = candidate.phone ? (0, candidateService_1.normalizePhoneE164)(candidate.phone) : null;
+                const phoneMatch = candidatePhoneNormalized && extractedPhone === candidatePhoneNormalized;
                 const nameMatch = this.fuzzyNameMatch(extractedIdentity.name, candidate.name);
                 if (phoneMatch && nameMatch) {
                     matchedOn.push('phone', 'name');
@@ -177,7 +179,7 @@ class IdentityMatchingService {
                 if (phoneMatch && !nameMatch) {
                     mismatchFields.push('name');
                 }
-                if (!phoneMatch && candidate.phone_normalized) {
+                if (!phoneMatch && candidate.phone) {
                     mismatchFields.push('phone');
                 }
             }

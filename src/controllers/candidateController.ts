@@ -10,6 +10,7 @@ import {
   CreateCandidateData,
   CandidateFilters
 } from '../services/candidateService';
+import { linkExistingCVFromInbox } from '../services/linkCVService';
 import { supabaseAdminClient } from '../config/database';
 
 export async function createCandidateController(req: Request, res: Response) {
@@ -353,6 +354,39 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
   } catch (error: any) {
     console.error('Error updating document flags:', error);
     res.status(500).json({ error: error.message || 'Failed to update document flags' });
+  }
+}
+
+/**
+ * Link existing CV from inbox_attachments to candidate_documents
+ * POST /api/candidates/:id/link-cv
+ */
+export async function linkCandidatesCVController(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ error: 'Candidate ID is required' });
+    }
+
+    const document = await linkExistingCVFromInbox(id);
+
+    res.json({
+      success: true,
+      message: 'CV linked successfully from inbox',
+      document: {
+        id: document.id,
+        candidate_id: document.candidate_id,
+        file_name: document.file_name,
+        category: document.category,
+        created_at: document.created_at,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error linking CV:', error);
+    res.status(error.statusCode || 500).json({ 
+      error: error.message || 'Failed to link CV' 
+    });
   }
 }
 

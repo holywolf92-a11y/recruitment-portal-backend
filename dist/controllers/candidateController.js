@@ -8,12 +8,14 @@ exports.deleteCandidateController = deleteCandidateController;
 exports.extractCandidateDataController = extractCandidateDataController;
 exports.updateExtractionController = updateExtractionController;
 exports.updateDocumentFlagsController = updateDocumentFlagsController;
+exports.linkCandidatesCVController = linkCandidatesCVController;
 exports.getExtractionHistoryController = getExtractionHistoryController;
 exports.getCandidateCVDownloadController = getCandidateCVDownloadController;
 exports.uploadCandidatePhotoController = uploadCandidatePhotoController;
 exports.bulkUpdateCandidateStatusController = bulkUpdateCandidateStatusController;
 // import { AuthRequest } from '../middleware/auth';
 const candidateService_1 = require("../services/candidateService");
+const linkCVService_1 = require("../services/linkCVService");
 const database_1 = require("../config/database");
 async function createCandidateController(req, res) {
     try {
@@ -325,6 +327,36 @@ async function updateDocumentFlagsController(req, res) {
     catch (error) {
         console.error('Error updating document flags:', error);
         res.status(500).json({ error: error.message || 'Failed to update document flags' });
+    }
+}
+/**
+ * Link existing CV from inbox_attachments to candidate_documents
+ * POST /api/candidates/:id/link-cv
+ */
+async function linkCandidatesCVController(req, res) {
+    try {
+        const { id } = req.params;
+        if (!id) {
+            return res.status(400).json({ error: 'Candidate ID is required' });
+        }
+        const document = await (0, linkCVService_1.linkExistingCVFromInbox)(id);
+        res.json({
+            success: true,
+            message: 'CV linked successfully from inbox',
+            document: {
+                id: document.id,
+                candidate_id: document.candidate_id,
+                file_name: document.file_name,
+                category: document.category,
+                created_at: document.created_at,
+            },
+        });
+    }
+    catch (error) {
+        console.error('Error linking CV:', error);
+        res.status(error.statusCode || 500).json({
+            error: error.message || 'Failed to link CV'
+        });
     }
 }
 async function getExtractionHistoryController(req, res) {

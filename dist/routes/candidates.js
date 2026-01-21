@@ -49,4 +49,6 @@ router.put('/:id/extraction', candidateController_1.updateExtractionController);
 router.get('/:id/extraction-history', candidateController_1.getExtractionHistoryController);
 // Update document flags based on actual documents
 router.post('/:id/update-document-flags', candidateController_1.updateDocumentFlagsController);
+// Link existing CV from inbox_attachments to candidate_documents (prevents duplicates)
+router.post('/:id/link-cv', candidateController_1.linkCandidatesCVController);
 exports.default = router;

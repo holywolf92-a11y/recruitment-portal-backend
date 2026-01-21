@@ -14,7 +14,8 @@ import {
   getExtractionHistoryController,
   getCandidateCVDownloadController,
   uploadCandidatePhotoController,
-  updateDocumentFlagsController
+  updateDocumentFlagsController,
+  linkCandidatesCVController
 } from '../controllers/candidateController';
 
 const router = Router();
@@ -69,5 +70,8 @@ router.get('/:id/extraction-history', getExtractionHistoryController);
 
 // Update document flags based on actual documents
 router.post('/:id/update-document-flags', updateDocumentFlagsController);
+
+// Link existing CV from inbox_attachments to candidate_documents (prevents duplicates)
+router.post('/:id/link-cv', linkCandidatesCVController);
 
 export default router;

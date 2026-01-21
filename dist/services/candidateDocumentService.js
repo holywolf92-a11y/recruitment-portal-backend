@@ -271,7 +271,7 @@ async function getCandidateDocumentSignedUrl(documentId, expiresIn = 3600) {
     return data.signedUrl;
 }
 /**
- * Delete candidate document
+ * Delete candidate document and update candidate flags
  */
 async function deleteCandidateDocument(documentId) {
     const db = (0, database_1.supabaseAdminClient)();
@@ -279,6 +279,8 @@ async function deleteCandidateDocument(documentId) {
     if (!document) {
         throw new Error('Document not found');
     }
+    const candidateId = document.candidate_id;
+    const category = document.category?.toLowerCase() || '';
     // Delete from storage
     const { error: storageError } = await db.storage
         .from(document.storage_bucket)
@@ -294,6 +296,105 @@ async function deleteCandidateDocument(documentId) {
         .eq('id', documentId);
     if (dbError) {
         throw new Error(`Failed to delete document: ${dbError.message}`);
+    }
+    // After deletion, recalculate and update candidate flags
+    // Check if there are any remaining documents of this category
+    try {
+        // Check candidate_documents table
+        const { data: remainingDocs } = await db
+            .from('candidate_documents')
+            .select('category')
+            .eq('candidate_id', candidateId);
+        // Check inbox_attachments for CVs
+        const { data: inboxAttachments } = await db
+            .from('inbox_attachments')
+            .select('attachment_type, file_name, document_type, attachment_kind')
+            .or(`candidate_id.eq.${candidateId},linked_candidate_id.eq.${candidateId}`);
+        // Check old documents table
+        const { data: oldDocuments } = await db
+            .from('documents')
+            .select('doc_type, file_name')
+            .eq('candidate_id', candidateId)
+            .eq('deleted_at', null);
+        // Combine all document sources
+        const allDocs = [
+            ...(remainingDocs || []).map(d => ({ category: d.category, type: null, file_name: null, source_table: 'candidate_documents' })),
+            ...(inboxAttachments || []).map(d => ({
+                category: d.attachment_kind === 'cv' ? 'cv_resume' : d.document_type,
+                type: d.attachment_type,
+                file_name: d.file_name,
+                source_table: 'inbox_attachments'
+            })),
+            ...(oldDocuments || []).map(d => ({ category: null, type: d.doc_type, file_name: d.file_name, source_table: 'documents' }))
+        ];
+        // Determine which flags to set based on remaining documents
+        const updateFlags = {};
+        // Initialize all flags to false first
+        updateFlags.cv_received = false;
+        updateFlags.passport_received = false;
+        updateFlags.certificate_received = false;
+        updateFlags.photo_received = false;
+        updateFlags.medical_received = false;
+        // Set flags to true if documents exist
+        for (const doc of allDocs) {
+            const docCategory = (doc.category || '').toLowerCase();
+            const docType = (doc.type || '').toLowerCase();
+            const fileName = (doc.file_name || '').toLowerCase();
+            // Check category first (new system)
+            if (docCategory === 'cv_resume' || docCategory === 'cv') {
+                updateFlags.cv_received = true;
+            }
+            // Check doc_type (old system or inbox attachment document_type)
+            else if (docType === 'cv' || docType.includes('resume')) {
+                updateFlags.cv_received = true;
+            }
+            // Check filename as fallback
+            else if (fileName.includes('cv') || fileName.includes('resume')) {
+                updateFlags.cv_received = true;
+            }
+            if (docCategory === 'passport' || docType === 'passport' || fileName.includes('passport')) {
+                updateFlags.passport_received = true;
+            }
+            // Check for certificates - handle both singular and plural, and also check for 'cert' abbreviation
+            if (docCategory === 'certificates' || docCategory === 'certificate' || docCategory === 'cert' ||
+                docType === 'certificate' || docType === 'cert' ||
+                fileName.includes('certificate') || fileName.includes('cert')) {
+                updateFlags.certificate_received = true;
+            }
+            if (docCategory === 'photos' || docCategory === 'photo' || docType === 'photo' || fileName.includes('photo')) {
+                updateFlags.photo_received = true;
+            }
+            if (docCategory === 'medical_reports' || docCategory === 'medical' || docType === 'medical' || fileName.includes('medical')) {
+                updateFlags.medical_received = true;
+            }
+        }
+        // Update candidate flags
+        if (Object.keys(updateFlags).length > 0) {
+            const { error: updateError } = await db
+                .from('candidates')
+                .update(updateFlags)
+                .eq('id', candidateId);
+            if (updateError) {
+                console.error(`[DeleteDocument] Failed to update flags:`, updateError);
+            }
+            else {
+                console.log(`[DeleteDocument] Updated candidate flags for ${candidateId} after deletion:`, {
+                    cv: updateFlags.cv_received,
+                    passport: updateFlags.passport_received,
+                    certificate: updateFlags.certificate_received,
+                    photo: updateFlags.photo_received,
+                    medical: updateFlags.medical_received,
+                });
+                console.log(`[DeleteDocument] Found ${allDocs.length} remaining documents for candidate ${candidateId}`);
+            }
+        }
+        else {
+            console.log(`[DeleteDocument] No flags to update for candidate ${candidateId}`);
+        }
+    }
+    catch (flagError) {
+        console.error('[DeleteDocument] Failed to update candidate flags after deletion:', flagError);
+        // Don't fail the deletion if flag update fails
     }
 }
 /**

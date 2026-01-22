@@ -5,6 +5,7 @@ import { supabaseAdminClient } from '../config/database';
 import { documentVerificationLogService } from '../services/documentVerificationLogService';
 import { identityMatchingService } from '../services/identityMatchingService';
 import { CandidateMatcher } from '../services/candidateMatcher';
+import { normalizePassport } from '../services/candidateService';
 import { 
   DOCUMENT_CATEGORIES, 
   VERIFICATION_STATUS, 
@@ -45,6 +46,11 @@ interface AICategorizationResponse {
     phone?: string;
     date_of_birth?: string;
     document_number?: string;
+    nationality?: string;
+    passport_expiry?: string;
+    expiry_date?: string;
+    issue_date?: string;
+    place_of_issue?: string;
   };
   raw_text?: string;
   error?: string;
@@ -471,6 +477,114 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     } catch (flagError: any) {
       console.error('[DocumentVerification] Failed to update candidate flags:', flagError);
       // Don't fail the verification if flag update fails
+    }
+
+    // =============================================================================
+    // STEP 8: Intelligently update candidate record with extracted information
+    // Only update if field is missing or new value is more complete
+    // =============================================================================
+    if (aiResult.extracted_identity && Object.keys(aiResult.extracted_identity).length > 0 && finalStatus === VERIFICATION_STATUS.VERIFIED) {
+      try {
+        // Get current candidate record to check what fields need updating
+        const { data: currentCandidate, error: fetchError } = await db
+          .from('candidates')
+          .select('nationality, passport_normalized, passport_expiry, date_of_birth, passport')
+          .eq('id', candidateId)
+          .maybeSingle();
+
+        if (!fetchError && currentCandidate) {
+          const candidateUpdates: any = {};
+
+          // Update nationality if missing or if document has it
+          if (aiResult.extracted_identity.nationality && !currentCandidate.nationality) {
+            candidateUpdates.nationality = aiResult.extracted_identity.nationality;
+            console.log(`[DocumentVerification] Updating nationality: ${aiResult.extracted_identity.nationality}`);
+          }
+
+          // Update passport number if missing or if document has it
+          if (aiResult.extracted_identity.passport_no) {
+            const normalizedPassport = normalizePassport(aiResult.extracted_identity.passport_no);
+            if (!currentCandidate.passport_normalized) {
+              candidateUpdates.passport_normalized = normalizedPassport;
+              candidateUpdates.passport = aiResult.extracted_identity.passport_no; // Store original format too
+              console.log(`[DocumentVerification] Updating passport: ${aiResult.extracted_identity.passport_no}`);
+            }
+          }
+
+          // Update passport expiry if missing or if document has it
+          if (aiResult.extracted_identity.passport_expiry || aiResult.extracted_identity.expiry_date) {
+            const expiryDate = aiResult.extracted_identity.passport_expiry || aiResult.extracted_identity.expiry_date;
+            if (!currentCandidate.passport_expiry && expiryDate) {
+              // Try to parse the date (handle formats like "09-06-2032" or "2022-06-10")
+              try {
+                let parsedDate: Date;
+                if (expiryDate.includes('-') && expiryDate.length === 10) {
+                  // Format: DD-MM-YYYY or YYYY-MM-DD
+                  const parts = expiryDate.split('-');
+                  if (parts[0].length === 4) {
+                    // YYYY-MM-DD
+                    parsedDate = new Date(expiryDate);
+                  } else {
+                    // DD-MM-YYYY
+                    parsedDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+                  }
+                } else {
+                  parsedDate = new Date(expiryDate);
+                }
+                
+                if (!isNaN(parsedDate.getTime())) {
+                  candidateUpdates.passport_expiry = parsedDate.toISOString().split('T')[0];
+                  console.log(`[DocumentVerification] Updating passport expiry: ${candidateUpdates.passport_expiry}`);
+                }
+              } catch (dateError) {
+                console.warn(`[DocumentVerification] Failed to parse expiry date: ${expiryDate}`, dateError);
+              }
+            }
+          }
+
+          // Update date of birth if missing or if document has it
+          if (aiResult.extracted_identity.date_of_birth && !currentCandidate.date_of_birth) {
+            try {
+              // Try to parse the date (handle formats like "15-08-1994" or "1994-08-15")
+              let parsedDate: Date;
+              const dob = aiResult.extracted_identity.date_of_birth;
+              if (dob.includes('-') && dob.length === 10) {
+                const parts = dob.split('-');
+                if (parts[0].length === 4) {
+                  // YYYY-MM-DD
+                  parsedDate = new Date(dob);
+                } else {
+                  // DD-MM-YYYY
+                  parsedDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+                }
+              } else {
+                parsedDate = new Date(dob);
+              }
+              
+              if (!isNaN(parsedDate.getTime())) {
+                candidateUpdates.date_of_birth = parsedDate.toISOString().split('T')[0];
+                console.log(`[DocumentVerification] Updating date of birth: ${candidateUpdates.date_of_birth}`);
+              }
+            } catch (dateError) {
+              console.warn(`[DocumentVerification] Failed to parse date of birth: ${aiResult.extracted_identity.date_of_birth}`, dateError);
+            }
+          }
+
+          // Apply updates if any
+          if (Object.keys(candidateUpdates).length > 0) {
+            candidateUpdates.updated_at = new Date().toISOString();
+            await db
+              .from('candidates')
+              .update(candidateUpdates)
+              .eq('id', candidateId);
+            
+            console.log(`[DocumentVerification] Updated candidate record for ${candidateId} with extracted information:`, Object.keys(candidateUpdates));
+          }
+        }
+      } catch (updateError: any) {
+        console.error('[DocumentVerification] Failed to update candidate with extracted information:', updateError);
+        // Don't fail the verification if candidate update fails
+      }
     }
 
     // Log final status change

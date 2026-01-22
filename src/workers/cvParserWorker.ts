@@ -141,11 +141,25 @@ export function startCvParserWorker() {
 
         // Step 2: Also categorize document to extract identity fields (father_name, cnic, passport, date_of_birth, etc.)
         // This is important because CVs often contain personal information
+        // Note: categorize-document needs file_content (base64), not file_url
         let identityFields: any = null;
         try {
+          // Fetch the file and convert to base64
+          const fileResponse = await fetch(fileUrl);
+          if (!fileResponse.ok) {
+            throw new Error(`Failed to fetch file: ${fileResponse.status}`);
+          }
+          const fileBuffer = await fileResponse.arrayBuffer();
+          const fileBase64 = Buffer.from(fileBuffer).toString('base64');
+          const fileName = fileUrl.split('/').pop() || 'cv.pdf';
+          const mimeType = fileName.endsWith('.pdf') ? 'application/pdf' : 
+                          fileName.endsWith('.docx') ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' :
+                          'application/octet-stream';
+          
           const categorizePayload = JSON.stringify({
-            file_url: fileUrl,
-            file_name: fileUrl.split('/').pop() || 'cv.pdf',
+            file_content: fileBase64,
+            file_name: fileName,
+            mime_type: mimeType,
           });
           
           const categorizeRes = await fetch(`${PY_URL}/categorize-document`, {
@@ -168,7 +182,8 @@ export function startCvParserWorker() {
               hasDOB: !!identityFields?.date_of_birth,
             });
           } else {
-            console.warn(`[CVParser] Failed to categorize CV for identity extraction: ${categorizeRes.status}`);
+            const errorText = await categorizeRes.text();
+            console.warn(`[CVParser] Failed to categorize CV for identity extraction: ${categorizeRes.status} - ${errorText.slice(0, 200)}`);
           }
         } catch (categorizeError: any) {
           // Log but don't fail - identity extraction is optional
@@ -183,30 +198,142 @@ export function startCvParserWorker() {
           error_message: null,
         });
 
-        // Create candidate from parsed data (including identity fields) and link to attachment
-        const newCandidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields);
+        // Check if candidate already exists (by email, CNIC, or passport from identity fields)
+        // If exists, update it instead of creating a new one
+        let existingCandidate = null;
+        if (identityFields) {
+          const db = supabaseAdminClient();
+          const candidateName = parsed.candidate?.full_name || identityFields?.name;
+          
+          // Try to find existing candidate by email, CNIC, or passport
+          if (identityFields.email) {
+            const { data } = await db
+              .from('candidates')
+              .select('id')
+              .eq('email', identityFields.email)
+              .maybeSingle();
+            if (data) existingCandidate = data;
+          }
+          
+          if (!existingCandidate && identityFields.cnic) {
+            const { normalizeCNIC } = await import('../services/candidateService');
+            const normalizedCNIC = normalizeCNIC(identityFields.cnic);
+            if (normalizedCNIC) {
+              const { data } = await db
+                .from('candidates')
+                .select('id')
+                .eq('cnic_normalized', normalizedCNIC)
+                .maybeSingle();
+              if (data) existingCandidate = data;
+            }
+          }
+          
+          if (!existingCandidate && identityFields.passport_no) {
+            const { normalizePassport } = await import('../services/candidateService');
+            const normalizedPassport = normalizePassport(identityFields.passport_no);
+            if (normalizedPassport) {
+              const { data } = await db
+                .from('candidates')
+                .select('id')
+                .eq('passport_normalized', normalizedPassport)
+                .maybeSingle();
+              if (data) existingCandidate = data;
+            }
+          }
+          
+          // Also try fuzzy name match if we have a name
+          if (!existingCandidate && candidateName && candidateName !== 'Unknown') {
+            const { data: candidates } = await db
+              .from('candidates')
+              .select('id, name')
+              .ilike('name', `%${candidateName.split(' ')[0]}%`)
+              .limit(5);
+            
+            // Simple fuzzy match - check if first name matches
+            if (candidates && candidates.length > 0) {
+              const firstName = candidateName.split(' ')[0].toLowerCase();
+              const match = candidates.find((c: any) => 
+                c.name.toLowerCase().includes(firstName) || firstName.includes(c.name.toLowerCase().split(' ')[0])
+              );
+              if (match) existingCandidate = match;
+            }
+          }
+        }
+        
+        let candidate;
+        if (existingCandidate) {
+          // Update existing candidate
+          console.log(`[CVParser] Found existing candidate ${existingCandidate.id}, updating with CV data...`);
+          const { updateCandidate } = await import('../services/candidateService');
+          const candidateData: any = {};
+          
+          // Map parsed data to update fields
+          const parsedCandidate = parsed.candidate || {};
+          if (parsedCandidate.full_name) candidateData.name = parsedCandidate.full_name;
+          if (identityFields?.father_name) candidateData.father_name = identityFields.father_name;
+          if (identityFields?.cnic) candidateData.cnic = identityFields.cnic;
+          if (identityFields?.passport_no) candidateData.passport = identityFields.passport_no;
+          if (identityFields?.date_of_birth || identityFields?.dob) {
+            // Parse date
+            const dobStr = identityFields.date_of_birth || identityFields.dob;
+            if (dobStr.includes(' ')) {
+              const date = new Date(dobStr);
+              if (!isNaN(date.getTime())) candidateData.date_of_birth = date.toISOString().split('T')[0];
+            } else if (dobStr.includes('-')) {
+              const parts = dobStr.split('-');
+              if (parts[0].length === 4) {
+                candidateData.date_of_birth = dobStr;
+              } else {
+                candidateData.date_of_birth = `${parts[2]}-${parts[1]}-${parts[0]}`;
+              }
+            }
+          }
+          if (parsedCandidate.nationality || identityFields?.nationality) {
+            candidateData.nationality = parsedCandidate.nationality || identityFields.nationality;
+          }
+          if (parsedCandidate.position) candidateData.position = parsedCandidate.position;
+          if (parsedCandidate.experience_years) candidateData.experience_years = parsedCandidate.experience_years;
+          
+          candidate = await updateCandidate(existingCandidate.id, candidateData, 'system');
+          
+          // Link attachment to existing candidate
+          const db = supabaseAdminClient();
+          await db
+            .from('inbox_attachments')
+            .update({ candidate_id: existingCandidate.id })
+            .eq('id', attachmentId);
+          
+          console.log(`[CVParser] Updated existing candidate ${existingCandidate.id} with CV data`);
+        } else {
+          // Create new candidate from parsed data (including identity fields) and link to attachment
+          candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields);
+        }
+        
+        const newCandidate = candidate;
 
         // IMPORTANT: Set cv_received flag immediately after candidate is created from inbox CV
         // This ensures the document flag shows green/red on the card from the start
         if (newCandidate?.id) {
           try {
-            const { updateDocumentFlagsController } = await import('../controllers/candidateController');
-            const mockReq = { params: { id: newCandidate.id }, body: {} } as any;
-            const mockRes = {
-              status: (code: number) => ({ 
-                json: (data: any) => {
-                  if (code >= 400) {
-                    console.error(`[CVParser] Flag update failed (${code}):`, data);
-                  } else {
-                    console.log(`[CVParser] Document flags updated for candidate ${newCandidate.id} (CV from inbox)`);
-                  }
-                  return mockRes;
-                }
-              }),
-            } as any;
+            // Call the service function directly instead of the controller to avoid mock response issues
+            const db = supabaseAdminClient();
+            const { data: documents } = await db
+              .from('candidate_documents')
+              .select('category')
+              .eq('candidate_id', newCandidate.id);
             
-            await updateDocumentFlagsController(mockReq, mockRes);
-            console.log(`[CVParser] Successfully set cv_received flag for candidate ${newCandidate.id}`);
+            const hasCV = documents?.some((d: any) => d.category === 'cv_resume' || d.category === 'cv');
+            
+            if (hasCV || parsed.candidate) {
+              await db
+                .from('candidates')
+                .update({ 
+                  cv_received: true, 
+                  cv_received_at: new Date().toISOString() 
+                })
+                .eq('id', newCandidate.id);
+              console.log(`[CVParser] Successfully set cv_received flag for candidate ${newCandidate.id}`);
+            }
           } catch (flagError: any) {
             // Log but don't fail the parsing job if flag update fails
             console.error(`[CVParser] Failed to update document flags for candidate ${newCandidate.id}:`, flagError?.message);

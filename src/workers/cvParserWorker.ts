@@ -123,11 +123,12 @@ export function startCvParserWorker() {
         const payload = JSON.stringify(payloadObj);
 
         // Step 1: Parse CV for professional fields
+        // Note: /parse-cv endpoint expects x-signature (not x-hmac-signature)
         const res = await fetch(`${PY_URL}/parse-cv`, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-hmac-signature': signHmac(payload),
+            'x-signature': signHmac(payload),
           },
           body: payload,
         });

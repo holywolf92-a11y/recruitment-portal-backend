@@ -559,155 +559,73 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     }
 
     // =============================================================================
-    // STEP 8: Intelligently update candidate record with extracted information
-    // Only update if field is missing or new value is more complete
+    // STEP 8: Progressive Data Completion - Enrich candidate with extracted information
+    // Only fill missing fields, never overwrite existing values
+    // Priority: Manual > Any Document
     // =============================================================================
-    console.log(`[DocumentVerification] Checking if candidate update needed - extracted_identity:`, aiResult.extracted_identity ? Object.keys(aiResult.extracted_identity).length : 0, `finalStatus:`, finalStatus);
+    console.log(`[DocumentVerification] Progressive data completion - extracted_identity:`, aiResult.extracted_identity ? Object.keys(aiResult.extracted_identity).length : 0, `finalStatus:`, finalStatus);
     
     // Check if we have any non-null identity fields
     const hasIdentityFields = aiResult.extracted_identity && 
       Object.values(aiResult.extracted_identity).some((val: any) => val !== null && val !== undefined && val !== '');
     
     if (hasIdentityFields && finalStatus === VERIFICATION_STATUS.VERIFIED && aiResult.extracted_identity) {
-      console.log(`[DocumentVerification] Candidate update condition met - proceeding with update`);
+      console.log(`[DocumentVerification] Progressive enrichment condition met - proceeding with enrichment`);
       try {
-        // Get current candidate record to check what fields need updating
-        // Note: Database only has passport_normalized, not passport column
-        const { data: currentCandidate, error: fetchError } = await db
-          .from('candidates')
-          .select('nationality, passport_normalized, passport_expiry, date_of_birth')
-          .eq('id', candidateId)
-          .maybeSingle();
-
-        if (!fetchError && currentCandidate) {
-          console.log(`[DocumentVerification] Current candidate record:`, {
-            hasNationality: !!currentCandidate.nationality,
-            hasPassportNormalized: !!currentCandidate.passport_normalized,
-            hasPassportExpiry: !!currentCandidate.passport_expiry,
-            hasDOB: !!currentCandidate.date_of_birth,
-          });
-          
-          const candidateUpdates: any = {};
-          const identity = aiResult.extracted_identity; // Store reference to avoid repeated checks
-          
-          console.log(`[DocumentVerification] Extracted identity fields:`, {
-            hasNationality: !!identity.nationality,
-            hasPassport: !!identity.passport_no,
-            hasExpiry: !!(identity.passport_expiry || identity.expiry_date),
-            hasDOB: !!identity.date_of_birth,
-          });
-
-          // Update nationality if missing or if document has it
-          if (identity.nationality && !currentCandidate.nationality) {
-            candidateUpdates.nationality = identity.nationality;
-            console.log(`[DocumentVerification] Updating nationality: ${identity.nationality}`);
-          } else if (identity.nationality && currentCandidate.nationality) {
-            console.log(`[DocumentVerification] Skipping nationality update - candidate already has: ${currentCandidate.nationality}`);
-          }
-
-          // Update passport number if missing or if document has it
-          // Note: Database only has passport_normalized column, not passport
-          if (identity.passport_no) {
-            const normalizedPassport = normalizePassport(identity.passport_no);
-            if (!currentCandidate.passport_normalized) {
-              candidateUpdates.passport_normalized = normalizedPassport;
-              // Note: We store the normalized version only (database doesn't have passport column)
-              console.log(`[DocumentVerification] Updating passport_normalized: ${normalizedPassport} (from: ${identity.passport_no})`);
-            } else {
-              console.log(`[DocumentVerification] Skipping passport update - candidate already has: ${currentCandidate.passport_normalized}`);
-            }
-          }
-
-          // Update passport expiry if missing or if document has it
-          if (identity.passport_expiry || identity.expiry_date) {
-            const expiryDate = identity.passport_expiry || identity.expiry_date;
-            if (!currentCandidate.passport_expiry && expiryDate) {
-              // Try to parse the date (handle formats like "09-06-2032" or "2022-06-10")
-              try {
-                let parsedDate: Date;
-                if (expiryDate.includes('-') && expiryDate.length === 10) {
-                  // Format: DD-MM-YYYY or YYYY-MM-DD
-                  const parts = expiryDate.split('-');
-                  if (parts[0].length === 4) {
-                    // YYYY-MM-DD
-                    parsedDate = new Date(expiryDate);
-                  } else {
-                    // DD-MM-YYYY
-                    parsedDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-                  }
-                } else {
-                  parsedDate = new Date(expiryDate);
-                }
-                
-                if (!isNaN(parsedDate.getTime())) {
-                  candidateUpdates.passport_expiry = parsedDate.toISOString().split('T')[0];
-                  console.log(`[DocumentVerification] Updating passport expiry: ${candidateUpdates.passport_expiry}`);
-                }
-              } catch (dateError) {
-                console.warn(`[DocumentVerification] Failed to parse expiry date: ${expiryDate}`, dateError);
-              }
-            }
-          }
-
-          // Update date of birth if missing or if document has it
-          if (identity.date_of_birth && !currentCandidate.date_of_birth) {
-            try {
-              // Try to parse the date (handle formats like "15-08-1994" or "1994-08-15")
-              let parsedDate: Date;
-              const dob = identity.date_of_birth;
-              if (dob.includes('-') && dob.length === 10) {
-                const parts = dob.split('-');
-                if (parts[0].length === 4) {
-                  // YYYY-MM-DD
-                  parsedDate = new Date(dob);
-                } else {
-                  // DD-MM-YYYY
-                  parsedDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-                }
-              } else {
-                parsedDate = new Date(dob);
-              }
-              
-              if (!isNaN(parsedDate.getTime())) {
-                candidateUpdates.date_of_birth = parsedDate.toISOString().split('T')[0];
-                console.log(`[DocumentVerification] Updating date of birth: ${candidateUpdates.date_of_birth}`);
-              }
-            } catch (dateError) {
-              console.warn(`[DocumentVerification] Failed to parse date of birth: ${identity.date_of_birth}`, dateError);
-            }
-          }
-
-          // Apply updates if any
-          if (Object.keys(candidateUpdates).length > 0) {
-            candidateUpdates.updated_at = new Date().toISOString();
-            console.log(`[DocumentVerification] Applying candidate updates:`, candidateUpdates);
-            
-            const { error: updateError, data: updateData } = await db
-              .from('candidates')
-              .update(candidateUpdates)
-              .eq('id', candidateId)
-              .select();
-            
-            if (updateError) {
-              console.error(`[DocumentVerification] Database update failed:`, updateError);
-            } else {
-              console.log(`[DocumentVerification] ✅ Successfully updated candidate record for ${candidateId} with fields:`, Object.keys(candidateUpdates));
-              console.log(`[DocumentVerification] Updated record:`, updateData?.[0] ? {
-                nationality: updateData[0].nationality,
-                passport_normalized: updateData[0].passport_normalized,
-                passport_expiry: updateData[0].passport_expiry,
-                date_of_birth: updateData[0].date_of_birth,
-              } : 'No data returned');
-            }
-          } else {
-            console.log(`[DocumentVerification] No candidate updates needed - all fields already present or missing in extracted data`);
-          }
-        } else {
-          console.log(`[DocumentVerification] Cannot update candidate - fetchError: ${fetchError?.message || 'none'}, currentCandidate: ${currentCandidate ? 'found' : 'not found'}`);
+        // Import progressive completion service
+        const { enrichCandidateData, updateMissingFields } = await import('../services/progressiveDataCompletionService');
+        
+        // Determine document source type from category
+        let documentSource: 'cv' | 'passport' | 'driving_license' | 'medical' | 'certificate' | 'other' = 'other';
+        if (aiResult.category === 'cv_resume' || aiResult.category === 'cv') {
+          documentSource = 'cv';
+        } else if (aiResult.category === 'passport') {
+          documentSource = 'passport';
+        } else if (aiResult.category === 'driving_license') {
+          documentSource = 'driving_license';
+        } else if (aiResult.category === 'medical_report' || aiResult.category === 'medical') {
+          documentSource = 'medical';
+        } else if (aiResult.category === 'certificate' || aiResult.category === 'certificates') {
+          documentSource = 'certificate';
         }
-      } catch (updateError: any) {
-        console.error('[DocumentVerification] ❌ Exception while updating candidate with extracted information:', updateError);
-        console.error('[DocumentVerification] Error stack:', updateError?.stack);
+        
+        // Map extracted_identity to enrichment data format
+        const enrichmentData: Record<string, any> = {};
+        const identity = aiResult.extracted_identity;
+        
+        if (identity.name) enrichmentData.name = identity.name;
+        if (identity.father_name) enrichmentData.father_name = identity.father_name;
+        if (identity.cnic) enrichmentData.cnic = identity.cnic;
+        if (identity.passport_no) enrichmentData.passport_no = identity.passport_no; // Will be mapped to passport_normalized
+        if (identity.email) enrichmentData.email = identity.email;
+        if (identity.phone) enrichmentData.phone = identity.phone;
+        if (identity.date_of_birth) enrichmentData.date_of_birth = identity.date_of_birth;
+        if (identity.nationality) enrichmentData.nationality = identity.nationality;
+        if (identity.passport_expiry || identity.expiry_date) enrichmentData.passport_expiry = identity.passport_expiry || identity.expiry_date;
+        if (identity.issue_date) enrichmentData.issue_date = identity.issue_date;
+        if (identity.place_of_issue) enrichmentData.place_of_issue = identity.place_of_issue;
+        
+        // Enrich candidate data (progressive completion)
+        const enrichmentResult = await enrichCandidateData(
+          candidateId,
+          enrichmentData,
+          documentSource,
+          documentId,
+          aiResult.category
+        );
+        
+        console.log(`[DocumentVerification] ✅ Progressive enrichment completed:`, {
+          updated: enrichmentResult.updated,
+          skipped: enrichmentResult.skipped,
+          source: documentSource,
+        });
+        
+        // Recalculate missing fields
+        await updateMissingFields(candidateId);
+        
+      } catch (enrichmentError: any) {
+        console.error('[DocumentVerification] ❌ Exception in progressive enrichment:', enrichmentError);
+        console.error('[DocumentVerification] Error stack:', enrichmentError?.stack);
         // Don't fail the verification if candidate update fails
       }
     }

@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -57,6 +90,62 @@ async function callAICategorizationService(fileContent, fileName, mimeType) {
         }
         const result = await response.json();
         console.log('[AI Categorization] Raw parser response:', JSON.stringify(result, null, 2));
+        // Map Python parser response to our expected format
+        // Python returns: { success, category, confidence, extracted_identity: {...} } OR { identity_fields: {...} }
+        // We need: { success, category, confidence, extracted_identity: {...} }
+        if (result.extracted_identity) {
+            // Python parser already returns extracted_identity format - use it directly
+            // Ensure all fields are present
+            const identity = result.extracted_identity;
+            result.extracted_identity = {
+                name: identity.name || null,
+                father_name: identity.father_name || null,
+                cnic: identity.cnic || null,
+                passport_no: identity.passport_no || null,
+                email: identity.email || null,
+                phone: identity.phone || null,
+                date_of_birth: identity.date_of_birth || identity.dob || null,
+                document_number: identity.document_number || null,
+                nationality: identity.nationality || null,
+                passport_expiry: identity.passport_expiry || identity.expiry_date || null,
+                expiry_date: identity.expiry_date || identity.passport_expiry || null,
+                issue_date: identity.issue_date || null,
+                place_of_issue: identity.place_of_issue || null,
+            };
+        }
+        else if (result.identity_fields) {
+            // Backward compatibility: map identity_fields to extracted_identity
+            const identityFields = result.identity_fields;
+            result.extracted_identity = {
+                name: identityFields.name || null,
+                father_name: identityFields.father_name || null,
+                cnic: identityFields.cnic || null,
+                passport_no: identityFields.passport_no || null,
+                email: identityFields.email || null,
+                phone: identityFields.phone || null,
+                date_of_birth: identityFields.date_of_birth || identityFields.dob || null,
+                document_number: identityFields.document_number || null,
+                nationality: identityFields.nationality || null,
+                passport_expiry: identityFields.passport_expiry || identityFields.expiry_date || null,
+                expiry_date: identityFields.expiry_date || identityFields.passport_expiry || null,
+                issue_date: identityFields.issue_date || null,
+                place_of_issue: identityFields.place_of_issue || null,
+            };
+            console.log('[AI Categorization] Mapped identity_fields to extracted_identity:', {
+                hasName: !!result.extracted_identity.name,
+                hasNationality: !!result.extracted_identity.nationality,
+                hasPassport: !!result.extracted_identity.passport_no,
+                hasExpiry: !!result.extracted_identity.passport_expiry,
+                hasDOB: !!result.extracted_identity.date_of_birth,
+            });
+        }
+        // Log final extracted_identity for debugging
+        if (result.extracted_identity) {
+            const nonNullFields = Object.entries(result.extracted_identity)
+                .filter(([_, val]) => val !== null && val !== undefined && val !== '')
+                .map(([key, _]) => key);
+            console.log('[AI Categorization] Final extracted_identity has', nonNullFields.length, 'non-null fields:', nonNullFields);
+        }
         return result;
     }
     catch (error) {
@@ -265,10 +354,23 @@ async function processDocumentVerification(job) {
             }
         }
         else {
-            // No identity fields extracted - needs manual review
-            finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
-            reasonCode = documentCategories_1.VERIFICATION_REASON_CODES.NO_ID_FOUND;
-            await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, undefined, { notes: 'No identity fields extracted from document' });
+            // No identity fields extracted from document
+            // If document was manually uploaded for a specific candidate AND category is correctly identified,
+            // we can still verify it since the user explicitly linked it to that candidate
+            if (candidateId && aiResult.confidence && aiResult.confidence >= documentCategories_1.AI_CONFIDENCE_THRESHOLD) {
+                // Document category was correctly identified (high confidence) and candidate_id is provided
+                // This is a manual upload - trust the user's selection
+                console.log(`[DocumentVerification] No identity fields extracted, but document category correctly identified (confidence: ${aiResult.confidence}) and candidate_id provided. Verifying based on manual upload.`);
+                finalStatus = documentCategories_1.VERIFICATION_STATUS.VERIFIED;
+                reasonCode = documentCategories_1.VERIFICATION_REASON_CODES.VERIFIED;
+                await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.VERIFIED, reasonCode, undefined, { notes: 'No identity fields extracted, but verified based on manual upload and correct category identification' });
+            }
+            else {
+                // Low confidence or no candidate_id - needs manual review
+                finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
+                reasonCode = documentCategories_1.VERIFICATION_REASON_CODES.NO_ID_FOUND;
+                await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, undefined, { notes: `No identity fields extracted. Confidence: ${aiResult.confidence || 'N/A'}, Candidate ID provided: ${!!candidateId}` });
+            }
         }
         // =============================================================================
         // STEP 6: Category assignment decision
@@ -336,6 +438,78 @@ async function processDocumentVerification(job) {
         catch (flagError) {
             console.error('[DocumentVerification] Failed to update candidate flags:', flagError);
             // Don't fail the verification if flag update fails
+        }
+        // =============================================================================
+        // STEP 8: Progressive Data Completion - Enrich candidate with extracted information
+        // Only fill missing fields, never overwrite existing values
+        // Priority: Manual > Any Document
+        // =============================================================================
+        console.log(`[DocumentVerification] Progressive data completion - extracted_identity:`, aiResult.extracted_identity ? Object.keys(aiResult.extracted_identity).length : 0, `finalStatus:`, finalStatus);
+        // Check if we have any non-null identity fields
+        const hasIdentityFields = aiResult.extracted_identity &&
+            Object.values(aiResult.extracted_identity).some((val) => val !== null && val !== undefined && val !== '');
+        if (hasIdentityFields && finalStatus === documentCategories_1.VERIFICATION_STATUS.VERIFIED && aiResult.extracted_identity) {
+            console.log(`[DocumentVerification] Progressive enrichment condition met - proceeding with enrichment`);
+            try {
+                // Import progressive completion service
+                const { enrichCandidateData, updateMissingFields } = await Promise.resolve().then(() => __importStar(require('../services/progressiveDataCompletionService')));
+                // Determine document source type from category
+                let documentSource = 'other';
+                if (aiResult.category === 'cv_resume' || aiResult.category === 'cv') {
+                    documentSource = 'cv';
+                }
+                else if (aiResult.category === 'passport') {
+                    documentSource = 'passport';
+                }
+                else if (aiResult.category === 'driving_license') {
+                    documentSource = 'driving_license';
+                }
+                else if (aiResult.category === 'medical_report' || aiResult.category === 'medical') {
+                    documentSource = 'medical';
+                }
+                else if (aiResult.category === 'certificate' || aiResult.category === 'certificates') {
+                    documentSource = 'certificate';
+                }
+                // Map extracted_identity to enrichment data format
+                const enrichmentData = {};
+                const identity = aiResult.extracted_identity;
+                if (identity.name)
+                    enrichmentData.name = identity.name;
+                if (identity.father_name)
+                    enrichmentData.father_name = identity.father_name;
+                if (identity.cnic)
+                    enrichmentData.cnic = identity.cnic;
+                if (identity.passport_no)
+                    enrichmentData.passport_no = identity.passport_no; // Will be mapped to passport_normalized
+                if (identity.email)
+                    enrichmentData.email = identity.email;
+                if (identity.phone)
+                    enrichmentData.phone = identity.phone;
+                if (identity.date_of_birth)
+                    enrichmentData.date_of_birth = identity.date_of_birth;
+                if (identity.nationality)
+                    enrichmentData.nationality = identity.nationality;
+                if (identity.passport_expiry || identity.expiry_date)
+                    enrichmentData.passport_expiry = identity.passport_expiry || identity.expiry_date;
+                if (identity.issue_date)
+                    enrichmentData.issue_date = identity.issue_date;
+                if (identity.place_of_issue)
+                    enrichmentData.place_of_issue = identity.place_of_issue;
+                // Enrich candidate data (progressive completion)
+                const enrichmentResult = await enrichCandidateData(candidateId, enrichmentData, documentSource, documentId, aiResult.category);
+                console.log(`[DocumentVerification] ✅ Progressive enrichment completed:`, {
+                    updated: enrichmentResult.updated,
+                    skipped: enrichmentResult.skipped,
+                    source: documentSource,
+                });
+                // Recalculate missing fields
+                await updateMissingFields(candidateId);
+            }
+            catch (enrichmentError) {
+                console.error('[DocumentVerification] ❌ Exception in progressive enrichment:', enrichmentError);
+                console.error('[DocumentVerification] Error stack:', enrichmentError?.stack);
+                // Don't fail the verification if candidate update fails
+            }
         }
         // Log final status change
         await documentVerificationLogService_1.documentVerificationLogService.log({

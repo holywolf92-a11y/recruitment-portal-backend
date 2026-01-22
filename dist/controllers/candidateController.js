@@ -43,7 +43,12 @@ async function getCandidateController(req, res) {
             return res.status(400).json({ error: 'Candidate ID is required' });
         }
         const candidate = await (0, candidateService_1.getCandidateById)(id, userId);
-        res.json({ candidate });
+        // Map passport_normalized to passport for frontend compatibility
+        const mappedCandidate = candidate ? {
+            ...candidate,
+            passport: candidate.passport_normalized || candidate.passport || null,
+        } : candidate;
+        res.json({ candidate: mappedCandidate });
     }
     catch (error) {
         console.error('Error fetching candidate:', error);

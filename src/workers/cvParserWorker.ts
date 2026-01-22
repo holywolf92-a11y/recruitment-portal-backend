@@ -199,155 +199,118 @@ export function startCvParserWorker() {
           error_message: null,
         });
 
-        // Check if candidate already exists (by email, CNIC, or passport from identity fields OR parsed data)
-        // If exists, update it instead of creating a new one
-        // IMPORTANT: Check using BOTH identityFields (from categorize-document) AND parsed data (from parse-cv)
-        let existingCandidate = null;
+        // Use progressive completion service to find existing candidate
+        // Priority: CNIC > Passport > Email/Phone > Name + Father Name + DOB
+        const { findExistingCandidate, enrichCandidateData, updateMissingFields } = await import('../services/progressiveDataCompletionService');
         const db = supabaseAdminClient();
+        
+        // Combine data from both sources (parse-cv and categorize-document)
         const parsedCandidate = parsed.candidate || {};
-        const candidateName = parsedCandidate.full_name || identityFields?.name;
+        const combinedData: Record<string, any> = {
+          // From parse-cv
+          name: parsedCandidate.full_name,
+          email: parsedCandidate.email,
+          phone: parsedCandidate.phone,
+          nationality: parsedCandidate.nationality,
+          father_name: parsedCandidate.father_name,
+          cnic: parsedCandidate.cnic,
+          passport: parsedCandidate.passport,
+          passport_no: parsedCandidate.passport, // For matching
+          date_of_birth: parsedCandidate.date_of_birth,
+          marital_status: parsedCandidate.marital_status,
+          position: parsedCandidate.position,
+          experience_years: parsedCandidate.experience_years,
+          country_of_interest: parsedCandidate.country_of_interest,
+          skills: parsedCandidate.skills,
+          languages: parsedCandidate.languages,
+          education: parsedCandidate.education,
+          certifications: parsedCandidate.certifications,
+          previous_employment: parsedCandidate.previous_employment,
+          passport_expiry: parsedCandidate.passport_expiry,
+          professional_summary: parsedCandidate.professional_summary || parsedCandidate.summary,
+        };
         
-        // Get email from either source
-        const candidateEmail = identityFields?.email || parsedCandidate.email;
-        
-        // Get CNIC from either source
-        const candidateCNIC = identityFields?.cnic || parsedCandidate.cnic;
-        
-        // Get passport from either source
-        const candidatePassport = identityFields?.passport_no || parsedCandidate.passport;
-        
-        // Try to find existing candidate by email, CNIC, or passport
-        if (candidateEmail) {
-          const { data } = await db
-            .from('candidates')
-            .select('id')
-            .eq('email', candidateEmail)
-            .maybeSingle();
-          if (data) existingCandidate = data;
-        }
-        
-        if (!existingCandidate && candidateCNIC) {
-          const { normalizeCNIC } = await import('../services/candidateService');
-          const normalizedCNIC = normalizeCNIC(candidateCNIC);
-          if (normalizedCNIC) {
-            const { data } = await db
-              .from('candidates')
-              .select('id')
-              .eq('cnic_normalized', normalizedCNIC)
-              .maybeSingle();
-            if (data) existingCandidate = data;
+        // Override with identityFields if available (from categorize-document)
+        if (identityFields) {
+          if (identityFields.name) combinedData.name = identityFields.name;
+          if (identityFields.father_name) combinedData.father_name = identityFields.father_name;
+          if (identityFields.cnic) combinedData.cnic = identityFields.cnic;
+          if (identityFields.passport_no) {
+            combinedData.passport = identityFields.passport_no;
+            combinedData.passport_no = identityFields.passport_no;
+          }
+          if (identityFields.email) combinedData.email = identityFields.email;
+          if (identityFields.phone) combinedData.phone = identityFields.phone;
+          if (identityFields.date_of_birth || identityFields.dob) {
+            combinedData.date_of_birth = identityFields.date_of_birth || identityFields.dob;
+          }
+          if (identityFields.nationality) combinedData.nationality = identityFields.nationality;
+          if (identityFields.passport_expiry || identityFields.expiry_date) {
+            combinedData.passport_expiry = identityFields.passport_expiry || identityFields.expiry_date;
           }
         }
         
-        if (!existingCandidate && candidatePassport) {
-          const { normalizePassport } = await import('../services/candidateService');
-          const normalizedPassport = normalizePassport(candidatePassport);
-          if (normalizedPassport) {
-            const { data } = await db
-              .from('candidates')
-              .select('id')
-              .eq('passport_normalized', normalizedPassport)
-              .maybeSingle();
-            if (data) existingCandidate = data;
-          }
-        }
-        
-        // Also try fuzzy name match if we have a name
-        if (!existingCandidate && candidateName && candidateName !== 'Unknown') {
-          const { data: candidates } = await db
-            .from('candidates')
-            .select('id, name')
-            .ilike('name', `%${candidateName.split(' ')[0]}%`)
-            .limit(5);
-          
-          // Simple fuzzy match - check if first name matches
-          if (candidates && candidates.length > 0) {
-            const firstName = candidateName.split(' ')[0].toLowerCase();
-            const match = candidates.find((c: any) => 
-              c.name.toLowerCase().includes(firstName) || firstName.includes(c.name.toLowerCase().split(' ')[0])
-            );
-            if (match) existingCandidate = match;
-          }
-        }
+        // Find existing candidate using progressive completion matching
+        const existingCandidateId = await findExistingCandidate(combinedData);
         
         let candidate;
-        if (existingCandidate) {
-          // Update existing candidate
-          console.log(`[CVParser] Found existing candidate ${existingCandidate.id}, updating with CV data...`);
-          const { updateCandidate } = await import('../services/candidateService');
-          const candidateData: any = {};
+        if (existingCandidateId) {
+          // Update existing candidate using progressive completion
+          console.log(`[CVParser] Found existing candidate ${existingCandidateId}, enriching with CV data...`);
           
-          // Map parsed data to update fields - use BOTH identityFields AND parsedCandidate
-          // Priority: identityFields (from categorize-document) > parsedCandidate (from parse-cv)
-          if (parsedCandidate.full_name) candidateData.name = parsedCandidate.full_name;
+          // Enrich candidate with CV data (progressive completion - only fills missing fields)
+          const enrichmentResult = await enrichCandidateData(
+            existingCandidateId,
+            combinedData,
+            'cv',
+            attachmentId,
+            'cv'
+          );
           
-          // Personal identity fields - check both sources
-          candidateData.father_name = identityFields?.father_name || parsedCandidate.father_name || undefined;
-          candidateData.cnic = identityFields?.cnic || parsedCandidate.cnic || undefined;
-          candidateData.passport = identityFields?.passport_no || parsedCandidate.passport || undefined;
-          candidateData.marital_status = parsedCandidate.marital_status || undefined;
-          
-          // Date of birth - parse from either source
-          const dobStr = identityFields?.date_of_birth || identityFields?.dob || parsedCandidate.date_of_birth;
-          if (dobStr) {
-            try {
-              if (dobStr.includes(' ')) {
-                // Format: "13 October 1983"
-                const date = new Date(dobStr);
-                if (!isNaN(date.getTime())) candidateData.date_of_birth = date.toISOString().split('T')[0];
-              } else if (dobStr.includes('-')) {
-                const parts = dobStr.split('-');
-                if (parts[0].length === 4) {
-                  // YYYY-MM-DD
-                  candidateData.date_of_birth = dobStr;
-                } else {
-                  // DD-MM-YYYY
-                  candidateData.date_of_birth = `${parts[2]}-${parts[1]}-${parts[0]}`;
-                }
-              } else {
-                candidateData.date_of_birth = dobStr;
-              }
-            } catch (e) {
-              console.warn(`[CVParser] Failed to parse date of birth: ${dobStr}`, e);
-            }
-          }
-          
-          // Nationality - check both sources
-          candidateData.nationality = parsedCandidate.nationality || identityFields?.nationality || undefined;
-          
-          // Professional fields
-          if (parsedCandidate.position) candidateData.position = parsedCandidate.position;
-          if (parsedCandidate.experience_years) candidateData.experience_years = parsedCandidate.experience_years;
-          if (parsedCandidate.country_of_interest) candidateData.country_of_interest = parsedCandidate.country_of_interest;
-          if (parsedCandidate.skills) candidateData.skills = Array.isArray(parsedCandidate.skills) ? parsedCandidate.skills.join(', ') : parsedCandidate.skills;
-          if (parsedCandidate.languages) candidateData.languages = Array.isArray(parsedCandidate.languages) ? parsedCandidate.languages.join(', ') : parsedCandidate.languages;
-          if (parsedCandidate.education) {
-            candidateData.education = Array.isArray(parsedCandidate.education) && parsedCandidate.education.length > 0 
-              ? parsedCandidate.education.map((e: any) => `${e.degree} from ${e.institution}`).join('; ')
-              : undefined;
-          }
-          
-          console.log(`[CVParser] Updating candidate with data:`, {
-            hasFatherName: !!candidateData.father_name,
-            hasCNIC: !!candidateData.cnic,
-            hasPassport: !!candidateData.passport,
-            hasDOB: !!candidateData.date_of_birth,
-            hasMaritalStatus: !!candidateData.marital_status,
-            hasNationality: !!candidateData.nationality,
+          console.log(`[CVParser] ✅ Progressive enrichment completed:`, {
+            updated: enrichmentResult.updated,
+            skipped: enrichmentResult.skipped,
+            source: 'cv',
           });
           
-          candidate = await updateCandidate(existingCandidate.id, candidateData, 'system');
+          // Recalculate missing fields
+          await updateMissingFields(existingCandidateId);
+          
+          // Get updated candidate
+          const { data: updatedCandidate } = await db
+            .from('candidates')
+            .select('*')
+            .eq('id', existingCandidateId)
+            .maybeSingle();
+          
+          candidate = updatedCandidate;
           
           // Link attachment to existing candidate
           await db
             .from('inbox_attachments')
-            .update({ candidate_id: existingCandidate.id })
+            .update({ candidate_id: existingCandidateId })
             .eq('id', attachmentId);
           
-          console.log(`[CVParser] ✅ Updated existing candidate ${existingCandidate.id} with CV data`);
+          console.log(`[CVParser] ✅ Enriched existing candidate ${existingCandidateId} with CV data`);
         } else {
           // Create new candidate from parsed data (including identity fields) and link to attachment
           candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields);
+          
+          // After creation, enrich with any additional data and recalculate missing fields
+          if (candidate?.id) {
+            try {
+              await enrichCandidateData(
+                candidate.id,
+                combinedData,
+                'cv',
+                attachmentId,
+                'cv'
+              );
+              await updateMissingFields(candidate.id);
+            } catch (enrichError) {
+              console.warn(`[CVParser] Failed to enrich newly created candidate:`, enrichError);
+            }
+          }
         }
         
         const newCandidate = candidate;

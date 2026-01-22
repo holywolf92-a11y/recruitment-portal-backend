@@ -202,20 +202,27 @@ class IdentityMatchingService {
             }
             // PRIORITY 5: Name-only matching (if we got here, no strong identifiers matched)
             // If name matches and no mismatches found, we can verify with lower confidence
+            // This is especially useful for documents like passports where passport_no might not be extracted
             if (extractedIdentity.name) {
                 const nameMatch = this.fuzzyNameMatch(extractedIdentity.name, candidate.name);
                 if (nameMatch && mismatchFields.length === 0) {
                     // Name matches and no mismatches - verify with lower confidence
+                    // For documents like passports, even if passport_no isn't extracted, name match is acceptable
+                    matchedOn.push('name');
                     return {
                         matched: true,
-                        matched_on: ['name'],
+                        matched_on: matchedOn,
                         confidence: 0.70, // Lower confidence for name-only match
                         reason_code: documentCategories_1.VERIFICATION_REASON_CODES.VERIFIED,
                         candidate_fields: {
                             name: candidate.name,
                         },
-                        notes: 'Verified by name only (no strong identifiers found in document)',
+                        notes: 'Verified by name only (no strong identifiers found in document, but name matches)',
                     };
+                }
+                else if (!nameMatch) {
+                    // Name doesn't match - add to mismatch fields
+                    mismatchFields.push('name');
                 }
             }
             // No strong identifiers found in document - UNVERIFIABLE
@@ -238,6 +245,7 @@ class IdentityMatchingService {
     /**
      * Fuzzy name matching with normalization
      * Returns true if names are similar (handles case, spacing, and common variations)
+     * Handles cases like "Muhammad Farhan" matching "FARHAN" or "Farhan"
      */
     fuzzyNameMatch(name1, name2) {
         if (!name1 || !name2)
@@ -253,12 +261,26 @@ class IdentityMatchingService {
         if (n1 === n2)
             return true;
         // Split into words
-        const words1 = n1.split(' ');
-        const words2 = n2.split(' ');
+        const words1 = n1.split(' ').filter(w => w.length > 0);
+        const words2 = n2.split(' ').filter(w => w.length > 0);
+        // Remove common prefixes/titles that don't help with matching
+        const commonPrefixes = ['muhammad', 'mohammad', 'mohammed', 'muh', 'md', 'mr', 'mrs', 'miss', 'dr', 'prof'];
+        const cleanWords = (words) => words.filter(w => !commonPrefixes.includes(w));
+        const clean1 = cleanWords(words1);
+        const clean2 = cleanWords(words2);
+        // If after cleaning, one name is empty, use original
+        const final1 = clean1.length > 0 ? clean1 : words1;
+        const final2 = clean2.length > 0 ? clean2 : words2;
         // Check if all words from shorter name are in longer name
-        const shorter = words1.length <= words2.length ? words1 : words2;
-        const longer = words1.length > words2.length ? words1 : words2;
-        const allWordsMatch = shorter.every(word => longer.some(w => w.includes(word) || word.includes(w)));
+        const shorter = final1.length <= final2.length ? final1 : final2;
+        const longer = final1.length > final2.length ? final1 : final2;
+        // If shorter name has only one word, check if it matches any word in longer name
+        if (shorter.length === 1) {
+            const shortWord = shorter[0];
+            return longer.some(w => w === shortWord || w.includes(shortWord) || shortWord.includes(w));
+        }
+        // For multiple words, check if all words from shorter name are in longer name
+        const allWordsMatch = shorter.every(word => longer.some(w => w === word || w.includes(word) || word.includes(w)));
         return allWordsMatch;
     }
     /**

@@ -148,7 +148,23 @@ async function callAICategorizationService(
         issue_date: identityFields.issue_date || null,
         place_of_issue: identityFields.place_of_issue || null,
       };
+      console.log('[AI Categorization] Mapped identity_fields to extracted_identity:', {
+        hasName: !!result.extracted_identity.name,
+        hasNationality: !!result.extracted_identity.nationality,
+        hasPassport: !!result.extracted_identity.passport_no,
+        hasExpiry: !!result.extracted_identity.passport_expiry,
+        hasDOB: !!result.extracted_identity.date_of_birth,
+      });
     }
+    
+    // Log final extracted_identity for debugging
+    if (result.extracted_identity) {
+      const nonNullFields = Object.entries(result.extracted_identity)
+        .filter(([_, val]) => val !== null && val !== undefined && val !== '')
+        .map(([key, _]) => key);
+      console.log('[AI Categorization] Final extracted_identity has', nonNullFields.length, 'non-null fields:', nonNullFields);
+    }
+    
     return result;
   } catch (error: any) {
     console.error('[AI Categorization] Service call failed:', error);

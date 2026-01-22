@@ -579,13 +579,30 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           .maybeSingle();
 
         if (!fetchError && currentCandidate) {
+          console.log(`[DocumentVerification] Current candidate record:`, {
+            hasNationality: !!currentCandidate.nationality,
+            hasPassport: !!currentCandidate.passport,
+            hasPassportNormalized: !!currentCandidate.passport_normalized,
+            hasPassportExpiry: !!currentCandidate.passport_expiry,
+            hasDOB: !!currentCandidate.date_of_birth,
+          });
+          
           const candidateUpdates: any = {};
           const identity = aiResult.extracted_identity; // Store reference to avoid repeated checks
+          
+          console.log(`[DocumentVerification] Extracted identity fields:`, {
+            hasNationality: !!identity.nationality,
+            hasPassport: !!identity.passport_no,
+            hasExpiry: !!(identity.passport_expiry || identity.expiry_date),
+            hasDOB: !!identity.date_of_birth,
+          });
 
           // Update nationality if missing or if document has it
           if (identity.nationality && !currentCandidate.nationality) {
             candidateUpdates.nationality = identity.nationality;
             console.log(`[DocumentVerification] Updating nationality: ${identity.nationality}`);
+          } else if (identity.nationality && currentCandidate.nationality) {
+            console.log(`[DocumentVerification] Skipping nationality update - candidate already has: ${currentCandidate.nationality}`);
           }
 
           // Update passport number if missing or if document has it
@@ -594,7 +611,9 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
             if (!currentCandidate.passport_normalized) {
               candidateUpdates.passport_normalized = normalizedPassport;
               candidateUpdates.passport = identity.passport_no; // Store original format too
-              console.log(`[DocumentVerification] Updating passport: ${identity.passport_no}`);
+              console.log(`[DocumentVerification] Updating passport: ${identity.passport_no} (normalized: ${normalizedPassport})`);
+            } else {
+              console.log(`[DocumentVerification] Skipping passport update - candidate already has: ${currentCandidate.passport_normalized}`);
             }
           }
 
@@ -660,16 +679,34 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           // Apply updates if any
           if (Object.keys(candidateUpdates).length > 0) {
             candidateUpdates.updated_at = new Date().toISOString();
-            await db
+            console.log(`[DocumentVerification] Applying candidate updates:`, candidateUpdates);
+            
+            const { error: updateError, data: updateData } = await db
               .from('candidates')
               .update(candidateUpdates)
-              .eq('id', candidateId);
+              .eq('id', candidateId)
+              .select();
             
-            console.log(`[DocumentVerification] Updated candidate record for ${candidateId} with extracted information:`, Object.keys(candidateUpdates));
+            if (updateError) {
+              console.error(`[DocumentVerification] Database update failed:`, updateError);
+            } else {
+              console.log(`[DocumentVerification] ✅ Successfully updated candidate record for ${candidateId} with fields:`, Object.keys(candidateUpdates));
+              console.log(`[DocumentVerification] Updated record:`, updateData?.[0] ? {
+                nationality: updateData[0].nationality,
+                passport: updateData[0].passport,
+                passport_expiry: updateData[0].passport_expiry,
+                date_of_birth: updateData[0].date_of_birth,
+              } : 'No data returned');
+            }
+          } else {
+            console.log(`[DocumentVerification] No candidate updates needed - all fields already present or missing in extracted data`);
           }
+        } else {
+          console.log(`[DocumentVerification] Cannot update candidate - fetchError: ${fetchError?.message || 'none'}, currentCandidate: ${currentCandidate ? 'found' : 'not found'}`);
         }
       } catch (updateError: any) {
-        console.error('[DocumentVerification] Failed to update candidate with extracted information:', updateError);
+        console.error('[DocumentVerification] ❌ Exception while updating candidate with extracted information:', updateError);
+        console.error('[DocumentVerification] Error stack:', updateError?.stack);
         // Don't fail the verification if candidate update fails
       }
     }

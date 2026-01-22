@@ -572,9 +572,10 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       console.log(`[DocumentVerification] Candidate update condition met - proceeding with update`);
       try {
         // Get current candidate record to check what fields need updating
+        // Note: Database only has passport_normalized, not passport column
         const { data: currentCandidate, error: fetchError } = await db
           .from('candidates')
-          .select('nationality, passport_normalized, passport_expiry, date_of_birth, passport')
+          .select('nationality, passport_normalized, passport_expiry, date_of_birth')
           .eq('id', candidateId)
           .maybeSingle();
 
@@ -606,12 +607,13 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           }
 
           // Update passport number if missing or if document has it
+          // Note: Database only has passport_normalized column, not passport
           if (identity.passport_no) {
             const normalizedPassport = normalizePassport(identity.passport_no);
             if (!currentCandidate.passport_normalized) {
               candidateUpdates.passport_normalized = normalizedPassport;
-              candidateUpdates.passport = identity.passport_no; // Store original format too
-              console.log(`[DocumentVerification] Updating passport: ${identity.passport_no} (normalized: ${normalizedPassport})`);
+              // Note: We store the normalized version only (database doesn't have passport column)
+              console.log(`[DocumentVerification] Updating passport_normalized: ${normalizedPassport} (from: ${identity.passport_no})`);
             } else {
               console.log(`[DocumentVerification] Skipping passport update - candidate already has: ${currentCandidate.passport_normalized}`);
             }

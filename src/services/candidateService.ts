@@ -343,8 +343,15 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
 
   if (error) throw error;
 
+  // Map passport_normalized to passport for frontend compatibility
+  // Frontend expects 'passport' but database only has 'passport_normalized'
+  const mappedCandidates = (data || []).map((candidate: any) => ({
+    ...candidate,
+    passport: candidate.passport_normalized || candidate.passport || null,
+  }));
+
   return {
-    candidates: data,
+    candidates: mappedCandidates,
     total: count,
     limit: filters.limit,
     offset: filters.offset

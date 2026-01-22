@@ -306,15 +306,22 @@ export async function updateFieldManually(
 ): Promise<void> {
   const db = supabaseAdminClient();
   
-  // Get current field sources
+  // Get current candidate data (including field_sources and the field we're updating)
   const { data: candidate } = await db
     .from('candidates')
-    .select('field_sources')
+    .select('*')
     .eq('id', candidateId)
     .maybeSingle();
   
+  if (!candidate) {
+    throw new Error(`Candidate not found: ${candidateId}`);
+  }
+  
   const currentFieldSources: Record<string, FieldSource> = 
-    (candidate?.field_sources as any) || {};
+    (candidate.field_sources as Record<string, FieldSource>) || {};
+  
+  // Get old value for audit logging (before update)
+  const oldValue = (candidate as any)[field] || null;
   
   // Normalize special fields
   let normalizedValue = value;
@@ -327,17 +334,19 @@ export async function updateFieldManually(
   }
   
   // Update field with manual source
+  const newFieldSources: Record<string, FieldSource> = {
+    ...currentFieldSources,
+    [field]: {
+      field,
+      source: 'manual',
+      updated_at: new Date().toISOString(),
+      updated_by: userId,
+    },
+  };
+  
   const updates: any = {
     [field]: normalizedValue,
-    field_sources: {
-      ...currentFieldSources,
-      [field]: {
-        field,
-        source: 'manual',
-        updated_at: new Date().toISOString(),
-        updated_by: userId,
-      },
-    },
+    field_sources: newFieldSources,
     updated_at: new Date().toISOString(),
   };
   
@@ -352,9 +361,6 @@ export async function updateFieldManually(
   
   // Recalculate missing fields
   await updateMissingFields(candidateId);
-  
-  // Get old value for audit logging
-  const oldValue = candidate?.[field] || null;
   
   // Log enrichment event
   await logEnrichmentEvent(candidateId, [field], [], 'manual', undefined, oldValue, normalizedValue);

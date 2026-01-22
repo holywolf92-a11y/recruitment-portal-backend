@@ -13,17 +13,53 @@ function signHmac(body: string) {
 }
 
 // Helper to create candidate from parsed CV data
-async function createCandidateFromParsedData(parsed: any, attachmentId: string) {
+async function createCandidateFromParsedData(parsed: any, attachmentId: string, identityFields?: any) {
   try {
     const candidate = parsed.candidate || {};
     
+    // Parse date of birth from various formats
+    let dateOfBirth: string | undefined = undefined;
+    if (identityFields?.date_of_birth || identityFields?.dob) {
+      const dobStr = identityFields.date_of_birth || identityFields.dob;
+      try {
+        // Try to parse formats like "13 October 1983", "13-10-1983", "1983-10-13"
+        if (dobStr.includes(' ')) {
+          // Format: "13 October 1983"
+          const date = new Date(dobStr);
+          if (!isNaN(date.getTime())) {
+            dateOfBirth = date.toISOString().split('T')[0];
+          }
+        } else if (dobStr.includes('-')) {
+          // Format: "13-10-1983" or "1983-10-13"
+          const parts = dobStr.split('-');
+          if (parts[0].length === 4) {
+            // YYYY-MM-DD
+            dateOfBirth = dobStr;
+          } else {
+            // DD-MM-YYYY
+            dateOfBirth = `${parts[2]}-${parts[1]}-${parts[0]}`;
+          }
+        } else {
+          dateOfBirth = dobStr;
+        }
+      } catch (e) {
+        console.warn(`[CVParser] Failed to parse date of birth: ${dobStr}`, e);
+      }
+    }
+    
     // Build candidate data from parsed CV - map all fields from Python parser
+    // Include identity fields extracted from CV (father_name, cnic, passport, date_of_birth, etc.)
     const candidateData: CreateCandidateData = {
-      name: candidate.full_name || 'Unknown',
-      email: candidate.email || undefined,
-      phone: candidate.phone || undefined,
+      name: candidate.full_name || identityFields?.name || 'Unknown',
+      father_name: identityFields?.father_name || candidate.father_name || undefined,
+      email: candidate.email || identityFields?.email || undefined,
+      phone: candidate.phone || identityFields?.phone || undefined,
       address: candidate.location || undefined,
-      nationality: candidate.nationality || undefined,
+      date_of_birth: dateOfBirth || candidate.date_of_birth || undefined,
+      marital_status: candidate.marital_status || undefined,
+      cnic: identityFields?.cnic || candidate.cnic || undefined,
+      passport: identityFields?.passport_no || candidate.passport || undefined,
+      nationality: candidate.nationality || identityFields?.nationality || undefined,
       position: candidate.position || undefined,
       experience_years: candidate.experience_years || undefined,
       country_of_interest: candidate.country_of_interest || 'missing',
@@ -38,7 +74,7 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string) 
           ? candidate.experience.map((e: any) => `${e.title} at ${e.company}`).join('; ')
           : undefined
       ),
-      passport_expiry: candidate.passport_expiry || undefined,
+      passport_expiry: candidate.passport_expiry || identityFields?.passport_expiry || identityFields?.expiry_date || undefined,
       professional_summary: candidate.professional_summary || candidate.summary || undefined,
     };
 
@@ -86,6 +122,7 @@ export function startCvParserWorker() {
         };
         const payload = JSON.stringify(payloadObj);
 
+        // Step 1: Parse CV for professional fields
         const res = await fetch(`${PY_URL}/parse-cv`, {
           method: 'POST',
           headers: {
@@ -102,16 +139,52 @@ export function startCvParserWorker() {
 
         const parsed = await res.json();
 
+        // Step 2: Also categorize document to extract identity fields (father_name, cnic, passport, date_of_birth, etc.)
+        // This is important because CVs often contain personal information
+        let identityFields: any = null;
+        try {
+          const categorizePayload = JSON.stringify({
+            file_url: fileUrl,
+            file_name: fileUrl.split('/').pop() || 'cv.pdf',
+          });
+          
+          const categorizeRes = await fetch(`${PY_URL}/categorize-document`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-signature': signHmac(categorizePayload),
+            },
+            body: categorizePayload,
+          });
+
+          if (categorizeRes.ok) {
+            const categorizeResult = await categorizeRes.json();
+            identityFields = categorizeResult.identity_fields || null;
+            console.log(`[CVParser] Extracted identity fields from CV:`, {
+              hasName: !!identityFields?.name,
+              hasFatherName: !!identityFields?.father_name,
+              hasCNIC: !!identityFields?.cnic,
+              hasPassport: !!identityFields?.passport_no,
+              hasDOB: !!identityFields?.date_of_birth,
+            });
+          } else {
+            console.warn(`[CVParser] Failed to categorize CV for identity extraction: ${categorizeRes.status}`);
+          }
+        } catch (categorizeError: any) {
+          // Log but don't fail - identity extraction is optional
+          console.warn(`[CVParser] Error extracting identity fields from CV:`, categorizeError?.message);
+        }
+
         await parsingJobs.setStatus(jobId, 'extracted', {
           finished_at: new Date().toISOString(),
           schema_version: parsed.schema_version ?? 'v1',
-          result_json: parsed,
+          result_json: { ...parsed, identity_fields: identityFields },
           error_code: null,
           error_message: null,
         });
 
-        // Create candidate from parsed data and link to attachment
-        const newCandidate = await createCandidateFromParsedData(parsed, attachmentId);
+        // Create candidate from parsed data (including identity fields) and link to attachment
+        const newCandidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields);
 
         // IMPORTANT: Set cv_received flag immediately after candidate is created from inbox CV
         // This ensures the document flag shows green/red on the card from the start

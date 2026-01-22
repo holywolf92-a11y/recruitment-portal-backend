@@ -8,8 +8,8 @@ const multer_1 = __importDefault(require("multer"));
 const errorHandling_1 = require("../utils/errorHandling");
 const database_1 = require("../config/database");
 // import { authenticate } from '../middleware/auth';
+// Old document controllers removed - using unified candidate-documents system
 const documentController_1 = require("../controllers/documentController");
-const documentController_2 = require("../controllers/documentController");
 const logger = (0, errorHandling_1.createLogger)('DocumentsRouter');
 const router = (0, express_1.Router)();
 // Configure multer for memory storage
@@ -63,76 +63,30 @@ router.post('/candidate-documents', (req, res, next) => {
         }
     });
     next();
-}, upload.single('file'), handleMulterError, (0, errorHandling_2.asyncHandler)(documentController_2.uploadCandidateDocumentController));
+}, upload.single('file'), handleMulterError, (0, errorHandling_2.asyncHandler)(documentController_1.uploadCandidateDocumentController));
 // Get candidate document by ID
-router.get('/candidate-documents/:id', documentController_2.getCandidateDocumentController);
+router.get('/candidate-documents/:id', documentController_1.getCandidateDocumentController);
 // Get signed URL for download
-router.get('/candidate-documents/:id/download', documentController_2.getCandidateDocumentDownloadUrlController);
+router.get('/candidate-documents/:id/download', documentController_1.getCandidateDocumentDownloadUrlController);
 // Delete candidate document
-router.delete('/candidate-documents/:id', documentController_2.deleteCandidateDocumentController);
+router.delete('/candidate-documents/:id', documentController_1.deleteCandidateDocumentController);
 // Reprocess document verification (re-run AI verification with updated logic)
-router.post('/candidate-documents/:id/reprocess', documentController_2.reprocessCandidateDocumentController);
+router.post('/candidate-documents/:id/reprocess', documentController_1.reprocessCandidateDocumentController);
 // List documents for a candidate (with category filtering)
-router.get('/candidates/:candidateId/documents', documentController_2.listCandidateDocumentsControllerNew);
+router.get('/candidates/:candidateId/documents', documentController_1.listCandidateDocumentsControllerNew);
 // ============================================================================
-// LEGACY ROUTES - Old documents table (kept for backward compatibility)
+// LEGACY ROUTES - REMOVED
+// All old endpoints have been removed. Use /candidate-documents endpoints instead.
 // ============================================================================
-// Upload document
-router.post('/', upload.single('file'), documentController_1.uploadDocumentController);
-// Get document metadata
-router.get('/:id', documentController_1.getDocumentController);
-// List all documents for a candidate
-router.get('/candidate/:candidateId', documentController_1.listCandidateDocumentsController);
-// Get signed URL for document download
-router.get('/:id/download', documentController_1.getDocumentSignedUrlController);
-// Delete document
-router.delete('/:id', documentController_1.deleteDocumentController);
-/**
- * GET /api/documents/candidates/:candidateId/documents
- * Returns all documents linked to a candidate with download URLs
- */
-router.get('/candidates/:candidateId/documents', async (req, res) => {
-    try {
-        const { candidateId } = req.params;
-        const db = (0, database_1.supabaseAdminClient)();
-        // Get all documents for this candidate
-        const { data: documents, error } = await db
-            .from('candidate_documents')
-            .select(`
-        id,
-        document_type,
-        file_name,
-        storage_path,
-        received_at,
-        source
-      `)
-            .eq('candidate_id', candidateId)
-            .order('received_at', { ascending: false });
-        if (error)
-            throw error;
-        // Generate download URLs for each document
-        const docsWithUrls = await Promise.all((documents || []).map(async (doc) => {
-            try {
-                const { data } = await db.storage
-                    .from('documents')
-                    .createSignedUrl(doc.storage_path, 3600); // 1 hour expiry
-                return {
-                    ...doc,
-                    downloadUrl: data?.signedUrl || null,
-                };
-            }
-            catch (err) {
-                logger.warn(`Failed to generate signed URL for ${doc.storage_path}`, err);
-                return { ...doc, downloadUrl: null };
-            }
-        }));
-        res.json({ documents: docsWithUrls });
-    }
-    catch (err) {
-        logger.error('Failed to fetch candidate documents', err);
-        res.status(500).json({ error: 'Failed to fetch documents' });
-    }
-});
+// 
+// REMOVED ENDPOINTS (use new unified system instead):
+// - POST /api/documents → Use POST /api/documents/candidate-documents
+// - GET /api/documents/:id → Use GET /api/documents/candidate-documents/:id
+// - GET /api/documents/candidate/:candidateId → Use GET /api/documents/candidates/:candidateId/documents
+// - GET /api/documents/:id/download → Use GET /api/documents/candidate-documents/:id/download
+// - DELETE /api/documents/:id → Use DELETE /api/documents/candidate-documents/:id
+//
+// Duplicate route removed - using listCandidateDocumentsControllerNew at line 102 instead
 /**
  * GET /api/documents/unmatched
  * Returns unmatched documents pending manual linking

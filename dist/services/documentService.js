@@ -14,6 +14,9 @@ exports.downloadDocument = downloadDocument;
 const database_1 = require("../config/database");
 const crypto_1 = __importDefault(require("crypto"));
 const timelineService_1 = require("./timelineService");
+const queue_1 = require("../config/queue");
+const documentVerificationLogService_1 = require("./documentVerificationLogService");
+const documentCategories_1 = require("../config/documentCategories");
 const STORAGE_BUCKET = 'documents';
 /**
  * Calculate SHA256 hash of file buffer
@@ -31,6 +34,12 @@ function generateStoragePath(candidateId, docType, fileName) {
 }
 /**
  * Upload document to Supabase Storage and create database record
+ *
+ * @deprecated This function is deprecated. Use candidateDocumentService.uploadCandidateDocument() instead.
+ * This function creates duplicate entries in both 'documents' and 'candidate_documents' tables.
+ * The new unified system only uses 'candidate_documents' with AI verification.
+ *
+ * This is kept for backward compatibility only. New code should use /api/candidate-documents endpoint.
  */
 async function uploadDocument(data, userId) {
     const db = (0, database_1.supabaseAdminClient)();
@@ -137,15 +146,118 @@ async function uploadDocument(data, userId) {
             updateFlags.certificate_received_at = now;
         }
         if (Object.keys(updateFlags).length > 0) {
-            await db
+            const { error: updateError } = await db
                 .from('candidates')
                 .update(updateFlags)
                 .eq('id', data.candidate_id);
+            if (updateError) {
+                console.error(`[uploadDocument] Failed to update candidate flags for ${data.candidate_id}:`, updateError);
+                throw new Error(`Flag update failed: ${updateError.message}`);
+            }
+            else {
+                console.log(`[uploadDocument] Successfully updated flags for candidate ${data.candidate_id}:`, Object.keys(updateFlags));
+            }
+        }
+        else {
+            console.warn(`[uploadDocument] No flags to update for doc_type: ${data.doc_type}`);
         }
     }
     catch (flagError) {
-        console.error('Failed to update candidate flags:', flagError);
-        // Don't fail the upload if flag update fails
+        console.error('[uploadDocument] Failed to update candidate flags:', flagError);
+        // Don't fail the upload if flag update fails - it will be recalculated by updateDocumentFlagsController
+    }
+    // =============================================================================
+    // ALSO CREATE candidate_documents ENTRY AND TRIGGER AI VERIFICATION
+    // This ensures documents uploaded via old endpoint also go through AI verification
+    // =============================================================================
+    try {
+        const logService = new documentVerificationLogService_1.DocumentVerificationLogService();
+        const requestId = (0, documentVerificationLogService_1.generateRequestId)();
+        // Map doc_type to category
+        const docTypeLower = data.doc_type.toLowerCase();
+        let category = null;
+        if (docTypeLower.includes('passport')) {
+            category = documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT;
+        }
+        else if (docTypeLower === 'cv' || docTypeLower.includes('resume')) {
+            category = documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME;
+        }
+        else if (docTypeLower.includes('certificate') || docTypeLower.includes('degree') || docTypeLower.includes('diploma')) {
+            category = documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES;
+        }
+        else if (docTypeLower.includes('medical')) {
+            category = documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS;
+        }
+        else if (docTypeLower === 'photo' || docTypeLower.includes('profile photo')) {
+            category = documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS;
+        }
+        // Create candidate_documents entry
+        const candidateDocData = {
+            candidate_id: data.candidate_id,
+            document_type: data.doc_type,
+            category: category || documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+            storage_bucket: STORAGE_BUCKET,
+            storage_path: storagePath,
+            file_name: data.file_name,
+            mime_type: data.mime_type,
+            source: 'web',
+            verification_status: documentCategories_1.VERIFICATION_STATUS.PENDING_AI,
+            received_at: new Date().toISOString(),
+        };
+        const { data: candidateDoc, error: candidateDocError } = await db
+            .from('candidate_documents')
+            .insert(candidateDocData)
+            .select()
+            .single();
+        if (candidateDocError) {
+            console.error('[uploadDocument] Failed to create candidate_documents entry:', candidateDocError);
+            // Don't fail the upload, but log the error
+        }
+        else {
+            console.log(`[uploadDocument] Created candidate_documents entry ${candidateDoc.id} for AI verification`);
+            // Log upload for verification tracking
+            try {
+                await logService.logUploadStarted(requestId, data.candidate_id, data.file_name, data.mime_type, data.buffer.length, userId);
+                await logService.logUploadCompleted(requestId, candidateDoc.id, data.candidate_id, STORAGE_BUCKET, storagePath);
+            }
+            catch (logError) {
+                console.error('[uploadDocument] Failed to log verification events:', logError);
+            }
+            // Enqueue AI verification job
+            try {
+                const jobData = {
+                    requestId,
+                    documentId: candidateDoc.id,
+                    candidateId: data.candidate_id,
+                    storageBucket: STORAGE_BUCKET,
+                    storagePath,
+                    fileName: data.file_name,
+                    mimeType: data.mime_type,
+                };
+                await queue_1.documentVerificationQueue.add('verify-document', jobData, {
+                    attempts: 3,
+                    backoff: {
+                        type: 'exponential',
+                        delay: 2000,
+                    },
+                });
+                console.log(`[uploadDocument] Enqueued AI verification job for document ${candidateDoc.id} (from old endpoint)`);
+            }
+            catch (queueError) {
+                console.error('[uploadDocument] Failed to enqueue AI verification job:', queueError);
+                // Don't fail the upload, but log the error
+                try {
+                    await logService.logError(requestId, `Failed to enqueue AI job: ${queueError.message}`, queueError.stack, candidateDoc.id, data.candidate_id);
+                }
+                catch (logError) {
+                    console.error('[uploadDocument] Failed to log queue error:', logError);
+                }
+            }
+        }
+    }
+    catch (verificationError) {
+        console.error('[uploadDocument] Error setting up AI verification (non-fatal):', verificationError);
+        // Don't fail the upload - document is already saved to documents table
     }
     return document;
 }

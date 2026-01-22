@@ -3,13 +3,7 @@ import multer from 'multer';
 import { createLogger } from '../utils/errorHandling';
 import { supabaseAdminClient } from '../config/database';
 // import { authenticate } from '../middleware/auth';
-import {
-  uploadDocumentController,
-  getDocumentController,
-  listCandidateDocumentsController,
-  getDocumentSignedUrlController,
-  deleteDocumentController
-} from '../controllers/documentController';
+// Old document controllers removed - using unified candidate-documents system
 import {
   uploadCandidateDocumentController,
   getCandidateDocumentController,
@@ -102,73 +96,19 @@ router.post('/candidate-documents/:id/reprocess', reprocessCandidateDocumentCont
 router.get('/candidates/:candidateId/documents', listCandidateDocumentsControllerNew);
 
 // ============================================================================
-// LEGACY ROUTES - Old documents table (kept for backward compatibility)
+// LEGACY ROUTES - REMOVED
+// All old endpoints have been removed. Use /candidate-documents endpoints instead.
 // ============================================================================
+// 
+// REMOVED ENDPOINTS (use new unified system instead):
+// - POST /api/documents → Use POST /api/documents/candidate-documents
+// - GET /api/documents/:id → Use GET /api/documents/candidate-documents/:id
+// - GET /api/documents/candidate/:candidateId → Use GET /api/documents/candidates/:candidateId/documents
+// - GET /api/documents/:id/download → Use GET /api/documents/candidate-documents/:id/download
+// - DELETE /api/documents/:id → Use DELETE /api/documents/candidate-documents/:id
+//
 
-// Upload document
-router.post('/', upload.single('file'), uploadDocumentController);
-
-// Get document metadata
-router.get('/:id', getDocumentController);
-
-// List all documents for a candidate
-router.get('/candidate/:candidateId', listCandidateDocumentsController);
-
-// Get signed URL for document download
-router.get('/:id/download', getDocumentSignedUrlController);
-
-// Delete document
-router.delete('/:id', deleteDocumentController);
-
-/**
- * GET /api/documents/candidates/:candidateId/documents
- * Returns all documents linked to a candidate with download URLs
- */
-router.get('/candidates/:candidateId/documents', async (req: Request, res: Response) => {
-  try {
-    const { candidateId } = req.params;
-    const db = supabaseAdminClient();
-
-    // Get all documents for this candidate
-    const { data: documents, error } = await db
-      .from('candidate_documents')
-      .select(`
-        id,
-        document_type,
-        file_name,
-        storage_path,
-        received_at,
-        source
-      `)
-      .eq('candidate_id', candidateId)
-      .order('received_at', { ascending: false });
-
-    if (error) throw error;
-
-    // Generate download URLs for each document
-    const docsWithUrls = await Promise.all(
-      (documents || []).map(async (doc) => {
-        try {
-          const { data } = await db.storage
-            .from('documents')
-            .createSignedUrl(doc.storage_path, 3600); // 1 hour expiry
-          return {
-            ...doc,
-            downloadUrl: data?.signedUrl || null,
-          };
-        } catch (err) {
-          logger.warn(`Failed to generate signed URL for ${doc.storage_path}`, err);
-          return { ...doc, downloadUrl: null };
-        }
-      })
-    );
-
-    res.json({ documents: docsWithUrls });
-  } catch (err: any) {
-    logger.error('Failed to fetch candidate documents', err);
-    res.status(500).json({ error: 'Failed to fetch documents' });
-  }
-});
+// Duplicate route removed - using listCandidateDocumentsControllerNew at line 102 instead
 
 /**
  * GET /api/documents/unmatched

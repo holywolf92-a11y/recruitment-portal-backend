@@ -219,12 +219,17 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
         })));
     }
 
-    // Also check the old documents table for CVs (legacy support)
+    // Also check the old documents table for documents (legacy support)
+    // Note: We don't filter by deleted_at since it might not exist in all schemas
     const { data: oldDocuments, error: oldDocsError } = await db
       .from('documents')
       .select('doc_type, file_name')
-      .eq('candidate_id', id)
-      .eq('deleted_at', null);
+      .eq('candidate_id', id);
+    
+    // Log error but don't fail - old documents table might not exist in all deployments
+    if (oldDocsError) {
+      console.warn(`[UpdateDocumentFlags] Could not fetch old documents for candidate ${id} (this is OK if using new system only):`, oldDocsError.message);
+    }
 
     // Combine all document sources
     const allDocs = [

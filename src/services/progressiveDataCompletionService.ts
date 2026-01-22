@@ -190,6 +190,12 @@ export async function enrichCandidateData(
   
   // Update candidate if there are changes
   if (Object.keys(updates).length > 0) {
+    // Get old values before update for audit logging
+    const oldValues: Record<string, any> = {};
+    for (const field of updated) {
+      oldValues[field] = currentCandidate[field] || null;
+    }
+    
     updates.field_sources = mergedFieldSources;
     updates.updated_at = new Date().toISOString();
     
@@ -202,8 +208,18 @@ export async function enrichCandidateData(
       throw new Error(`Failed to update candidate: ${updateError.message}`);
     }
     
-    // Log enrichment event
-    await logEnrichmentEvent(candidateId, updated, skipped, source, documentId);
+    // Log enrichment event with old and new values
+    for (const field of updated) {
+      await logEnrichmentEvent(
+        candidateId,
+        [field],
+        [],
+        source,
+        documentId,
+        oldValues[field],
+        updates[field]
+      );
+    }
   }
   
   return {
@@ -337,8 +353,11 @@ export async function updateFieldManually(
   // Recalculate missing fields
   await updateMissingFields(candidateId);
   
+  // Get old value for audit logging
+  const oldValue = candidate?.[field] || null;
+  
   // Log enrichment event
-  await logEnrichmentEvent(candidateId, [field], [], 'manual', undefined);
+  await logEnrichmentEvent(candidateId, [field], [], 'manual', undefined, oldValue, normalizedValue);
 }
 
 /**
@@ -390,13 +409,76 @@ async function logEnrichmentEvent(
   updatedFields: string[],
   skippedFields: string[],
   source: DocumentSource,
-  documentId?: string
+  documentId?: string,
+  oldValue?: any,
+  newValue?: any
 ): Promise<void> {
   const db = supabaseAdminClient();
   
   try {
-    // Create enrichment_logs table if it doesn't exist (or use existing audit table)
-    // For now, just log to console - can be extended to database table
+    // Get current candidate values for old_value tracking
+    const { data: candidate } = await db
+      .from('candidates')
+      .select('*')
+      .eq('id', candidateId)
+      .maybeSingle();
+    
+    // Get document type if documentId is provided
+    let documentType: string | undefined;
+    if (documentId) {
+      const { data: document } = await db
+        .from('candidate_documents')
+        .select('document_type, category')
+        .eq('id', documentId)
+        .maybeSingle();
+      documentType = document?.document_type || document?.category || undefined;
+    }
+    
+    // Log each updated field individually
+    for (const field of updatedFields) {
+      // Use provided old/new values if available, otherwise get from candidate
+      const fieldOldValue = oldValue !== undefined ? oldValue : (candidate?.[field] || null);
+      const fieldNewValue = newValue !== undefined ? newValue : (candidate?.[field] || null);
+      
+      const { error } = await db
+        .from('enrichment_logs')
+        .insert({
+          candidate_id: candidateId,
+          field_name: field,
+          old_value: fieldOldValue ? String(fieldOldValue) : null,
+          new_value: fieldNewValue ? String(fieldNewValue) : null,
+          source: source,
+          document_id: documentId || null,
+          document_type: documentType || null,
+          updated_by: null, // TODO: Get from auth context
+        });
+      
+      if (error) {
+        console.error(`[Enrichment] Failed to log field ${field}:`, error);
+      }
+    }
+    
+    // Also log skipped fields for audit (with reason)
+    for (const field of skippedFields) {
+      const { error } = await db
+        .from('enrichment_logs')
+        .insert({
+          candidate_id: candidateId,
+          field_name: field,
+          old_value: candidate?.[field] ? String(candidate[field]) : null,
+          new_value: null, // Skipped - no change
+          source: source,
+          document_id: documentId || null,
+          document_type: documentType || null,
+          updated_by: null,
+        });
+      
+      if (error) {
+        console.error(`[Enrichment] Failed to log skipped field ${field}:`, error);
+      }
+    }
+    
+    // Also log to console for debugging
     console.log(`[Enrichment] Candidate ${candidateId}:`, {
       updated: updatedFields,
       skipped: skippedFields,

@@ -15,7 +15,9 @@ import {
   getCandidateCVDownloadController,
   uploadCandidatePhotoController,
   updateDocumentFlagsController,
-  linkCandidatesCVController
+  linkCandidatesCVController,
+  updateCandidateFieldManuallyController,
+  getMissingFieldsController
 } from '../controllers/candidateController';
 
 const router = Router();
@@ -73,5 +75,9 @@ router.post('/:id/update-document-flags', updateDocumentFlagsController);
 
 // Link existing CV from inbox_attachments to candidate_documents (prevents duplicates)
 router.post('/:id/link-cv', linkCandidatesCVController);
+
+// Progressive data completion endpoints
+router.get('/:id/missing-fields', getMissingFieldsController);
+router.patch('/:id/fields/:field', updateCandidateFieldManuallyController);
 
 export default router;

@@ -602,3 +602,105 @@ export async function bulkUpdateCandidateStatusController(req: Request, res: Res
     return res.status(400).json({ error: error.message || 'Failed to bulk update status' });
   }
 }
+
+/**
+ * Manual field update with source tracking
+ * PATCH /api/candidates/:id/fields/:field
+ */
+export async function updateCandidateFieldManuallyController(req: Request, res: Response) {
+  try {
+    const userId = 'test-user-id'; // TODO: Get from auth middleware
+    const { id, field } = req.params;
+    const { value } = req.body;
+
+    if (!id || !field) {
+      return res.status(400).json({ error: 'Candidate ID and field name are required' });
+    }
+
+    if (value === undefined || value === null) {
+      return res.status(400).json({ error: 'Field value is required' });
+    }
+
+    // Import progressive completion service
+    const { updateFieldManually, updateMissingFields } = await import('../services/progressiveDataCompletionService');
+    
+    // Update field manually (highest priority)
+    await updateFieldManually(id, field, value, userId);
+    
+    // Recalculate missing fields
+    await updateMissingFields(id);
+
+    // Get updated candidate
+    const updatedCandidate = await getCandidateById(id, userId);
+    
+    // Map passport_normalized to passport for frontend compatibility
+    const mappedCandidate = updatedCandidate ? {
+      ...updatedCandidate,
+      passport: updatedCandidate.passport_normalized || null,
+    } : null;
+
+    res.json({
+      success: true,
+      candidate: mappedCandidate,
+      message: `Field "${field}" updated manually`,
+    });
+  } catch (error: any) {
+    console.error('Error updating field manually:', error);
+    if (error.message?.includes('not found')) {
+      res.status(404).json({ error: 'Candidate not found' });
+    } else {
+      res.status(500).json({ error: error.message || 'Failed to update field' });
+    }
+  }
+}
+
+/**
+ * Get missing fields for a candidate
+ * GET /api/candidates/:id/missing-fields
+ */
+export async function getMissingFieldsController(req: Request, res: Response) {
+  try {
+    const userId = 'test-user-id'; // TODO: Get from auth middleware
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ error: 'Candidate ID is required' });
+    }
+
+    // Get candidate
+    const candidate = await getCandidateById(id, userId);
+
+    // Calculate missing fields
+    const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await import('../services/progressiveDataCompletionService');
+    const missingFields = calculateMissingFields(candidate);
+
+    // Get field sources
+    const fieldSources = (candidate.field_sources as any) || {};
+
+    // Map missing fields with their source info
+    const missingFieldsWithInfo = missingFields.map(field => ({
+      field,
+      label: (EXCEL_BROWSER_FIELDS as any)[field] || field,
+      source: fieldSources[field]?.source || null,
+      canBeManuallyUpdated: true,
+      hint: fieldSources[field]?.source === 'manual' 
+        ? 'Manually updated - will not be overwritten'
+        : fieldSources[field]?.source 
+        ? `Awaiting document (source: ${fieldSources[field].source})`
+        : 'Can be manually updated',
+    }));
+
+    res.json({
+      missing_fields: missingFields,
+      missing_fields_with_info: missingFieldsWithInfo,
+      total_missing: missingFields.length,
+    });
+  } catch (error: any) {
+    console.error('Error getting missing fields:', error);
+    if (error.message?.includes('not found')) {
+      res.status(404).json({ error: 'Candidate not found' });
+    } else {
+      res.status(500).json({ error: error.message || 'Failed to get missing fields' });
+    }
+  }
+}

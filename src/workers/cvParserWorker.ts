@@ -111,7 +111,34 @@ export function startCvParserWorker() {
         });
 
         // Create candidate from parsed data and link to attachment
-        await createCandidateFromParsedData(parsed, attachmentId);
+        const newCandidate = await createCandidateFromParsedData(parsed, attachmentId);
+
+        // IMPORTANT: Set cv_received flag immediately after candidate is created from inbox CV
+        // This ensures the document flag shows green/red on the card from the start
+        if (newCandidate?.id) {
+          try {
+            const { updateDocumentFlagsController } = await import('../controllers/candidateController');
+            const mockReq = { params: { id: newCandidate.id }, body: {} } as any;
+            const mockRes = {
+              status: (code: number) => ({ 
+                json: (data: any) => {
+                  if (code >= 400) {
+                    console.error(`[CVParser] Flag update failed (${code}):`, data);
+                  } else {
+                    console.log(`[CVParser] Document flags updated for candidate ${newCandidate.id} (CV from inbox)`);
+                  }
+                  return mockRes;
+                }
+              }),
+            } as any;
+            
+            await updateDocumentFlagsController(mockReq, mockRes);
+            console.log(`[CVParser] Successfully set cv_received flag for candidate ${newCandidate.id}`);
+          } catch (flagError: any) {
+            // Log but don't fail the parsing job if flag update fails
+            console.error(`[CVParser] Failed to update document flags for candidate ${newCandidate.id}:`, flagError?.message);
+          }
+        }
 
         return { ok: true };
       } catch (err: any) {

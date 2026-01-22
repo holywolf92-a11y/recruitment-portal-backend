@@ -107,6 +107,29 @@ async function callAICategorizationService(
 
     const result = await response.json();
     console.log('[AI Categorization] Raw parser response:', JSON.stringify(result, null, 2));
+    
+    // Map Python parser response to our expected format
+    // Python returns: { success, category, confidence, identity_fields: {...} }
+    // We need: { success, category, confidence, extracted_identity: {...} }
+    if (result.identity_fields) {
+      // Map identity_fields to extracted_identity
+      const identityFields = result.identity_fields;
+      result.extracted_identity = {
+        name: identityFields.name || null,
+        father_name: identityFields.father_name || null,
+        cnic: identityFields.cnic || null,
+        passport_no: identityFields.passport_no || null,
+        email: identityFields.email || null,
+        phone: identityFields.phone || null,
+        date_of_birth: identityFields.date_of_birth || identityFields.dob || null,
+        document_number: identityFields.document_number || null,
+        nationality: identityFields.nationality || null,
+        passport_expiry: identityFields.passport_expiry || identityFields.expiry_date || null,
+        expiry_date: identityFields.expiry_date || identityFields.passport_expiry || null,
+        issue_date: identityFields.issue_date || null,
+        place_of_issue: identityFields.place_of_issue || null,
+      };
+    }
     return result;
   } catch (error: any) {
     console.error('[AI Categorization] Service call failed:', error);

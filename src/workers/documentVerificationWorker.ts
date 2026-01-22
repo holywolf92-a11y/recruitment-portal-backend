@@ -582,7 +582,6 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         if (!fetchError && currentCandidate) {
           console.log(`[DocumentVerification] Current candidate record:`, {
             hasNationality: !!currentCandidate.nationality,
-            hasPassport: !!currentCandidate.passport,
             hasPassportNormalized: !!currentCandidate.passport_normalized,
             hasPassportExpiry: !!currentCandidate.passport_expiry,
             hasDOB: !!currentCandidate.date_of_birth,
@@ -695,7 +694,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
               console.log(`[DocumentVerification] ✅ Successfully updated candidate record for ${candidateId} with fields:`, Object.keys(candidateUpdates));
               console.log(`[DocumentVerification] Updated record:`, updateData?.[0] ? {
                 nationality: updateData[0].nationality,
-                passport: updateData[0].passport,
+                passport_normalized: updateData[0].passport_normalized,
                 passport_expiry: updateData[0].passport_expiry,
                 date_of_birth: updateData[0].date_of_birth,
               } : 'No data returned');

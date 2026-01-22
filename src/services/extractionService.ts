@@ -78,7 +78,9 @@ async function callPythonParser(cvUrl: string): Promise<{ success: boolean; data
     let extractUrl = cvUrl;
     if (!cvUrl.startsWith('http')) {
       const db = supabaseAdminClient();
-      const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'candidate-documents';
+      // Use 'documents' bucket (same as candidateDocumentService uses)
+      // This matches where files are actually stored: candidates/{id}/documents/{filename}
+      const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'documents';
       
       try {
         // Generate a 1-hour signed URL for the storage path

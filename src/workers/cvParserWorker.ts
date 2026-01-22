@@ -127,7 +127,7 @@ export function startCvParserWorker() {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-signature': signHmac(payload),
+            'x-hmac-signature': signHmac(payload),
           },
           body: payload,
         });
@@ -166,7 +166,7 @@ export function startCvParserWorker() {
             method: 'POST',
             headers: {
               'content-type': 'application/json',
-              'x-signature': signHmac(categorizePayload),
+              'x-hmac-signature': signHmac(categorizePayload),
             },
             body: categorizePayload,
           });

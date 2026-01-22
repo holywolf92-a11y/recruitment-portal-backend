@@ -45,7 +45,12 @@ export async function getCandidateController(req: Request, res: Response) {
     }
 
     const candidate = await getCandidateById(id, userId);
-    res.json({ candidate });
+    // Map passport_normalized to passport for frontend compatibility
+    const mappedCandidate = candidate ? {
+      ...candidate,
+      passport: candidate.passport_normalized || (candidate as any).passport || null,
+    } : candidate;
+    res.json({ candidate: mappedCandidate });
   } catch (error: any) {
     console.error('Error fetching candidate:', error);
     if (error.code === 'PGRST116') {

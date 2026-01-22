@@ -568,7 +568,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     const hasIdentityFields = aiResult.extracted_identity && 
       Object.values(aiResult.extracted_identity).some((val: any) => val !== null && val !== undefined && val !== '');
     
-    if (hasIdentityFields && finalStatus === VERIFICATION_STATUS.VERIFIED) {
+    if (hasIdentityFields && finalStatus === VERIFICATION_STATUS.VERIFIED && aiResult.extracted_identity) {
       console.log(`[DocumentVerification] Candidate update condition met - proceeding with update`);
       try {
         // Get current candidate record to check what fields need updating
@@ -580,26 +580,27 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
 
         if (!fetchError && currentCandidate) {
           const candidateUpdates: any = {};
+          const identity = aiResult.extracted_identity; // Store reference to avoid repeated checks
 
           // Update nationality if missing or if document has it
-          if (aiResult.extracted_identity.nationality && !currentCandidate.nationality) {
-            candidateUpdates.nationality = aiResult.extracted_identity.nationality;
-            console.log(`[DocumentVerification] Updating nationality: ${aiResult.extracted_identity.nationality}`);
+          if (identity.nationality && !currentCandidate.nationality) {
+            candidateUpdates.nationality = identity.nationality;
+            console.log(`[DocumentVerification] Updating nationality: ${identity.nationality}`);
           }
 
           // Update passport number if missing or if document has it
-          if (aiResult.extracted_identity.passport_no) {
-            const normalizedPassport = normalizePassport(aiResult.extracted_identity.passport_no);
+          if (identity.passport_no) {
+            const normalizedPassport = normalizePassport(identity.passport_no);
             if (!currentCandidate.passport_normalized) {
               candidateUpdates.passport_normalized = normalizedPassport;
-              candidateUpdates.passport = aiResult.extracted_identity.passport_no; // Store original format too
-              console.log(`[DocumentVerification] Updating passport: ${aiResult.extracted_identity.passport_no}`);
+              candidateUpdates.passport = identity.passport_no; // Store original format too
+              console.log(`[DocumentVerification] Updating passport: ${identity.passport_no}`);
             }
           }
 
           // Update passport expiry if missing or if document has it
-          if (aiResult.extracted_identity.passport_expiry || aiResult.extracted_identity.expiry_date) {
-            const expiryDate = aiResult.extracted_identity.passport_expiry || aiResult.extracted_identity.expiry_date;
+          if (identity.passport_expiry || identity.expiry_date) {
+            const expiryDate = identity.passport_expiry || identity.expiry_date;
             if (!currentCandidate.passport_expiry && expiryDate) {
               // Try to parse the date (handle formats like "09-06-2032" or "2022-06-10")
               try {
@@ -629,11 +630,11 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           }
 
           // Update date of birth if missing or if document has it
-          if (aiResult.extracted_identity.date_of_birth && !currentCandidate.date_of_birth) {
+          if (identity.date_of_birth && !currentCandidate.date_of_birth) {
             try {
               // Try to parse the date (handle formats like "15-08-1994" or "1994-08-15")
               let parsedDate: Date;
-              const dob = aiResult.extracted_identity.date_of_birth;
+              const dob = identity.date_of_birth;
               if (dob.includes('-') && dob.length === 10) {
                 const parts = dob.split('-');
                 if (parts[0].length === 4) {
@@ -652,7 +653,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
                 console.log(`[DocumentVerification] Updating date of birth: ${candidateUpdates.date_of_birth}`);
               }
             } catch (dateError) {
-              console.warn(`[DocumentVerification] Failed to parse date of birth: ${aiResult.extracted_identity.date_of_birth}`, dateError);
+              console.warn(`[DocumentVerification] Failed to parse date of birth: ${identity.date_of_birth}`, dateError);
             }
           }
 

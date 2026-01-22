@@ -256,8 +256,9 @@ export function calculateMissingFields(candidate: any): string[] {
     }
     
     // Check if field is missing
+    // Also check for the string "missing" (which might be stored as a default value)
     if (value === null || value === undefined || value === '' || 
-        (typeof value === 'string' && value.trim() === '')) {
+        (typeof value === 'string' && (value.trim() === '' || value.toLowerCase() === 'missing'))) {
       missing.push(field);
     }
   }

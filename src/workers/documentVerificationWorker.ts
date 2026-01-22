@@ -109,10 +109,29 @@ async function callAICategorizationService(
     console.log('[AI Categorization] Raw parser response:', JSON.stringify(result, null, 2));
     
     // Map Python parser response to our expected format
-    // Python returns: { success, category, confidence, identity_fields: {...} }
+    // Python returns: { success, category, confidence, extracted_identity: {...} } OR { identity_fields: {...} }
     // We need: { success, category, confidence, extracted_identity: {...} }
-    if (result.identity_fields) {
-      // Map identity_fields to extracted_identity
+    if (result.extracted_identity) {
+      // Python parser already returns extracted_identity format - use it directly
+      // Ensure all fields are present
+      const identity = result.extracted_identity;
+      result.extracted_identity = {
+        name: identity.name || null,
+        father_name: identity.father_name || null,
+        cnic: identity.cnic || null,
+        passport_no: identity.passport_no || null,
+        email: identity.email || null,
+        phone: identity.phone || null,
+        date_of_birth: identity.date_of_birth || identity.dob || null,
+        document_number: identity.document_number || null,
+        nationality: identity.nationality || null,
+        passport_expiry: identity.passport_expiry || identity.expiry_date || null,
+        expiry_date: identity.expiry_date || identity.passport_expiry || null,
+        issue_date: identity.issue_date || null,
+        place_of_issue: identity.place_of_issue || null,
+      };
+    } else if (result.identity_fields) {
+      // Backward compatibility: map identity_fields to extracted_identity
       const identityFields = result.identity_fields;
       result.extracted_identity = {
         name: identityFields.name || null,

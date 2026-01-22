@@ -243,20 +243,26 @@ export class IdentityMatchingService {
 
       // PRIORITY 5: Name-only matching (if we got here, no strong identifiers matched)
       // If name matches and no mismatches found, we can verify with lower confidence
+      // This is especially useful for documents like passports where passport_no might not be extracted
       if (extractedIdentity.name) {
         const nameMatch = this.fuzzyNameMatch(extractedIdentity.name, candidate.name);
         if (nameMatch && mismatchFields.length === 0) {
           // Name matches and no mismatches - verify with lower confidence
+          // For documents like passports, even if passport_no isn't extracted, name match is acceptable
+          matchedOn.push('name');
           return {
             matched: true,
-            matched_on: ['name'],
+            matched_on: matchedOn,
             confidence: 0.70, // Lower confidence for name-only match
             reason_code: VERIFICATION_REASON_CODES.VERIFIED,
             candidate_fields: {
               name: candidate.name,
             },
-            notes: 'Verified by name only (no strong identifiers found in document)',
+            notes: 'Verified by name only (no strong identifiers found in document, but name matches)',
           };
+        } else if (!nameMatch) {
+          // Name doesn't match - add to mismatch fields
+          mismatchFields.push('name');
         }
       }
 

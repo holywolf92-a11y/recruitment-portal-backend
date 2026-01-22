@@ -238,28 +238,50 @@ export async function uploadCandidateDocument(
       );
     }
 
-    // Update candidate document flags based on category
-    // This ensures the candidate card shows correct document status
+    // Update candidate document flags based on filename and document_type
+    // This ensures the candidate card shows correct document status IMMEDIATELY
+    // We check filename first since category might not be set until AI processes it
     try {
       const updateFlags: any = {};
       const category = document.category?.toLowerCase() || '';
+      const fileName = (data.file_name || '').toLowerCase();
+      const documentType = (document.document_type || '').toLowerCase();
       const now = new Date().toISOString();
 
-      if (category === 'cv_resume' || category === 'cv') {
+      // Check filename and document_type for immediate flag setting (before AI categorization)
+      if (category === 'cv_resume' || category === 'cv' || 
+          fileName.includes('cv') || fileName.includes('resume') ||
+          documentType === 'cv') {
         updateFlags.cv_received = true;
         updateFlags.cv_received_at = now;
-      } else if (category === 'passport') {
+      } else if (category === 'passport' || 
+                 fileName.includes('passport') ||
+                 documentType === 'passport') {
         updateFlags.passport_received = true;
         updateFlags.passport_received_at = now;
-      } else if (category === 'certificates' || category === 'certificate') {
+      } else if (category === 'certificates' || category === 'certificate' ||
+                 fileName.includes('certificate') || fileName.includes('degree') || fileName.includes('diploma') ||
+                 documentType === 'certificate' || documentType === 'degree') {
         updateFlags.certificate_received = true;
         updateFlags.certificate_received_at = now;
-      } else if (category === 'photos' || category === 'photo') {
+        updateFlags.degree_received = true;
+        updateFlags.degree_received_at = now;
+      } else if (category === 'photos' || category === 'photo' ||
+                 fileName.includes('photo') || fileName.includes('profile') ||
+                 documentType === 'photo') {
         updateFlags.photo_received = true;
         updateFlags.photo_received_at = now;
-      } else if (category === 'medical_reports' || category === 'medical') {
+      } else if (category === 'medical_reports' || category === 'medical' ||
+                 fileName.includes('medical') ||
+                 documentType === 'medical') {
         updateFlags.medical_received = true;
         updateFlags.medical_received_at = now;
+      } else if (documentType === 'cnic' || fileName.includes('cnic') || fileName.includes('id card')) {
+        updateFlags.cnic_received = true;
+        updateFlags.cnic_received_at = now;
+      } else if (documentType === 'visa' || fileName.includes('visa')) {
+        updateFlags.visa_received = true;
+        updateFlags.visa_received_at = now;
       }
 
       if (Object.keys(updateFlags).length > 0) {
@@ -268,7 +290,9 @@ export async function uploadCandidateDocument(
           .update(updateFlags)
           .eq('id', data.candidate_id);
         
-        console.log(`[UploadDocument] Updated candidate flags for ${data.candidate_id}:`, Object.keys(updateFlags));
+        console.log(`[UploadDocument] Updated candidate flags for ${data.candidate_id} based on filename/document_type:`, Object.keys(updateFlags));
+      } else {
+        console.log(`[UploadDocument] No flags updated for ${data.file_name} - will be set after AI categorization`);
       }
     } catch (flagError: any) {
       console.error('[UploadDocument] Failed to update candidate flags:', flagError);

@@ -45,30 +45,34 @@ SET
   marital_status = NULL
 WHERE LOWER(marital_status) = 'missing';
 
-UPDATE candidates
-SET 
-  religion = NULL
-WHERE LOWER(religion) = 'missing';
+-- Note: The following fields are in EXCEL_BROWSER_FIELDS but don't exist in the database yet:
+-- religion, salary_expectation, available_from, interview_date, driving_license, gcc_years, medical_expiry
+-- If these columns are added in the future, uncomment the corresponding UPDATE statements below
 
-UPDATE candidates
-SET 
-  salary_expectation = NULL
-WHERE LOWER(salary_expectation) = 'missing';
+-- UPDATE candidates
+-- SET 
+--   religion = NULL
+-- WHERE LOWER(religion) = 'missing';
 
-UPDATE candidates
-SET 
-  available_from = NULL
-WHERE LOWER(available_from) = 'missing';
+-- UPDATE candidates
+-- SET 
+--   salary_expectation = NULL
+-- WHERE LOWER(salary_expectation) = 'missing';
 
-UPDATE candidates
-SET 
-  interview_date = NULL
-WHERE LOWER(interview_date) = 'missing';
+-- UPDATE candidates
+-- SET 
+--   available_from = NULL
+-- WHERE LOWER(available_from) = 'missing';
 
-UPDATE candidates
-SET 
-  driving_license = NULL
-WHERE LOWER(driving_license) = 'missing';
+-- UPDATE candidates
+-- SET 
+--   interview_date = NULL
+-- WHERE LOWER(interview_date) = 'missing';
+
+-- UPDATE candidates
+-- SET 
+--   driving_license = NULL
+-- WHERE LOWER(driving_license) = 'missing';
 
 -- Note: passport_normalized and cnic_normalized are already normalized, 
 -- but check just in case

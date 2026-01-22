@@ -439,19 +439,40 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         }
       }
     } else {
-      // No identity fields extracted - needs manual review
-      finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
-      reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+      // No identity fields extracted from document
+      // If document was manually uploaded for a specific candidate AND category is correctly identified,
+      // we can still verify it since the user explicitly linked it to that candidate
+      if (candidateId && aiResult.confidence && aiResult.confidence >= AI_CONFIDENCE_THRESHOLD) {
+        // Document category was correctly identified (high confidence) and candidate_id is provided
+        // This is a manual upload - trust the user's selection
+        console.log(`[DocumentVerification] No identity fields extracted, but document category correctly identified (confidence: ${aiResult.confidence}) and candidate_id provided. Verifying based on manual upload.`);
+        finalStatus = VERIFICATION_STATUS.VERIFIED;
+        reasonCode = VERIFICATION_REASON_CODES.VERIFIED;
 
-      await documentVerificationLogService.logIdentityVerificationCompleted(
-        requestId,
-        documentId,
-        candidateId,
-        VERIFICATION_STATUS.NEEDS_REVIEW,
-        reasonCode,
-        undefined,
-        { notes: 'No identity fields extracted from document' }
-      );
+        await documentVerificationLogService.logIdentityVerificationCompleted(
+          requestId,
+          documentId,
+          candidateId,
+          VERIFICATION_STATUS.VERIFIED,
+          reasonCode,
+          undefined,
+          { notes: 'No identity fields extracted, but verified based on manual upload and correct category identification' }
+        );
+      } else {
+        // Low confidence or no candidate_id - needs manual review
+        finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
+        reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+
+        await documentVerificationLogService.logIdentityVerificationCompleted(
+          requestId,
+          documentId,
+          candidateId,
+          VERIFICATION_STATUS.NEEDS_REVIEW,
+          reasonCode,
+          undefined,
+          { notes: `No identity fields extracted. Confidence: ${aiResult.confidence || 'N/A'}, Candidate ID provided: ${!!candidateId}` }
+        );
+      }
     }
 
     // =============================================================================

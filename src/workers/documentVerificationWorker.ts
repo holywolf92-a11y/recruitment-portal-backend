@@ -546,7 +546,14 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     // STEP 8: Intelligently update candidate record with extracted information
     // Only update if field is missing or new value is more complete
     // =============================================================================
-    if (aiResult.extracted_identity && Object.keys(aiResult.extracted_identity).length > 0 && finalStatus === VERIFICATION_STATUS.VERIFIED) {
+    console.log(`[DocumentVerification] Checking if candidate update needed - extracted_identity:`, aiResult.extracted_identity ? Object.keys(aiResult.extracted_identity).length : 0, `finalStatus:`, finalStatus);
+    
+    // Check if we have any non-null identity fields
+    const hasIdentityFields = aiResult.extracted_identity && 
+      Object.values(aiResult.extracted_identity).some((val: any) => val !== null && val !== undefined && val !== '');
+    
+    if (hasIdentityFields && finalStatus === VERIFICATION_STATUS.VERIFIED) {
+      console.log(`[DocumentVerification] Candidate update condition met - proceeding with update`);
       try {
         // Get current candidate record to check what fields need updating
         const { data: currentCandidate, error: fetchError } = await db

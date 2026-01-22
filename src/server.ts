@@ -115,29 +115,44 @@ try {
       logger.info('Gmail polling worker disabled (set RUN_GMAIL_POLLING=true to enable)');
     }
 
-    // Start CV parser worker if explicitly enabled and env configured
-    if (
-      process.env.RUN_WORKER === 'true' &&
-      process.env.REDIS_URL &&
-      process.env.PYTHON_CV_PARSER_URL &&
-      process.env.PYTHON_HMAC_SECRET
-    ) {
+    // Start workers if explicitly enabled
+    if (process.env.RUN_WORKER === 'true' && process.env.REDIS_URL) {
       try {
-        startCvParserWorker();
-        logger.info('CV Parser worker started');
+        // Start CV parser worker (requires Python service)
+        if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
+          startCvParserWorker();
+          logger.info('CV Parser worker started');
+        } else {
+          logger.warn('CV Parser worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
+        }
         
-        // Start Document Link worker alongside CV parser
-        startDocumentLinkWorker();
-        logger.info('Document Link worker started');
+        // Start Document Link worker (only needs Redis)
+        try {
+          startDocumentLinkWorker();
+          logger.info('Document Link worker started');
+        } catch (linkErr: any) {
+          logger.error('Failed to start Document Link worker:', linkErr);
+        }
         
-        // Start Document Verification worker
-        startDocumentVerificationWorker();
-        logger.info('Document Verification worker started');
+        // Start Document Verification worker (requires Python service)
+        if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
+          try {
+            startDocumentVerificationWorker();
+            logger.info('Document Verification worker started');
+          } catch (verifyErr: any) {
+            logger.error('Failed to start Document Verification worker:', verifyErr);
+            logger.warn('Document verification will not run automatically. Use reprocess endpoint to trigger manually.');
+          }
+        } else {
+          logger.warn('Document Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
+          logger.warn('Documents will remain in "Pending" status. Configure Python service or use reprocess endpoint.');
+        }
       } catch (err) {
         logger.error('Failed to start workers', err);
       }
     } else {
-      logger.info('Workers not started (set RUN_WORKER=true and configure REDIS_URL + PYTHON vars)');
+      logger.info('Workers not started (set RUN_WORKER=true and configure REDIS_URL)');
+      logger.warn('Document verification will not run automatically. Use POST /api/documents/candidate-documents/:id/reprocess to trigger manually.');
     }
   }).on('error', (err) => {
     logger.error('Server failed to start', err);

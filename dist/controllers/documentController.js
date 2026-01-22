@@ -8,6 +8,7 @@ exports.deleteCandidateDocumentController = deleteCandidateDocumentController;
 exports.reprocessCandidateDocumentController = reprocessCandidateDocumentController;
 // Old documentService imports removed - using candidateDocumentService instead
 const candidateDocumentService_1 = require("../services/candidateDocumentService");
+const candidateController_1 = require("./candidateController");
 const documentCategories_1 = require("../config/documentCategories");
 /**
  * Upload document with AI verification workflow (NEW)
@@ -42,6 +43,29 @@ async function uploadCandidateDocumentController(req, res) {
         uploaded_by_user_id: userId,
     };
     const { document, request_id } = await (0, candidateDocumentService_1.uploadCandidateDocument)(uploadData);
+    // Update candidate document flags after upload
+    // This ensures flags (cv_received, passport_received, etc.) are set correctly
+    try {
+        const mockReq = { params: { id: candidate_id }, body: {} };
+        const mockRes = {
+            status: (code) => ({
+                json: (data) => {
+                    if (code >= 400) {
+                        console.error(`[uploadCandidateDocumentController] Flag update failed (${code}):`, data);
+                    }
+                    else {
+                        console.log(`[uploadCandidateDocumentController] Flags updated successfully for candidate ${candidate_id}`);
+                    }
+                }
+            }),
+            json: (data) => console.log(`[uploadCandidateDocumentController] Flag update response:`, data)
+        };
+        await (0, candidateController_1.updateDocumentFlagsController)(mockReq, mockRes);
+    }
+    catch (flagError) {
+        // Log but don't fail the upload if flag update fails
+        console.error('[uploadCandidateDocumentController] Failed to update document flags after upload:', flagError);
+    }
     res.status(201).json({
         success: true,
         document: {

@@ -727,7 +727,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       }
       
       updateData.rejection_code = rejectionCode;
-      updateData.rejection_reason = rejectionReason;
+      updateData.rejection_reason = rejectionReason || null; // Convert undefined to null for database
       updateData.ai_confidence = aiResult.confidence !== undefined ? aiResult.confidence : null;
       updateData.ocr_confidence = aiResult.ocr_confidence !== undefined ? aiResult.ocr_confidence : null;
       updateData.error_stage = errorStage;

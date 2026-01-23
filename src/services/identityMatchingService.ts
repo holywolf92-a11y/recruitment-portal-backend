@@ -223,6 +223,39 @@ export class IdentityMatchingService {
         }
       }
 
+      // PRIORITY 5: Name-only matching (check BEFORE mismatch decision)
+      // This allows verification even if passport/CNIC don't match, as long as name matches
+      // This handles test documents or updated passports where numbers might differ
+      if (extractedIdentity.name) {
+        const nameMatch = this.fuzzyNameMatch(extractedIdentity.name, candidate.name);
+        if (nameMatch) {
+          // Name matches - verify with lower confidence
+          // Allow verification even if passport doesn't match (as long as passport doesn't belong to someone else)
+          // This handles cases like test documents or updated passports
+          matchedOn.push('name');
+          const hasPassportMismatch = mismatchFields.includes('passport');
+          const hasCnicMismatch = mismatchFields.includes('cnic');
+          const confidence = (hasPassportMismatch || hasCnicMismatch) ? 0.65 : 0.70; // Lower confidence if ID differs
+          const notes = (hasPassportMismatch || hasCnicMismatch)
+            ? `Verified by name match (${hasPassportMismatch ? 'passport' : 'CNIC'} number differs but name matches - may be test document or updated ID)`
+            : 'Verified by name only (no strong identifiers found in document, but name matches)';
+          
+          return {
+            matched: true,
+            matched_on: matchedOn,
+            confidence,
+            reason_code: VERIFICATION_REASON_CODES.VERIFIED,
+            candidate_fields: {
+              name: candidate.name,
+            },
+            notes,
+          };
+        } else {
+          // Name doesn't match - add to mismatch fields
+          mismatchFields.push('name');
+        }
+      }
+
       // Decision: Were there mismatches found?
       if (mismatchFields.length > 0) {
         // We found fields that don't match

@@ -7,7 +7,8 @@ import {
   getCandidateDocumentSignedUrl,
   deleteCandidateDocument,
   reprocessDocumentVerification,
-  UploadCandidateDocumentData
+  UploadCandidateDocumentData,
+  formatDocumentResponse, // NEW: Helper to format document with rejection details
 } from '../services/candidateDocumentService';
 import { updateDocumentFlagsController } from './candidateController';
 import { asyncHandler } from '../utils/errorHandling';
@@ -78,15 +79,7 @@ export async function uploadCandidateDocumentController(req: Request, res: Respo
 
   res.status(201).json({
     success: true,
-    document: {
-      id: document.id,
-      candidate_id: document.candidate_id,
-      file_name: document.file_name,
-      mime_type: document.mime_type,
-      verification_status: document.verification_status,
-      category: document.category,
-      created_at: document.created_at,
-    },
+    document: formatDocumentResponse(document), // Use formatted response with rejection details
     request_id,
     message: 'Document uploaded successfully. AI verification in progress.',
   });
@@ -110,7 +103,8 @@ export async function getCandidateDocumentController(req: Request, res: Response
       return res.status(404).json({ error: 'Document not found' });
     }
 
-    res.json({ document });
+    // Format document with rejection details for ALL document types
+    res.json({ document: formatDocumentResponse(document) });
   } catch (error: any) {
     console.error('Error fetching candidate document:', error);
     res.status(500).json({ error: 'Failed to fetch document' });
@@ -135,8 +129,11 @@ export async function listCandidateDocumentsControllerNew(req: Request, res: Res
       category as any
     );
 
+    // Format all documents with rejection details
+    const formattedDocuments = documents.map(doc => formatDocumentResponse(doc));
+
     // Group by category for frontend
-    const groupedByCategory = documents.reduce((acc: any, doc) => {
+    const groupedByCategory = formattedDocuments.reduce((acc: any, doc) => {
       const cat = doc.category || 'other_documents';
       if (!acc[cat]) {
         acc[cat] = {
@@ -150,9 +147,9 @@ export async function listCandidateDocumentsControllerNew(req: Request, res: Res
     }, {});
 
     res.json({
-      documents,
+      documents: formattedDocuments,
       grouped_by_category: Object.values(groupedByCategory),
-      total: documents.length,
+      total: formattedDocuments.length,
     });
   } catch (error: any) {
     console.error('Error listing candidate documents:', error);

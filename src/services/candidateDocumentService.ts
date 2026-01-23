@@ -14,7 +14,7 @@ export interface CandidateDocument {
   confidence?: number;
   verification_status?: string;
   verification_reason_code?: string;
-  mismatch_fields?: string[];
+  mismatch_fields?: string[] | null;
   storage_bucket: string;
   storage_path: string;
   file_name: string;
@@ -24,6 +24,22 @@ export interface CandidateDocument {
   received_at: string;
   created_at: string;
   updated_at: string;
+  // New rejection details (from migration 016)
+  rejection_code?: string | null;
+  rejection_reason?: string | null;
+  rejection_context?: any; // JSONB
+  ai_confidence?: number | null; // 0-1 scale
+  ocr_confidence?: number | null; // 0-1 scale
+  verified_against?: string | null;
+  verification_source?: string | null;
+  error_stage?: 'OCR' | 'Vision' | 'Matching' | 'Extraction' | 'Categorization' | null;
+  retry_possible?: boolean | null;
+  retry_count?: number | null;
+  max_retries?: number | null;
+  document_expiry_date?: string | null;
+  override_reason?: string | null;
+  overridden_by?: string | null;
+  overridden_at?: string | null;
 }
 
 export interface UploadCandidateDocumentData {
@@ -35,7 +51,62 @@ export interface UploadCandidateDocumentData {
   uploaded_by_user_id?: string;
 }
 
-const STORAGE_BUCKET = 'documents';
+/**
+ * Format document response with rejection details for API
+ * Includes rejection object for ALL document types when status is rejected_mismatch or failed
+ */
+export function formatDocumentResponse(document: CandidateDocument): any {
+  const baseResponse: any = {
+    id: document.id,
+    candidate_id: document.candidate_id,
+    file_name: document.file_name,
+    mime_type: document.mime_type,
+    category: document.category,
+    detected_category: document.detected_category,
+    verification_status: document.verification_status,
+    verification_reason_code: document.verification_reason_code,
+    confidence: document.confidence,
+    source: document.source,
+    received_at: document.received_at,
+    created_at: document.created_at,
+    updated_at: document.updated_at,
+  };
+
+  // Include rejection details for ALL document types when rejected or failed
+  if (
+    document.verification_status === VERIFICATION_STATUS.REJECTED_MISMATCH ||
+    document.verification_status === VERIFICATION_STATUS.FAILED
+  ) {
+    baseResponse.rejection = {
+      code: document.rejection_code || null,
+      reason: document.rejection_reason || null,
+      fields: document.mismatch_fields || [],
+      ai_confidence: document.ai_confidence !== null && document.ai_confidence !== undefined 
+        ? document.ai_confidence 
+        : null, // 0-1 scale
+      ocr_confidence: document.ocr_confidence !== null && document.ocr_confidence !== undefined 
+        ? document.ocr_confidence 
+        : null, // 0-1 scale
+      error_stage: document.error_stage || null,
+      retry_possible: document.retry_possible || false,
+      retry_count: document.retry_count || 0,
+      max_retries: document.max_retries || 2,
+      document_expiry_date: document.document_expiry_date || null,
+      context: document.rejection_context || null, // JSONB with mismatch details
+    };
+
+    // Include override information if document was overridden
+    if (document.verification_source === 'admin_override') {
+      baseResponse.rejection.overridden = {
+        by: document.overridden_by || null,
+        at: document.overridden_at || null,
+        reason: document.override_reason || null,
+      };
+    }
+  }
+
+  return baseResponse;
+}
 
 /**
  * Calculate SHA256 hash of file buffer

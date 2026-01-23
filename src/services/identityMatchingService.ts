@@ -1,6 +1,8 @@
 import { supabaseAdminClient } from '../config/database';
 import { normalizeCNIC, normalizePassport, normalizePhoneE164 } from './candidateService';
 import { VERIFICATION_REASON_CODES } from '../config/documentCategories';
+import { DocumentRejectionService, RejectionContext } from './documentRejectionService';
+import { DocumentCategory } from '../config/documentCategories';
 
 interface ExtractedIdentity {
   name?: string;
@@ -27,6 +29,12 @@ interface IdentityMatchResult {
     phone?: string;
   };
   notes?: string;
+  // New fields for detailed rejection (when matched = false)
+  rejection_code?: string;
+  rejection_reason?: string;
+  retry_possible?: boolean;
+  is_overridable?: boolean;
+  required_role?: 'admin' | 'super_admin';
 }
 
 /**
@@ -40,10 +48,23 @@ interface IdentityMatchResult {
 export class IdentityMatchingService {
   /**
    * Match extracted identity fields against a candidate record
+   * 
+   * @param candidateId - Candidate ID to match against
+   * @param extractedIdentity - Identity fields extracted from document
+   * @param documentCategory - Document category (for rejection code determination)
+   * @param aiConfidence - AI confidence score (0-1)
+   * @param ocrConfidence - OCR confidence score (0-1)
+   * @param expiryDate - Document expiry date (if applicable)
+   * @param errorStage - Error stage if processing failed
    */
   async matchIdentity(
     candidateId: string,
-    extractedIdentity: ExtractedIdentity
+    extractedIdentity: ExtractedIdentity,
+    documentCategory?: DocumentCategory,
+    aiConfidence?: number,
+    ocrConfidence?: number,
+    expiryDate?: string,
+    errorStage?: 'OCR' | 'Vision' | 'Matching' | 'Extraction' | 'Categorization'
   ): Promise<IdentityMatchResult> {
     try {
       // Fetch candidate record
@@ -101,17 +122,54 @@ export class IdentityMatchingService {
           if (otherCandidate) {
             // CNIC belongs to a different person - REJECTED
             mismatchFields.push('cnic');
-            return {
-              matched: false,
-              matched_on: [],
-              confidence: 0.0,
-              reason_code: VERIFICATION_REASON_CODES.CNIC_MISMATCH,
-              mismatch_fields: mismatchFields,
-              candidate_fields: {
-                name: candidate.name,
-              },
-              notes: `CNIC belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
-            };
+            
+            // Use DocumentRejectionService for detailed rejection if documentCategory provided
+            if (documentCategory) {
+              const rejectionContext: RejectionContext = {
+                documentCategory,
+                extractedIdentity,
+                candidateData: {
+                  name: candidate.name,
+                  cnic_normalized: candidate.cnic_normalized,
+                },
+                aiConfidence,
+                ocrConfidence,
+                expiryDate,
+                errorStage,
+                mismatchFields,
+              };
+              
+              const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+              
+              return {
+                matched: false,
+                matched_on: [],
+                confidence: 0.0,
+                reason_code: VERIFICATION_REASON_CODES.CNIC_MISMATCH,
+                mismatch_fields: mismatchFields,
+                candidate_fields: {
+                  name: candidate.name,
+                },
+                notes: `CNIC belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
+                rejection_code: rejectionResult.code,
+                rejection_reason: rejectionResult.reason,
+                retry_possible: rejectionResult.retryPossible,
+                is_overridable: rejectionResult.isOverridable,
+                required_role: rejectionResult.requiredRole,
+              };
+            } else {
+              return {
+                matched: false,
+                matched_on: [],
+                confidence: 0.0,
+                reason_code: VERIFICATION_REASON_CODES.CNIC_MISMATCH,
+                mismatch_fields: mismatchFields,
+                candidate_fields: {
+                  name: candidate.name,
+                },
+                notes: `CNIC belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
+              };
+            }
           } else {
             // CNIC doesn't match, but not found in system - mark as mismatch
             mismatchFields.push('cnic');
@@ -147,33 +205,108 @@ export class IdentityMatchingService {
           if (otherCandidate) {
             // Passport belongs to a different person - REJECTED
             mismatchFields.push('passport');
-            return {
-              matched: false,
-              matched_on: [],
-              confidence: 0.0,
-              reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
-              mismatch_fields: mismatchFields,
-              candidate_fields: {
-                name: candidate.name,
-              },
-              notes: `Passport belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
-            };
+            
+            // Use DocumentRejectionService for detailed rejection if documentCategory provided
+            if (documentCategory) {
+              const rejectionContext: RejectionContext = {
+                documentCategory,
+                extractedIdentity,
+                candidateData: {
+                  name: candidate.name,
+                  passport_normalized: candidate.passport_normalized,
+                },
+                aiConfidence,
+                ocrConfidence,
+                expiryDate,
+                errorStage,
+                mismatchFields,
+              };
+              
+              const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+              
+              return {
+                matched: false,
+                matched_on: [],
+                confidence: 0.0,
+                reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
+                mismatch_fields: mismatchFields,
+                candidate_fields: {
+                  name: candidate.name,
+                },
+                notes: `Passport belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
+                rejection_code: rejectionResult.code,
+                rejection_reason: rejectionResult.reason,
+                retry_possible: rejectionResult.retryPossible,
+                is_overridable: rejectionResult.isOverridable,
+                required_role: rejectionResult.requiredRole,
+              };
+            } else {
+              return {
+                matched: false,
+                matched_on: [],
+                confidence: 0.0,
+                reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
+                mismatch_fields: mismatchFields,
+                candidate_fields: {
+                  name: candidate.name,
+                },
+                notes: `Passport belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
+              };
+            }
           } else {
             // Passport doesn't match candidate's passport, but not found in system
             // This is a mismatch - passport numbers are unique identifiers
             mismatchFields.push('passport');
-            return {
-              matched: false,
-              matched_on: [],
-              confidence: 0.0,
-              reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
-              mismatch_fields: mismatchFields,
-              candidate_fields: {
-                name: candidate.name,
-                passport_normalized: candidate.passport_normalized,
-              },
-              notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Passport numbers are unique identifiers.`,
-            };
+            
+            // Use DocumentRejectionService for detailed rejection if documentCategory provided
+            if (documentCategory) {
+              const rejectionContext: RejectionContext = {
+                documentCategory,
+                extractedIdentity,
+                candidateData: {
+                  name: candidate.name,
+                  passport_normalized: candidate.passport_normalized,
+                },
+                aiConfidence,
+                ocrConfidence,
+                expiryDate,
+                errorStage,
+                mismatchFields,
+              };
+              
+              const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+              
+              return {
+                matched: false,
+                matched_on: [],
+                confidence: 0.0,
+                reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
+                mismatch_fields: mismatchFields,
+                candidate_fields: {
+                  name: candidate.name,
+                  passport_normalized: candidate.passport_normalized,
+                },
+                notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Passport numbers are unique identifiers.`,
+                rejection_code: rejectionResult.code,
+                rejection_reason: rejectionResult.reason,
+                retry_possible: rejectionResult.retryPossible,
+                is_overridable: rejectionResult.isOverridable,
+                required_role: rejectionResult.requiredRole,
+              };
+            } else {
+              return {
+                matched: false,
+                matched_on: [],
+                confidence: 0.0,
+                reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
+                mismatch_fields: mismatchFields,
+                candidate_fields: {
+                  name: candidate.name,
+                  passport_normalized: candidate.passport_normalized,
+                },
+                notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Passport numbers are unique identifiers.`,
+              };
+            }
           }
         }
       }
@@ -263,33 +396,112 @@ export class IdentityMatchingService {
 
       // Decision: Were there mismatches found?
       if (mismatchFields.length > 0) {
-        // We found fields that don't match
+        // We found fields that don't match - use DocumentRejectionService for detailed rejection
+        if (documentCategory) {
+          const rejectionContext: RejectionContext = {
+            documentCategory,
+            extractedIdentity,
+            candidateData: {
+              name: candidate.name,
+              father_name: candidate.father_name,
+              cnic_normalized: candidate.cnic_normalized,
+              passport_normalized: candidate.passport_normalized,
+              email: candidate.email,
+              phone: candidate.phone,
+              date_of_birth: undefined, // Not fetched, but can be added if needed
+            },
+            aiConfidence,
+            ocrConfidence,
+            expiryDate,
+            errorStage,
+            mismatchFields, // Pre-computed mismatches
+          };
+
+          const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+
+          return {
+            matched: false,
+            matched_on: [],
+            confidence: 0.0,
+            reason_code: VERIFICATION_REASON_CODES.IDENTITY_MISMATCH,
+            mismatch_fields: rejectionResult.mismatchFields,
+            candidate_fields: {
+              name: candidate.name,
+              email: candidate.email,
+              phone: candidate.phone,
+            },
+            notes: `Fields do not match: ${rejectionResult.mismatchFields.join(', ')}`,
+            // Detailed rejection information
+            rejection_code: rejectionResult.code,
+            rejection_reason: rejectionResult.reason,
+            retry_possible: rejectionResult.retryPossible,
+            is_overridable: rejectionResult.isOverridable,
+            required_role: rejectionResult.requiredRole,
+          };
+        } else {
+          // Fallback if documentCategory not provided
+          return {
+            matched: false,
+            matched_on: [],
+            confidence: 0.0,
+            reason_code: VERIFICATION_REASON_CODES.IDENTITY_MISMATCH,
+            mismatch_fields: mismatchFields,
+            candidate_fields: {
+              name: candidate.name,
+              email: candidate.email,
+              phone: candidate.phone,
+            },
+            notes: `Fields do not match: ${mismatchFields.join(', ')}`,
+          };
+        }
+      }
+
+      // No strong identifiers found in document - UNVERIFIABLE
+      // Use DocumentRejectionService to determine rejection code
+      if (documentCategory) {
+        const rejectionContext: RejectionContext = {
+          documentCategory,
+          extractedIdentity,
+          candidateData: {
+            name: candidate.name,
+          },
+          aiConfidence,
+          ocrConfidence,
+          expiryDate,
+          errorStage,
+        };
+
+        const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+
         return {
           matched: false,
           matched_on: [],
           confidence: 0.0,
-          reason_code: VERIFICATION_REASON_CODES.IDENTITY_MISMATCH,
-          mismatch_fields: mismatchFields,
+          reason_code: VERIFICATION_REASON_CODES.NO_ID_FOUND,
           candidate_fields: {
             name: candidate.name,
-            email: candidate.email,
-            phone: candidate.phone,
           },
-          notes: `Fields do not match: ${mismatchFields.join(', ')}`,
+          notes: 'No strong identity fields (CNIC, passport, email, phone) found in document',
+          // Detailed rejection information
+          rejection_code: rejectionResult.code,
+          rejection_reason: rejectionResult.reason,
+          retry_possible: rejectionResult.retryPossible,
+          is_overridable: rejectionResult.isOverridable,
+          required_role: rejectionResult.requiredRole,
+        };
+      } else {
+        // Fallback if documentCategory not provided
+        return {
+          matched: false,
+          matched_on: [],
+          confidence: 0.0,
+          reason_code: VERIFICATION_REASON_CODES.NO_ID_FOUND,
+          candidate_fields: {
+            name: candidate.name,
+          },
+          notes: 'No strong identity fields (CNIC, passport, email, phone) found in document',
         };
       }
-
-      // No strong identifiers found in document - UNVERIFIABLE
-      return {
-        matched: false,
-        matched_on: [],
-        confidence: 0.0,
-        reason_code: VERIFICATION_REASON_CODES.NO_ID_FOUND,
-        candidate_fields: {
-          name: candidate.name,
-        },
-        notes: 'No strong identity fields (CNIC, passport, email, phone) found in document',
-      };
     } catch (error: any) {
       console.error('[IdentityMatchingService] Error matching identity:', error);
       throw new Error(`Identity matching failed: ${error.message}`);

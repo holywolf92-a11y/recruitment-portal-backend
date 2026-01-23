@@ -14,6 +14,8 @@ import {
   VerificationStatus,
   DocumentCategory
 } from '../config/documentCategories';
+import { DocumentRejectionService, RejectionContext } from '../services/documentRejectionService';
+import { REJECTION_REASON_CODES } from '../config/documentCategories';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
@@ -259,7 +261,19 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     const aiResult = await callAICategorizationService(base64Content, fileName, mimeType);
 
     if (!aiResult.success || aiResult.error) {
-      // AI scan failed
+      // AI scan failed - use DocumentRejectionService to determine rejection code
+      errorStage = 'Categorization';
+      const rejectionContext: RejectionContext = {
+        documentCategory: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // Unknown category
+        extractedIdentity: undefined,
+        candidateData: undefined,
+        aiConfidence: undefined,
+        ocrConfidence: undefined,
+        expiryDate: undefined,
+        errorStage: 'Categorization',
+      };
+      const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+      
       await documentVerificationLogService.logAIScanFailed(
         requestId,
         documentId,
@@ -267,12 +281,19 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         aiResult.error || 'Unknown AI service error'
       );
 
-      // Update document with failure status
+      // Update document with failure status and rejection details
+      // FIX 5: Mandatory rejection_code
       await db
         .from('candidate_documents')
         .update({
           verification_status: VERIFICATION_STATUS.FAILED,
           ai_processing_completed_at: new Date().toISOString(),
+          rejection_code: rejectionResult.code,
+          rejection_reason: rejectionResult.reason,
+          error_stage: 'Categorization',
+          retry_possible: rejectionResult.retryPossible,
+          retry_count: 0,
+          max_retries: 2,
         })
         .eq('id', documentId);
 
@@ -312,6 +333,13 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     let finalStatus: string = VERIFICATION_STATUS.VERIFIED;
     let reasonCode: string = VERIFICATION_REASON_CODES.VERIFIED;
     let mismatchFields: string[] = [];
+    // New rejection details (from DocumentRejectionService)
+    let rejectionCode: string | null = null;
+    let rejectionReason: string | null = null;
+    let retryPossible: boolean = false;
+    let isOverridable: boolean = true;
+    let requiredRole: 'admin' | 'super_admin' = 'admin';
+    let errorStage: 'OCR' | 'Vision' | 'Matching' | 'Extraction' | 'Categorization' | null = null;
 
     if (aiResult.extracted_identity && Object.keys(aiResult.extracted_identity).length > 0) {
       // PRIORITY: Match by extracted identity FIRST (document contains real data, not system-generated ID)
@@ -344,9 +372,15 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           candidateId = candidateMatch.candidateId;
           
           // Now run identity matching with the correct candidate ID
+          // Pass document category and confidence scores for detailed rejection
           matchResult = await identityMatchingService.matchIdentity(
             candidateId,
-            aiResult.extracted_identity
+            aiResult.extracted_identity,
+            finalCategory as DocumentCategory,
+            aiResult.confidence,
+            aiResult.ocr_confidence,
+            aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
+            undefined // errorStage - set later if needed
           );
           
           console.log(`[DocumentVerification] Identity matching successful: ${matchResult.matched ? 'VERIFIED' : 'NEEDS_REVIEW'}`);
@@ -357,7 +391,12 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           try {
             matchResult = await identityMatchingService.matchIdentity(
               candidateId,
-              aiResult.extracted_identity
+              aiResult.extracted_identity,
+              finalCategory as DocumentCategory,
+              aiResult.confidence,
+              aiResult.ocr_confidence,
+              aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
+              undefined
             );
           } catch (matchError: any) {
             // Provided candidate_id also doesn't exist - needs manual review
@@ -406,7 +445,12 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         try {
           matchResult = await identityMatchingService.matchIdentity(
             candidateId,
-            aiResult.extracted_identity
+            aiResult.extracted_identity,
+            finalCategory as DocumentCategory,
+            aiResult.confidence,
+            aiResult.ocr_confidence,
+            aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
+            undefined
           );
         } catch (matchError: any) {
           // Both failed - needs manual review
@@ -447,11 +491,47 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           // No IDs found - needs manual review
           finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
           reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+          // Extract rejection details if available
+          if (matchResult.rejection_code) {
+            rejectionCode = matchResult.rejection_code;
+            rejectionReason = matchResult.rejection_reason || null;
+            retryPossible = matchResult.retry_possible || false;
+            isOverridable = matchResult.is_overridable !== undefined ? matchResult.is_overridable : true;
+            requiredRole = matchResult.required_role || 'admin';
+          }
         } else {
           // Identity mismatch - rejected
           finalStatus = VERIFICATION_STATUS.REJECTED_MISMATCH;
           reasonCode = matchResult.reason_code;
           mismatchFields = matchResult.mismatch_fields || [];
+          // Extract rejection details (FIX 5: Mandatory rejection_code)
+          if (matchResult.rejection_code) {
+            rejectionCode = matchResult.rejection_code;
+            rejectionReason = matchResult.rejection_reason || null;
+            retryPossible = matchResult.retry_possible || false;
+            isOverridable = matchResult.is_overridable !== undefined ? matchResult.is_overridable : true;
+            requiredRole = matchResult.required_role || 'admin';
+          } else {
+            // FIX 5: Enforce mandatory rejection_code
+            console.error(`[DocumentVerification] ERROR: Document ${documentId} reached rejected_mismatch without rejection_code!`);
+            // Use DocumentRejectionService to determine rejection code
+            const rejectionContext: RejectionContext = {
+              documentCategory: finalCategory as DocumentCategory,
+              extractedIdentity: aiResult.extracted_identity,
+              candidateData: undefined, // Not available in this context
+              aiConfidence: aiResult.confidence,
+              ocrConfidence: aiResult.ocr_confidence,
+              expiryDate: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
+              errorStage: null,
+              mismatchFields,
+            };
+            const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+            rejectionCode = rejectionResult.code;
+            rejectionReason = rejectionResult.reason;
+            retryPossible = rejectionResult.retryPossible;
+            isOverridable = rejectionResult.isOverridable;
+            requiredRole = rejectionResult.requiredRole || 'admin';
+          }
         }
       }
     } else {
@@ -503,22 +583,94 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         // Low confidence but identity verified - needs review for category
         finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
         reasonCode = VERIFICATION_REASON_CODES.LOW_CONFIDENCE;
+        
+        // Use DocumentRejectionService for low confidence rejection
+        const rejectionContext: RejectionContext = {
+          documentCategory: finalCategory as DocumentCategory,
+          extractedIdentity: aiResult.extracted_identity,
+          candidateData: undefined,
+          aiConfidence: aiResult.confidence,
+          ocrConfidence: aiResult.ocr_confidence,
+          expiryDate: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
+          errorStage: null,
+        };
+        const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+        rejectionCode = rejectionResult.code;
+        rejectionReason = rejectionResult.reason;
+        retryPossible = rejectionResult.retryPossible;
+        isOverridable = rejectionResult.isOverridable;
+        requiredRole = rejectionResult.requiredRole || 'admin';
       }
     }
 
     // =============================================================================
     // STEP 7: Update document with final verification decision
     // =============================================================================
+    // FIX 5: Enforce mandatory rejection_code for rejected_mismatch and failed statuses
+    if ((finalStatus === VERIFICATION_STATUS.REJECTED_MISMATCH || finalStatus === VERIFICATION_STATUS.FAILED) && !rejectionCode) {
+      console.error(`[DocumentVerification] ERROR: Document ${documentId} reached ${finalStatus} without rejection_code! Using DocumentRejectionService...`);
+      
+      // Determine rejection code using DocumentRejectionService
+      const rejectionContext: RejectionContext = {
+        documentCategory: finalCategory as DocumentCategory,
+        extractedIdentity: aiResult.extracted_identity,
+        candidateData: undefined,
+        aiConfidence: aiResult.confidence,
+        ocrConfidence: aiResult.ocr_confidence,
+        expiryDate: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
+        errorStage: errorStage || null,
+        mismatchFields,
+      };
+      const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+      rejectionCode = rejectionResult.code;
+      rejectionReason = rejectionResult.reason;
+      retryPossible = rejectionResult.retryPossible;
+      isOverridable = rejectionResult.isOverridable;
+      requiredRole = rejectionResult.requiredRole || 'admin';
+    }
+    
+    // Prepare update object with all rejection details
+    const updateData: any = {
+      category: finalCategory,
+      confidence: aiResult.confidence, // Ensure confidence is saved
+      verification_status: finalStatus as VerificationStatus,
+      verification_reason_code: reasonCode,
+      mismatch_fields: mismatchFields.length > 0 ? mismatchFields : null,
+      verification_completed_at: new Date().toISOString(),
+    };
+    
+    // Add rejection details if document is rejected or failed
+    if (finalStatus === VERIFICATION_STATUS.REJECTED_MISMATCH || finalStatus === VERIFICATION_STATUS.FAILED) {
+      if (!rejectionCode) {
+        throw new Error(`FIX 5 Violation: Document ${documentId} reached ${finalStatus} without mandatory rejection_code`);
+      }
+      
+      updateData.rejection_code = rejectionCode;
+      updateData.rejection_reason = rejectionReason;
+      updateData.ai_confidence = aiResult.confidence !== undefined ? aiResult.confidence : null;
+      updateData.ocr_confidence = aiResult.ocr_confidence !== undefined ? aiResult.ocr_confidence : null;
+      updateData.error_stage = errorStage;
+      updateData.retry_possible = retryPossible;
+      updateData.retry_count = 0; // Initialize retry count
+      updateData.max_retries = 2; // Default max retries
+      
+      // Set document expiry date if available
+      if (aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date) {
+        updateData.document_expiry_date = aiResult.extracted_identity.passport_expiry || aiResult.extracted_identity.expiry_date;
+      }
+      
+      // Set rejection context (JSONB) with mismatch fields
+      if (mismatchFields.length > 0) {
+        updateData.rejection_context = {
+          mismatch_fields: mismatchFields,
+          extracted_values: aiResult.extracted_identity || {},
+        };
+      }
+    }
+    
     await db
       .from('candidate_documents')
-      .update({
-        category: finalCategory,
-        confidence: aiResult.confidence, // Ensure confidence is saved
-        verification_status: finalStatus as VerificationStatus,
-        verification_reason_code: reasonCode,
-        mismatch_fields: mismatchFields.length > 0 ? mismatchFields : null,
-        verification_completed_at: new Date().toISOString(),
-      })
+      .update(updateData)
       .eq('id', documentId);
 
     // Update candidate document flags based on final category

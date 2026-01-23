@@ -531,7 +531,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           retry_possible: matchResult.retry_possible || false,
           retry_count: 0, // Initial attempt
           max_retries: 2,
-          document_expiry_date: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date || null,
+          document_expiry_date: (aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date) || undefined,
           rejection_context: {
             mismatch_fields: matchResult.mismatch_fields || [],
             matched: matchResult.matched,
@@ -562,7 +562,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           // Extract rejection details if available
           if (matchResult.rejection_code) {
             rejectionCode = matchResult.rejection_code;
-            rejectionReason = matchResult.rejection_reason || null;
+            rejectionReason = matchResult.rejection_reason || undefined;
             retryPossible = matchResult.retry_possible || false;
             isOverridable = matchResult.is_overridable !== undefined ? matchResult.is_overridable : true;
             requiredRole = matchResult.required_role || 'admin';
@@ -575,7 +575,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           // Extract rejection details (FIX 5: Mandatory rejection_code)
           if (matchResult.rejection_code) {
             rejectionCode = matchResult.rejection_code;
-            rejectionReason = matchResult.rejection_reason || null;
+            rejectionReason = matchResult.rejection_reason || undefined;
             retryPossible = matchResult.retry_possible || false;
             isOverridable = matchResult.is_overridable !== undefined ? matchResult.is_overridable : true;
             requiredRole = matchResult.required_role || 'admin';

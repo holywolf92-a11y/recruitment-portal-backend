@@ -1,6 +1,6 @@
 import { supabaseAdminClient } from '../config/database';
 import { normalizeCNIC, normalizePassport, normalizePhoneE164 } from './candidateService';
-import { VERIFICATION_REASON_CODES } from '../config/documentCategories';
+import { REJECTION_REASON_CODES } from '../config/documentCategories';
 import { DocumentRejectionService, RejectionContext } from './documentRejectionService';
 import { DocumentCategory } from '../config/documentCategories';
 
@@ -284,7 +284,7 @@ export class IdentityMatchingService {
                 mismatch_fields: mismatchFields,
                 candidate_fields: {
                   name: candidate.name,
-                  passport_normalized: candidate.passport_normalized,
+                  passport_no: candidate.passport_normalized, // Map passport_normalized to passport_no for interface
                 },
                 notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Passport numbers are unique identifiers.`,
                 rejection_code: rejectionResult.code,
@@ -302,7 +302,7 @@ export class IdentityMatchingService {
                 mismatch_fields: mismatchFields,
                 candidate_fields: {
                   name: candidate.name,
-                  passport_normalized: candidate.passport_normalized,
+                  passport_no: candidate.passport_normalized, // Map passport_normalized to passport_no for interface
                 },
                 notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Passport numbers are unique identifiers.`,
               };

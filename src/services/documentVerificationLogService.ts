@@ -1,5 +1,5 @@
 import { supabaseAdminClient } from '../config/database';
-import { VerificationStatus, VerificationReasonCode, DocumentCategory } from '../config/documentCategories';
+import { VerificationStatus, RejectionReasonCode, DocumentCategory } from '../config/documentCategories';
 import crypto from 'crypto';
 
 /**

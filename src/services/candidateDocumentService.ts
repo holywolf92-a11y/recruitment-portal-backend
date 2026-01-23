@@ -5,6 +5,8 @@ import { DocumentVerificationLogService, generateRequestId } from './documentVer
 import { documentVerificationQueue } from '../config/queue';
 import { AppError, ErrorType } from '../utils/errorHandling';
 
+const STORAGE_BUCKET = 'documents';
+
 export interface CandidateDocument {
   id: string;
   candidate_id: string;

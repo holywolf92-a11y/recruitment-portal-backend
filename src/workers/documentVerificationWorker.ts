@@ -8,8 +8,8 @@ import { CandidateMatcher } from '../services/candidateMatcher';
 import { normalizePassport } from '../services/candidateService';
 import { 
   DOCUMENT_CATEGORIES, 
-  VERIFICATION_STATUS, 
-  VERIFICATION_REASON_CODES,
+  VERIFICATION_STATUS,
+  REJECTION_REASON_CODES,
   AI_CONFIDENCE_THRESHOLD,
   VerificationStatus,
   DocumentCategory
@@ -260,6 +260,9 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     // =============================================================================
     const aiResult = await callAICategorizationService(base64Content, fileName, mimeType);
 
+    // Declare errorStage early to avoid "used before declaration" error
+    let errorStage: 'OCR' | 'Vision' | 'Matching' | 'Extraction' | 'Categorization' | null = null;
+    
     if (!aiResult.success || aiResult.error) {
       // AI scan failed - use DocumentRejectionService to determine rejection code
       errorStage = 'Categorization';
@@ -343,7 +346,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     let matchResult = null;
     let finalCategory = aiResult.category;
     let finalStatus: string = VERIFICATION_STATUS.VERIFIED;
-    let reasonCode: string = VERIFICATION_REASON_CODES.VERIFIED;
+    let reasonCode: string = REJECTION_REASON_CODES.VERIFIED;
     let mismatchFields: string[] = [];
     // New rejection details (from DocumentRejectionService)
     let rejectionCode: string | null = null;
@@ -351,7 +354,6 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     let retryPossible: boolean = false;
     let isOverridable: boolean = true;
     let requiredRole: 'admin' | 'super_admin' = 'admin';
-    let errorStage: 'OCR' | 'Vision' | 'Matching' | 'Extraction' | 'Categorization' | null = null;
 
     if (aiResult.extracted_identity && Object.keys(aiResult.extracted_identity).length > 0) {
       // PRIORITY: Match by extracted identity FIRST (document contains real data, not system-generated ID)
@@ -415,7 +417,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
             if (matchError.message?.includes('Candidate not found')) {
               console.log(`[DocumentVerification] Provided candidate_id ${candidateId} also not found, marking for review`);
               finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
-              reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+              reasonCode = REJECTION_REASON_CODES.NO_ID_FOUND;
               mismatchFields = ['candidate_not_found'];
               
               await documentVerificationLogService.logIdentityVerificationCompleted(
@@ -447,7 +449,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
               // Other identity matching errors
               console.error(`[DocumentVerification] Identity matching failed:`, matchError);
               finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
-              reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+              reasonCode = REJECTION_REASON_CODES.NO_ID_FOUND;
               mismatchFields = ['identity_matching_error'];
               
               await documentVerificationLogService.logIdentityVerificationCompleted(
@@ -492,7 +494,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           // Both failed - needs manual review
           console.error(`[DocumentVerification] Both auto-match and provided candidate_id failed`);
           finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
-          reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+          reasonCode = REJECTION_REASON_CODES.NO_ID_FOUND;
           mismatchFields = ['identity_matching_error'];
           
           await documentVerificationLogService.logIdentityVerificationCompleted(
@@ -553,11 +555,11 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         // Determine verification status based on identity match
         if (matchResult.matched) {
           finalStatus = VERIFICATION_STATUS.VERIFIED;
-          reasonCode = VERIFICATION_REASON_CODES.VERIFIED;
-        } else if (matchResult.reason_code === VERIFICATION_REASON_CODES.NO_ID_FOUND) {
+          reasonCode = REJECTION_REASON_CODES.VERIFIED;
+        } else if (matchResult.reason_code === REJECTION_REASON_CODES.NO_ID_FOUND) {
           // No IDs found - needs manual review
           finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
-          reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+          reasonCode = REJECTION_REASON_CODES.NO_ID_FOUND;
           // Extract rejection details if available
           if (matchResult.rejection_code) {
             rejectionCode = matchResult.rejection_code;
@@ -589,7 +591,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
               aiConfidence: aiResult.confidence,
               ocrConfidence: aiResult.ocr_confidence,
               expiryDate: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
-              errorStage: null,
+              errorStage: undefined,
               mismatchFields,
             };
             const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
@@ -610,7 +612,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         // This is a manual upload - trust the user's selection
         console.log(`[DocumentVerification] No identity fields extracted, but document category correctly identified (confidence: ${aiResult.confidence}) and candidate_id provided. Verifying based on manual upload.`);
         finalStatus = VERIFICATION_STATUS.VERIFIED;
-        reasonCode = VERIFICATION_REASON_CODES.VERIFIED;
+        reasonCode = REJECTION_REASON_CODES.VERIFIED;
 
         await documentVerificationLogService.logIdentityVerificationCompleted(
           requestId,
@@ -625,7 +627,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       } else {
         // Low confidence or no candidate_id - needs manual review
         finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
-        reasonCode = VERIFICATION_REASON_CODES.NO_ID_FOUND;
+        reasonCode = REJECTION_REASON_CODES.NO_ID_FOUND;
 
         await documentVerificationLogService.logIdentityVerificationCompleted(
           requestId,
@@ -662,7 +664,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       if (finalStatus === VERIFICATION_STATUS.VERIFIED) {
         // Low confidence but identity verified - needs review for category
         finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
-        reasonCode = VERIFICATION_REASON_CODES.LOW_CONFIDENCE;
+        reasonCode = REJECTION_REASON_CODES.LOW_CONFIDENCE;
         
         // Use DocumentRejectionService for low confidence rejection
         const rejectionContext: RejectionContext = {

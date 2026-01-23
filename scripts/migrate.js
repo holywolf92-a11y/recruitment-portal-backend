@@ -47,6 +47,7 @@ async function runAll() {
     await runMigration('014_add_ai_document_categorization.sql');
     await runMigration('015_create_document_verification_logs.sql');
     await runMigration('016_add_universal_rejection_details.sql');
+    await runMigration('017_add_rejection_details_to_logs.sql');
     console.log('\nAll migrations completed!');
 }
 

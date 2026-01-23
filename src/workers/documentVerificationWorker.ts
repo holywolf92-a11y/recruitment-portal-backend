@@ -349,7 +349,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     let mismatchFields: string[] = [];
     // New rejection details (from DocumentRejectionService)
     let rejectionCode: string | null = null;
-    let rejectionReason: string | null = null;
+    let rejectionReason: string | undefined = undefined;
     let retryPossible: boolean = false;
     let isOverridable: boolean = true;
     let requiredRole: 'admin' | 'super_admin' = 'admin';

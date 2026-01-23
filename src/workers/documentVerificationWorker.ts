@@ -8,14 +8,13 @@ import { CandidateMatcher } from '../services/candidateMatcher';
 import { normalizePassport } from '../services/candidateService';
 import { 
   DOCUMENT_CATEGORIES, 
-  VERIFICATION_STATUS,
+  VERIFICATION_STATUS, 
   REJECTION_REASON_CODES,
   AI_CONFIDENCE_THRESHOLD,
   VerificationStatus,
   DocumentCategory
 } from '../config/documentCategories';
 import { DocumentRejectionService, RejectionContext } from '../services/documentRejectionService';
-import { REJECTION_REASON_CODES } from '../config/documentCategories';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;

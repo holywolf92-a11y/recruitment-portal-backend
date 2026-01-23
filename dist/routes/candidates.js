@@ -51,4 +51,7 @@ router.get('/:id/extraction-history', candidateController_1.getExtractionHistory
 router.post('/:id/update-document-flags', candidateController_1.updateDocumentFlagsController);
 // Link existing CV from inbox_attachments to candidate_documents (prevents duplicates)
 router.post('/:id/link-cv', candidateController_1.linkCandidatesCVController);
+// Progressive data completion endpoints
+router.get('/:id/missing-fields', candidateController_1.getMissingFieldsController);
+router.patch('/:id/fields/:field', candidateController_1.updateCandidateFieldManuallyController);
 exports.default = router;

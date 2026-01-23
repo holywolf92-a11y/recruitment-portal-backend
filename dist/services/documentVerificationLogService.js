@@ -159,9 +159,9 @@ class DocumentVerificationLogService {
         });
     }
     /**
-     * Log AI scan failed event
+     * Log AI scan failed event with rejection details
      */
-    async logAIScanFailed(requestId, documentId, candidateId, errorMessage, errorStack) {
+    async logAIScanFailed(requestId, documentId, candidateId, errorMessage, errorStack, rejectionDetails) {
         return this.log({
             request_id: requestId,
             document_id: documentId,
@@ -171,12 +171,20 @@ class DocumentVerificationLogService {
             error_message: errorMessage,
             error_stack: errorStack,
             scan_end_time: new Date().toISOString(),
+            // Include rejection details if provided
+            rejection_code: rejectionDetails?.rejection_code || null,
+            rejection_reason: rejectionDetails?.rejection_reason || null,
+            error_stage: rejectionDetails?.error_stage || null,
+            retry_possible: rejectionDetails?.retry_possible ?? false,
+            retry_count: rejectionDetails?.retry_count ?? 0,
+            max_retries: rejectionDetails?.max_retries ?? 2,
+            rejection_context: rejectionDetails?.rejection_context || null,
         });
     }
     /**
-     * Log identity verification completed event
+     * Log identity verification completed event with detailed rejection information
      */
-    async logIdentityVerificationCompleted(requestId, documentId, candidateId, verificationStatus, reasonCode, mismatchFields, matchingResult) {
+    async logIdentityVerificationCompleted(requestId, documentId, candidateId, verificationStatus, reasonCode, mismatchFields, matchingResult, rejectionDetails) {
         return this.log({
             request_id: requestId,
             document_id: documentId,
@@ -184,10 +192,19 @@ class DocumentVerificationLogService {
             event_type: exports.LOG_EVENT_TYPES.IDENTITY_VERIFICATION_COMPLETED,
             event_status: exports.LOG_EVENT_STATUS.SUCCESS,
             verification_status: verificationStatus,
-            reason_code: reasonCode,
+            reason_code: reasonCode, // Legacy field for backward compatibility
             mismatch_fields: mismatchFields,
             matching_result: matchingResult,
             verify_time: new Date().toISOString(),
+            // Include detailed rejection information if provided
+            rejection_code: rejectionDetails?.rejection_code || null,
+            rejection_reason: rejectionDetails?.rejection_reason || null,
+            error_stage: rejectionDetails?.error_stage || null,
+            retry_possible: rejectionDetails?.retry_possible ?? false,
+            retry_count: rejectionDetails?.retry_count ?? 0,
+            max_retries: rejectionDetails?.max_retries ?? 2,
+            document_expiry_date: rejectionDetails?.document_expiry_date || null,
+            rejection_context: rejectionDetails?.rejection_context || null,
         });
     }
     /**

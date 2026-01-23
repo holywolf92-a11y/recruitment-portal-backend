@@ -1089,15 +1089,23 @@ export async function overrideDocumentVerification(
   try {
     await logService.logIdentityVerificationCompleted(
       generateRequestId(),
-      document.candidate_id,
       documentId,
+      document.candidate_id,
       VERIFICATION_STATUS.VERIFIED,
+      undefined, // reasonCode (legacy, not needed for override)
+      undefined, // mismatchFields (not applicable for override)
+      undefined, // matchingResult (not applicable for override)
       {
-        verification_source: 'admin_override',
-        override_reason: justification.trim(),
-        overridden_by: verifiedUserId,
         rejection_code: document.rejection_code || null,
-        previous_status: document.verification_status,
+        rejection_reason: `Admin override: ${justification.trim()}`,
+        error_stage: undefined,
+        retry_possible: false,
+        rejection_context: {
+          verification_source: 'admin_override',
+          override_reason: justification.trim(),
+          overridden_by: verifiedUserId,
+          previous_status: document.verification_status,
+        },
       }
     );
   } catch (logError: any) {

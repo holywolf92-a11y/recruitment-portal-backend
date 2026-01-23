@@ -6,6 +6,7 @@ exports.listCandidateDocumentsControllerNew = listCandidateDocumentsControllerNe
 exports.getCandidateDocumentDownloadUrlController = getCandidateDocumentDownloadUrlController;
 exports.deleteCandidateDocumentController = deleteCandidateDocumentController;
 exports.reprocessCandidateDocumentController = reprocessCandidateDocumentController;
+exports.overrideCandidateDocumentController = overrideCandidateDocumentController;
 // Old documentService imports removed - using candidateDocumentService instead
 const candidateDocumentService_1 = require("../services/candidateDocumentService");
 const candidateController_1 = require("./candidateController");
@@ -68,15 +69,7 @@ async function uploadCandidateDocumentController(req, res) {
     }
     res.status(201).json({
         success: true,
-        document: {
-            id: document.id,
-            candidate_id: document.candidate_id,
-            file_name: document.file_name,
-            mime_type: document.mime_type,
-            verification_status: document.verification_status,
-            category: document.category,
-            created_at: document.created_at,
-        },
+        document: await (0, candidateDocumentService_1.formatDocumentResponse)(document), // Use formatted response with rejection details
         request_id,
         message: 'Document uploaded successfully. AI verification in progress.',
     });
@@ -95,7 +88,8 @@ async function getCandidateDocumentController(req, res) {
         if (!document) {
             return res.status(404).json({ error: 'Document not found' });
         }
-        res.json({ document });
+        // Format document with rejection details for ALL document types
+        res.json({ document: await (0, candidateDocumentService_1.formatDocumentResponse)(document) });
     }
     catch (error) {
         console.error('Error fetching candidate document:', error);
@@ -114,8 +108,10 @@ async function listCandidateDocumentsControllerNew(req, res) {
             return res.status(400).json({ error: 'Candidate ID is required' });
         }
         const documents = await (0, candidateDocumentService_1.listCandidateDocumentsByCandidate)(candidateId, category);
+        // Format all documents with rejection details
+        const formattedDocuments = await Promise.all(documents.map(doc => (0, candidateDocumentService_1.formatDocumentResponse)(doc)));
         // Group by category for frontend
-        const groupedByCategory = documents.reduce((acc, doc) => {
+        const groupedByCategory = formattedDocuments.reduce((acc, doc) => {
             const cat = doc.category || 'other_documents';
             if (!acc[cat]) {
                 acc[cat] = {
@@ -128,9 +124,9 @@ async function listCandidateDocumentsControllerNew(req, res) {
             return acc;
         }, {});
         res.json({
-            documents,
+            documents: formattedDocuments,
             grouped_by_category: Object.values(groupedByCategory),
-            total: documents.length,
+            total: formattedDocuments.length,
         });
     }
     catch (error) {
@@ -195,6 +191,50 @@ async function reprocessCandidateDocumentController(req, res) {
     catch (error) {
         console.error('Error reprocessing candidate document:', error);
         res.status(500).json({ error: error.message || 'Failed to reprocess document' });
+    }
+}
+/**
+ * Admin override document verification
+ * POST /api/candidate-documents/:id/override
+ * Requires admin role and password verification
+ */
+async function overrideCandidateDocumentController(req, res) {
+    try {
+        const { id } = req.params;
+        const { admin_email, admin_password, justification } = req.body;
+        const authUser = req.user;
+        if (!id) {
+            return res.status(400).json({ error: 'Document ID is required' });
+        }
+        if (!admin_email) {
+            return res.status(400).json({ error: 'Admin email is required' });
+        }
+        if (!admin_password) {
+            return res.status(400).json({ error: 'Admin password is required' });
+        }
+        if (!justification || justification.trim().length < 10) {
+            return res.status(400).json({ error: 'Justification must be at least 10 characters' });
+        }
+        // Get admin user info from auth context (if available) or from password verification
+        // For now, we'll get it from password verification in the service
+        // In production, auth middleware should provide req.user
+        const adminUserId = authUser?.id || null; // Will be verified in service via password
+        const adminRole = authUser?.role?.toLowerCase() || 'admin'; // Default to admin, will be verified in service
+        const document = await (0, candidateDocumentService_1.overrideDocumentVerification)(id, adminUserId || 'temp', // Will be replaced by actual user ID from password verification
+        admin_email, admin_password, justification.trim(), adminRole);
+        res.json({
+            success: true,
+            document: await (0, candidateDocumentService_1.formatDocumentResponse)(document),
+            message: 'Document verification override successful',
+        });
+    }
+    catch (error) {
+        console.error('Error overriding candidate document:', error);
+        // Map AppError to appropriate status codes
+        if (error.statusCode) {
+            return res.status(error.statusCode).json({ error: error.message });
+        }
+        res.status(500).json({ error: error.message || 'Failed to override document verification' });
     }
 }
 // ============================================================================

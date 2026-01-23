@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createCandidateController = createCandidateController;
 exports.getCandidateController = getCandidateController;
@@ -13,6 +46,8 @@ exports.getExtractionHistoryController = getExtractionHistoryController;
 exports.getCandidateCVDownloadController = getCandidateCVDownloadController;
 exports.uploadCandidatePhotoController = uploadCandidatePhotoController;
 exports.bulkUpdateCandidateStatusController = bulkUpdateCandidateStatusController;
+exports.updateCandidateFieldManuallyController = updateCandidateFieldManuallyController;
+exports.getMissingFieldsController = getMissingFieldsController;
 // import { AuthRequest } from '../middleware/auth';
 const candidateService_1 = require("../services/candidateService");
 const linkCVService_1 = require("../services/linkCVService");
@@ -541,5 +576,95 @@ async function bulkUpdateCandidateStatusController(req, res) {
     catch (error) {
         console.error('Error bulk updating candidate status:', error);
         return res.status(400).json({ error: error.message || 'Failed to bulk update status' });
+    }
+}
+/**
+ * Manual field update with source tracking
+ * PATCH /api/candidates/:id/fields/:field
+ */
+async function updateCandidateFieldManuallyController(req, res) {
+    try {
+        const userId = 'test-user-id'; // TODO: Get from auth middleware
+        const { id, field } = req.params;
+        const { value } = req.body;
+        if (!id || !field) {
+            return res.status(400).json({ error: 'Candidate ID and field name are required' });
+        }
+        if (value === undefined || value === null) {
+            return res.status(400).json({ error: 'Field value is required' });
+        }
+        // Import progressive completion service
+        const { updateFieldManually, updateMissingFields } = await Promise.resolve().then(() => __importStar(require('../services/progressiveDataCompletionService')));
+        // Update field manually (highest priority)
+        await updateFieldManually(id, field, value, userId);
+        // Recalculate missing fields
+        await updateMissingFields(id);
+        // Get updated candidate
+        const updatedCandidate = await (0, candidateService_1.getCandidateById)(id, userId);
+        // Map passport_normalized to passport for frontend compatibility
+        const mappedCandidate = updatedCandidate ? {
+            ...updatedCandidate,
+            passport: updatedCandidate.passport_normalized || null,
+        } : null;
+        res.json({
+            success: true,
+            candidate: mappedCandidate,
+            message: `Field "${field}" updated manually`,
+        });
+    }
+    catch (error) {
+        console.error('Error updating field manually:', error);
+        if (error.message?.includes('not found')) {
+            res.status(404).json({ error: 'Candidate not found' });
+        }
+        else {
+            res.status(500).json({ error: error.message || 'Failed to update field' });
+        }
+    }
+}
+/**
+ * Get missing fields for a candidate
+ * GET /api/candidates/:id/missing-fields
+ */
+async function getMissingFieldsController(req, res) {
+    try {
+        const userId = 'test-user-id'; // TODO: Get from auth middleware
+        const { id } = req.params;
+        if (!id) {
+            return res.status(400).json({ error: 'Candidate ID is required' });
+        }
+        // Get candidate
+        const candidate = await (0, candidateService_1.getCandidateById)(id, userId);
+        // Calculate missing fields
+        const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await Promise.resolve().then(() => __importStar(require('../services/progressiveDataCompletionService')));
+        const missingFields = calculateMissingFields(candidate);
+        // Get field sources
+        const fieldSources = candidate.field_sources || {};
+        // Map missing fields with their source info
+        const missingFieldsWithInfo = missingFields.map(field => ({
+            field,
+            label: EXCEL_BROWSER_FIELDS[field] || field,
+            source: fieldSources[field]?.source || null,
+            canBeManuallyUpdated: true,
+            hint: fieldSources[field]?.source === 'manual'
+                ? 'Manually updated - will not be overwritten'
+                : fieldSources[field]?.source
+                    ? `Awaiting document (source: ${fieldSources[field].source})`
+                    : 'Can be manually updated',
+        }));
+        res.json({
+            missing_fields: missingFields,
+            missing_fields_with_info: missingFieldsWithInfo,
+            total_missing: missingFields.length,
+        });
+    }
+    catch (error) {
+        console.error('Error getting missing fields:', error);
+        if (error.message?.includes('not found')) {
+            res.status(404).json({ error: 'Candidate not found' });
+        }
+        else {
+            res.status(500).json({ error: error.message || 'Failed to get missing fields' });
+        }
     }
 }

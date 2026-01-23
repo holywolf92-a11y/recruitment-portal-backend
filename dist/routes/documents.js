@@ -72,6 +72,8 @@ router.get('/candidate-documents/:id/download', documentController_1.getCandidat
 router.delete('/candidate-documents/:id', documentController_1.deleteCandidateDocumentController);
 // Reprocess document verification (re-run AI verification with updated logic)
 router.post('/candidate-documents/:id/reprocess', documentController_1.reprocessCandidateDocumentController);
+// Admin override document verification (requires admin role)
+router.post('/candidate-documents/:id/override', documentController_1.overrideCandidateDocumentController);
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', documentController_1.listCandidateDocumentsControllerNew);
 // ============================================================================

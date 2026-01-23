@@ -1,8 +1,42 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.formatDocumentResponse = formatDocumentResponse;
 exports.uploadCandidateDocument = uploadCandidateDocument;
 exports.getCandidateDocumentById = getCandidateDocumentById;
 exports.listCandidateDocumentsByCandidate = listCandidateDocumentsByCandidate;
@@ -10,6 +44,7 @@ exports.getCandidateDocumentSignedUrl = getCandidateDocumentSignedUrl;
 exports.deleteCandidateDocument = deleteCandidateDocument;
 exports.updateDocumentVerification = updateDocumentVerification;
 exports.reprocessDocumentVerification = reprocessDocumentVerification;
+exports.overrideDocumentVerification = overrideDocumentVerification;
 const database_1 = require("../config/database");
 const crypto_1 = __importDefault(require("crypto"));
 const documentCategories_1 = require("../config/documentCategories");
@@ -17,6 +52,85 @@ const documentVerificationLogService_1 = require("./documentVerificationLogServi
 const queue_1 = require("../config/queue");
 const errorHandling_1 = require("../utils/errorHandling");
 const STORAGE_BUCKET = 'documents';
+/**
+ * Format document response with rejection details for API
+ * Includes rejection object for ALL document types when status is rejected_mismatch or failed
+ */
+async function formatDocumentResponse(document) {
+    const db = (0, database_1.supabaseAdminClient)();
+    const baseResponse = {
+        id: document.id,
+        candidate_id: document.candidate_id,
+        file_name: document.file_name,
+        mime_type: document.mime_type,
+        category: document.category,
+        detected_category: document.detected_category,
+        verification_status: document.verification_status,
+        verification_reason_code: document.verification_reason_code,
+        confidence: document.confidence,
+        source: document.source,
+        received_at: document.received_at,
+        created_at: document.created_at,
+        updated_at: document.updated_at,
+        // Always include verification source and override info if present
+        verification_source: document.verification_source || null,
+        overridden_by: document.overridden_by || null,
+        overridden_at: document.overridden_at || null,
+        override_reason: document.override_reason || null,
+    };
+    // Fetch admin name from override logs if document was overridden
+    if (document.verification_source === 'admin_override' && document.overridden_by) {
+        try {
+            const { data: overrideLog } = await db
+                .from('admin_override_logs')
+                .select('overridden_by_name')
+                .eq('document_id', document.id)
+                .order('overridden_at', { ascending: false })
+                .limit(1)
+                .single();
+            if (overrideLog?.overridden_by_name) {
+                baseResponse.overridden_by_name = overrideLog.overridden_by_name;
+            }
+        }
+        catch (error) {
+            // If override log doesn't exist or query fails, continue without name
+            console.log('[FormatDocumentResponse] Could not fetch override admin name:', error.message);
+        }
+    }
+    // Include rejection details for ALL document types when rejected or failed
+    if (document.verification_status === documentCategories_1.VERIFICATION_STATUS.REJECTED_MISMATCH ||
+        document.verification_status === documentCategories_1.VERIFICATION_STATUS.FAILED) {
+        baseResponse.rejection = {
+            rejection_code: document.rejection_code || null,
+            rejection_reason: document.rejection_reason || null,
+            mismatch_fields: document.mismatch_fields || [],
+            ai_confidence: document.ai_confidence !== null && document.ai_confidence !== undefined
+                ? document.ai_confidence
+                : null, // 0-1 scale
+            ocr_confidence: document.ocr_confidence !== null && document.ocr_confidence !== undefined
+                ? document.ocr_confidence
+                : null, // 0-1 scale
+            error_stage: document.error_stage || null,
+            retry_possible: document.retry_possible || false,
+            retry_count: document.retry_count || 0,
+            max_retries: document.max_retries || 2,
+            document_expiry_date: document.document_expiry_date || null,
+            rejection_context: document.rejection_context || null, // JSONB with mismatch details
+        };
+        // Include override information if document was overridden (even if now rejected)
+        if (document.verification_source === 'admin_override') {
+            baseResponse.rejection.overridden = {
+                by: document.overridden_by || null,
+                at: document.overridden_at || null,
+                reason: document.override_reason || null,
+            };
+            if (baseResponse.overridden_by_name) {
+                baseResponse.rejection.overridden.by_name = baseResponse.overridden_by_name;
+            }
+        }
+    }
+    return baseResponse;
+}
 /**
  * Calculate SHA256 hash of file buffer
  */
@@ -505,4 +619,321 @@ async function reprocessDocumentVerification(documentId) {
         await logService.logError(requestId, `Failed to reprocess document: ${error.message}`, error.stack, documentId, undefined);
         throw error;
     }
+}
+/**
+ * Ensure user exists in users table (for FK integrity)
+ * Creates user record if it doesn't exist, updates if it does
+ * Idempotent - safe to call multiple times
+ *
+ * This function ensures Supabase Auth users have corresponding entries in the users table
+ * to satisfy foreign key constraints in admin_override_logs and other tables.
+ */
+async function ensureUserExists(userId, email, name, role) {
+    const db = (0, database_1.supabaseAdminClient)();
+    try {
+        // Check if user exists by ID (primary key)
+        const { data: existingUser, error: checkError } = await db
+            .from('users')
+            .select('id, email, name, role')
+            .eq('id', userId)
+            .single();
+        if (checkError && checkError.code !== 'PGRST116') {
+            // PGRST116 = not found, which is expected if user doesn't exist
+            // Other errors are unexpected
+            console.warn(`[EnsureUser] Error checking user ${userId}:`, checkError);
+        }
+        if (!existingUser) {
+            // User doesn't exist - create it
+            const { error: insertError } = await db
+                .from('users')
+                .insert({
+                id: userId,
+                email: email,
+                name: name || email.split('@')[0] || 'Admin User',
+                role: role || 'Admin',
+                status: 'Active',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            });
+            if (insertError) {
+                // Handle unique constraint violation (email already exists with different ID - shouldn't happen)
+                if (insertError.code === '23505') { // Unique violation
+                    console.warn(`[EnsureUser] User with email ${email} already exists, attempting update by email...`);
+                    // Try to find user by email and update ID if needed
+                    const { data: userByEmail } = await db
+                        .from('users')
+                        .select('id')
+                        .eq('email', email)
+                        .single();
+                    if (userByEmail && userByEmail.id !== userId) {
+                        console.warn(`[EnsureUser] Email ${email} exists with different ID ${userByEmail.id}, updating to ${userId}...`);
+                        // Update existing user's ID to match auth user ID
+                        const { error: updateError } = await db
+                            .from('users')
+                            .update({
+                            id: userId,
+                            name: name || email.split('@')[0] || 'Admin User',
+                            role: role || 'Admin',
+                            updated_at: new Date().toISOString(),
+                        })
+                            .eq('email', email);
+                        if (updateError) {
+                            console.error(`[EnsureUser] Failed to update user by email:`, updateError);
+                        }
+                    }
+                    else {
+                        // User exists but our check missed it - try update by ID
+                        const { error: updateError } = await db
+                            .from('users')
+                            .update({
+                            email: email,
+                            name: name || email.split('@')[0] || 'Admin User',
+                            role: role || 'Admin',
+                            updated_at: new Date().toISOString(),
+                        })
+                            .eq('id', userId);
+                        if (updateError) {
+                            console.warn(`[EnsureUser] Failed to update user ${userId}:`, updateError);
+                        }
+                    }
+                }
+                else {
+                    console.error(`[EnsureUser] Failed to create user ${userId}:`, insertError);
+                }
+            }
+            else {
+                console.log(`[EnsureUser] ✅ Created user record for ${userId} (${email})`);
+            }
+        }
+        else {
+            // User exists - update if info changed
+            const needsUpdate = existingUser.email !== email ||
+                (name && existingUser.name !== name) ||
+                (role && existingUser.role !== role);
+            if (needsUpdate) {
+                const { error: updateError } = await db
+                    .from('users')
+                    .update({
+                    email: email,
+                    ...(name && { name }),
+                    ...(role && { role }),
+                    updated_at: new Date().toISOString(),
+                })
+                    .eq('id', userId);
+                if (updateError) {
+                    console.warn(`[EnsureUser] Failed to update user ${userId}:`, updateError);
+                }
+                else {
+                    console.log(`[EnsureUser] ✅ Updated user record for ${userId}`);
+                }
+            }
+        }
+    }
+    catch (error) {
+        // Don't fail the operation if user sync fails
+        // This is a best-effort sync for FK integrity
+        console.warn(`[EnsureUser] Error ensuring user exists (non-fatal):`, error);
+    }
+}
+/**
+ * Admin override document verification
+ * Allows admin/super_admin to override AI rejection and mark document as verified
+ *
+ * @param documentId - Document ID to override
+ * @param adminUserId - Admin user ID (from auth context)
+ * @param adminEmail - Admin email (for password verification)
+ * @param adminPassword - Admin password (for verification)
+ * @param justification - Required justification reason (minimum 10 characters)
+ * @param adminRole - Admin role ('admin' or 'super_admin')
+ * @returns Updated document
+ */
+async function overrideDocumentVerification(documentId, adminUserId, // Optional - will be verified from password
+adminEmail, adminPassword, justification, adminRole // Optional - will be verified from password
+) {
+    const db = (0, database_1.supabaseAdminClient)();
+    const logService = new documentVerificationLogService_1.DocumentVerificationLogService();
+    // Validation
+    if (!justification || justification.trim().length < 10) {
+        throw new errorHandling_1.AppError('Justification must be at least 10 characters', errorHandling_1.ErrorType.VALIDATION, 400);
+    }
+    // Get document with rejection details
+    const { data: document, error: docError } = await db
+        .from('candidate_documents')
+        .select('*')
+        .eq('id', documentId)
+        .single();
+    if (docError || !document) {
+        throw new errorHandling_1.AppError('Document not found', errorHandling_1.ErrorType.NOT_FOUND, 404);
+    }
+    // Check if document is in rejected/failed state
+    if (document.verification_status !== documentCategories_1.VERIFICATION_STATUS.REJECTED_MISMATCH &&
+        document.verification_status !== documentCategories_1.VERIFICATION_STATUS.FAILED) {
+        throw new errorHandling_1.AppError(`Document is not in a rejected state. Current status: ${document.verification_status}`, errorHandling_1.ErrorType.VALIDATION, 400);
+    }
+    // Check if rejection is overridable
+    const rejectionCode = document.rejection_code;
+    // Type guard: check if rejectionCode is a valid RejectionReasonCode
+    const isValidRejectionCode = (code) => {
+        if (!code)
+            return false;
+        return Object.values(documentCategories_1.REJECTION_REASON_CODES).includes(code);
+    };
+    if (rejectionCode && isValidRejectionCode(rejectionCode) && !(0, documentCategories_1.isRejectionOverridable)(rejectionCode)) {
+        throw new errorHandling_1.AppError(`This rejection code (${rejectionCode}) cannot be overridden. It requires super_admin privileges and indicates a serious security issue.`, errorHandling_1.ErrorType.FORBIDDEN, 403);
+    }
+    // Check required role
+    const requiredRole = (rejectionCode && isValidRejectionCode(rejectionCode))
+        ? (0, documentCategories_1.getRequiredOverrideRole)(rejectionCode)
+        : 'admin';
+    if (requiredRole === 'super_admin' && adminRole !== 'super_admin') {
+        throw new errorHandling_1.AppError(`This rejection requires super_admin privileges. Your role: ${adminRole}`, errorHandling_1.ErrorType.FORBIDDEN, 403);
+    }
+    // Verify admin password using Supabase Auth
+    let verifiedUserId;
+    let verifiedUserRole;
+    let verifiedUserName;
+    try {
+        const { data: authData, error: authError } = await db.auth.signInWithPassword({
+            email: adminEmail,
+            password: adminPassword,
+        });
+        if (authError || !authData.user) {
+            throw new errorHandling_1.AppError('Invalid admin credentials', errorHandling_1.ErrorType.UNAUTHORIZED, 401);
+        }
+        // Verify user has admin role
+        const userRole = authData.user.user_metadata?.role?.toLowerCase() || '';
+        if (userRole !== 'admin' && userRole !== 'super_admin') {
+            throw new errorHandling_1.AppError('User does not have admin privileges', errorHandling_1.ErrorType.FORBIDDEN, 403);
+        }
+        // Use verified user ID from auth response
+        verifiedUserId = authData.user.id;
+        verifiedUserRole = userRole;
+        verifiedUserName = authData.user.user_metadata?.name || authData.user.user_metadata?.full_name || undefined;
+        // Verify user ID matches if provided
+        if (adminUserId && adminUserId !== verifiedUserId) {
+            throw new errorHandling_1.AppError('User ID mismatch', errorHandling_1.ErrorType.FORBIDDEN, 403);
+        }
+    }
+    catch (error) {
+        if (error instanceof errorHandling_1.AppError) {
+            throw error;
+        }
+        throw new errorHandling_1.AppError('Failed to verify admin credentials', errorHandling_1.ErrorType.UNAUTHORIZED, 401);
+    }
+    // Get admin user details for audit log (optional - may not exist in all setups)
+    let adminName = verifiedUserName || adminEmail;
+    try {
+        const { data: adminUser } = await db
+            .from('users')
+            .select('id, name, email, role')
+            .eq('id', verifiedUserId)
+            .single();
+        if (adminUser?.name) {
+            adminName = adminUser.name;
+        }
+    }
+    catch (userError) {
+        // Users table may not exist or user may not be in it - use email as fallback
+        console.log('[OverrideDocument] Could not fetch user details from users table, using email:', adminEmail);
+    }
+    // Ensure user exists in users table for FK integrity (auto-sync)
+    await ensureUserExists(verifiedUserId, adminEmail, adminName !== adminEmail ? adminName : verifiedUserName, verifiedUserRole === 'super_admin' ? 'Super Admin' : 'Admin');
+    const adminRoleUsed = requiredRole; // Role used for override (may differ from user's role)
+    // Update document status to verified
+    const now = new Date().toISOString();
+    const { data: updatedDocument, error: updateError } = await db
+        .from('candidate_documents')
+        .update({
+        verification_status: documentCategories_1.VERIFICATION_STATUS.VERIFIED,
+        verification_source: 'admin_override',
+        override_reason: justification.trim(),
+        overridden_by: verifiedUserId,
+        overridden_at: now,
+        verification_completed_at: now,
+        updated_at: now,
+    })
+        .eq('id', documentId)
+        .select()
+        .single();
+    if (updateError || !updatedDocument) {
+        throw new errorHandling_1.AppError(`Failed to update document: ${updateError?.message}`, errorHandling_1.ErrorType.DATABASE, 500);
+    }
+    // Create audit log entry
+    try {
+        // User is now guaranteed to exist in users table (via ensureUserExists)
+        await db
+            .from('admin_override_logs')
+            .insert({
+            document_id: documentId,
+            candidate_id: document.candidate_id,
+            document_category: document.category || null,
+            action: 'ADMIN_OVERRIDE',
+            previous_status: document.verification_status,
+            previous_rejection_code: document.rejection_code || null,
+            previous_rejection_reason: document.rejection_reason || null,
+            override_reason: justification.trim(),
+            required_role: requiredRole,
+            overridden_by: verifiedUserId, // FK to users(id) - now guaranteed to exist
+            overridden_by_name: adminName,
+            overridden_by_role: adminRoleUsed,
+            overridden_at: now,
+            override_context: {
+                document_category: document.category,
+                rejection_code: document.rejection_code,
+                ai_confidence: document.ai_confidence,
+                ocr_confidence: document.ocr_confidence,
+                error_stage: document.error_stage,
+            },
+        });
+        console.log(`[OverrideDocument] ✅ Audit log created for override by ${verifiedUserId}`);
+    }
+    catch (logError) {
+        // This should not happen now that we ensure user exists, but handle gracefully
+        console.error('[OverrideDocument] Failed to create audit log:', logError);
+        // Don't fail the override if audit log fails (shouldn't happen, but safety net)
+    }
+    // Log verification completion with override source
+    try {
+        await logService.logIdentityVerificationCompleted((0, documentVerificationLogService_1.generateRequestId)(), documentId, document.candidate_id, documentCategories_1.VERIFICATION_STATUS.VERIFIED, undefined, // reasonCode (legacy, not needed for override)
+        undefined, // mismatchFields (not applicable for override)
+        undefined, // matchingResult (not applicable for override)
+        {
+            rejection_code: document.rejection_code || null,
+            rejection_reason: `Admin override: ${justification.trim()}`,
+            error_stage: undefined,
+            retry_possible: false,
+            rejection_context: {
+                verification_source: 'admin_override',
+                override_reason: justification.trim(),
+                overridden_by: verifiedUserId,
+                previous_status: document.verification_status,
+            },
+        });
+    }
+    catch (logError) {
+        console.error('[OverrideDocument] Failed to log verification completion:', logError);
+        // Don't fail the override if logging fails
+    }
+    // Update candidate document flags
+    try {
+        const { updateDocumentFlagsController } = await Promise.resolve().then(() => __importStar(require('../controllers/candidateController')));
+        const mockReq = { params: { id: document.candidate_id }, body: {} };
+        const mockRes = {
+            status: (code) => ({
+                json: (data) => {
+                    if (code >= 400) {
+                        console.error(`[OverrideDocument] Flag update failed (${code}):`, data);
+                    }
+                }
+            }),
+            json: () => { }
+        };
+        await updateDocumentFlagsController(mockReq, mockRes);
+    }
+    catch (flagError) {
+        console.error('[OverrideDocument] Failed to update document flags:', flagError);
+        // Don't fail the override if flag update fails
+    }
+    console.log(`[OverrideDocument] ✅ Document ${documentId} overridden by admin ${verifiedUserId} (${adminRoleUsed})`);
+    return updatedDocument;
 }

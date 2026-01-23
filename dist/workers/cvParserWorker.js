@@ -100,7 +100,7 @@ async function createCandidateFromParsedData(parsed, attachmentId, identityField
             nationality: candidate.nationality || identityFields?.nationality || undefined,
             position: candidate.position || undefined,
             experience_years: candidate.experience_years || undefined,
-            country_of_interest: candidate.country_of_interest || 'missing',
+            country_of_interest: candidate.country_of_interest || undefined,
             skills: Array.isArray(candidate.skills) ? candidate.skills.join(', ') : undefined,
             languages: Array.isArray(candidate.languages) ? candidate.languages.join(', ') : undefined,
             education: Array.isArray(candidate.education) && candidate.education.length > 0

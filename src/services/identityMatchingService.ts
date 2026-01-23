@@ -423,7 +423,7 @@ export class IdentityMatchingService {
             matched: false,
             matched_on: [],
             confidence: 0.0,
-            reason_code: REJECTION_REASON_CODES.IDENTITY_MISMATCH,
+            reason_code: rejectionResult.code, // Use the specific rejection code from DocumentRejectionService
             mismatch_fields: rejectionResult.mismatchFields,
             candidate_fields: {
               name: candidate.name,
@@ -440,11 +440,24 @@ export class IdentityMatchingService {
           };
         } else {
           // Fallback if documentCategory not provided
+          // Use the highest priority mismatch code from mismatchFields
+          const priorityOrder = [
+            REJECTION_REASON_CODES.CNIC_MISMATCH,
+            REJECTION_REASON_CODES.PASSPORT_MISMATCH,
+            REJECTION_REASON_CODES.DOB_MISMATCH,
+            REJECTION_REASON_CODES.NAME_MISMATCH,
+            REJECTION_REASON_CODES.EMAIL_MISMATCH,
+            REJECTION_REASON_CODES.PHONE_MISMATCH,
+          ];
+          const fallbackCode = priorityOrder.find(code => 
+            mismatchFields.some(field => field.toLowerCase().includes(code.toLowerCase().replace('_mismatch', '')))
+          ) || REJECTION_REASON_CODES.NAME_MISMATCH; // Default to NAME_MISMATCH if no priority match
+
           return {
             matched: false,
             matched_on: [],
             confidence: 0.0,
-            reason_code: REJECTION_REASON_CODES.IDENTITY_MISMATCH,
+            reason_code: fallbackCode,
             mismatch_fields: mismatchFields,
             candidate_fields: {
               name: candidate.name,

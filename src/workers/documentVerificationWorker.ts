@@ -345,7 +345,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     let matchResult = null;
     let finalCategory = aiResult.category;
     let finalStatus: string = VERIFICATION_STATUS.VERIFIED;
-    let reasonCode: string = REJECTION_REASON_CODES.VERIFIED;
+    let reasonCode: string = ''; // Empty string for verified (no rejection code needed)
     let mismatchFields: string[] = [];
     // New rejection details (from DocumentRejectionService)
     let rejectionCode: string | null = null;
@@ -554,7 +554,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         // Determine verification status based on identity match
         if (matchResult.matched) {
           finalStatus = VERIFICATION_STATUS.VERIFIED;
-          reasonCode = REJECTION_REASON_CODES.VERIFIED;
+          reasonCode = ''; // Empty string for verified (no rejection code needed)
         } else if (matchResult.reason_code === REJECTION_REASON_CODES.NO_ID_FOUND) {
           // No IDs found - needs manual review
           finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
@@ -562,7 +562,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           // Extract rejection details if available
           if (matchResult.rejection_code) {
             rejectionCode = matchResult.rejection_code;
-            rejectionReason = matchResult.rejection_reason || undefined;
+            rejectionReason = matchResult.rejection_reason || null;
             retryPossible = matchResult.retry_possible || false;
             isOverridable = matchResult.is_overridable !== undefined ? matchResult.is_overridable : true;
             requiredRole = matchResult.required_role || 'admin';
@@ -575,7 +575,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           // Extract rejection details (FIX 5: Mandatory rejection_code)
           if (matchResult.rejection_code) {
             rejectionCode = matchResult.rejection_code;
-            rejectionReason = matchResult.rejection_reason || undefined;
+            rejectionReason = matchResult.rejection_reason || null;
             retryPossible = matchResult.retry_possible || false;
             isOverridable = matchResult.is_overridable !== undefined ? matchResult.is_overridable : true;
             requiredRole = matchResult.required_role || 'admin';
@@ -611,7 +611,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         // This is a manual upload - trust the user's selection
         console.log(`[DocumentVerification] No identity fields extracted, but document category correctly identified (confidence: ${aiResult.confidence}) and candidate_id provided. Verifying based on manual upload.`);
         finalStatus = VERIFICATION_STATUS.VERIFIED;
-        reasonCode = REJECTION_REASON_CODES.VERIFIED;
+        reasonCode = ''; // Empty string for verified (no rejection code needed)
 
         await documentVerificationLogService.logIdentityVerificationCompleted(
           requestId,
@@ -673,7 +673,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           aiConfidence: aiResult.confidence,
           ocrConfidence: aiResult.ocr_confidence,
           expiryDate: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
-          errorStage: null,
+          errorStage: undefined,
         };
         const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
         rejectionCode = rejectionResult.code;

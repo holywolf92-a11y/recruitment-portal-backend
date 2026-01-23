@@ -50,7 +50,7 @@ export interface DocumentVerificationLog {
   ocr_confidence?: number;
   extracted_fields?: Record<string, any>;
   verification_status?: VerificationStatus;
-  reason_code?: VerificationReasonCode | string; // Legacy field
+  reason_code?: RejectionReasonCode | string; // Legacy field
   mismatch_fields?: string[];
   matching_result?: Record<string, any>;
   raw_ai_response?: Record<string, any>;
@@ -282,7 +282,7 @@ export class DocumentVerificationLogService {
     documentId: string,
     candidateId: string,
     verificationStatus: VerificationStatus,
-    reasonCode?: VerificationReasonCode | string,
+    reasonCode?: RejectionReasonCode | string,
     mismatchFields?: string[],
     matchingResult?: Record<string, any>,
     rejectionDetails?: {

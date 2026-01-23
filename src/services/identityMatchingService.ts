@@ -103,7 +103,7 @@ export class IdentityMatchingService {
             matched: true,
             matched_on: matchedOn,
             confidence: 1.0,
-            reason_code: VERIFICATION_REASON_CODES.VERIFIED,
+            reason_code: REJECTION_REASON_CODES.MANUAL_REVIEW_REQUIRED, // Use MANUAL_REVIEW_REQUIRED for verified cases (legacy compatibility)
             candidate_fields: {
               name: candidate.name,
               email: candidate.email,
@@ -145,7 +145,7 @@ export class IdentityMatchingService {
                 matched: false,
                 matched_on: [],
                 confidence: 0.0,
-                reason_code: VERIFICATION_REASON_CODES.CNIC_MISMATCH,
+                reason_code: REJECTION_REASON_CODES.CNIC_MISMATCH,
                 mismatch_fields: mismatchFields,
                 candidate_fields: {
                   name: candidate.name,
@@ -162,7 +162,7 @@ export class IdentityMatchingService {
                 matched: false,
                 matched_on: [],
                 confidence: 0.0,
-                reason_code: VERIFICATION_REASON_CODES.CNIC_MISMATCH,
+                reason_code: REJECTION_REASON_CODES.CNIC_MISMATCH,
                 mismatch_fields: mismatchFields,
                 candidate_fields: {
                   name: candidate.name,
@@ -186,7 +186,7 @@ export class IdentityMatchingService {
             matched: true,
             matched_on: matchedOn,
             confidence: 0.95,
-            reason_code: VERIFICATION_REASON_CODES.VERIFIED,
+            reason_code: REJECTION_REASON_CODES.MANUAL_REVIEW_REQUIRED, // Use MANUAL_REVIEW_REQUIRED for verified cases (legacy compatibility)
             candidate_fields: {
               name: candidate.name,
               email: candidate.email,
@@ -228,7 +228,7 @@ export class IdentityMatchingService {
                 matched: false,
                 matched_on: [],
                 confidence: 0.0,
-                reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
+                reason_code: REJECTION_REASON_CODES.PASSPORT_MISMATCH,
                 mismatch_fields: mismatchFields,
                 candidate_fields: {
                   name: candidate.name,
@@ -245,7 +245,7 @@ export class IdentityMatchingService {
                 matched: false,
                 matched_on: [],
                 confidence: 0.0,
-                reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
+                reason_code: REJECTION_REASON_CODES.PASSPORT_MISMATCH,
                 mismatch_fields: mismatchFields,
                 candidate_fields: {
                   name: candidate.name,
@@ -280,7 +280,7 @@ export class IdentityMatchingService {
                 matched: false,
                 matched_on: [],
                 confidence: 0.0,
-                reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
+                reason_code: REJECTION_REASON_CODES.PASSPORT_MISMATCH,
                 mismatch_fields: mismatchFields,
                 candidate_fields: {
                   name: candidate.name,
@@ -298,7 +298,7 @@ export class IdentityMatchingService {
                 matched: false,
                 matched_on: [],
                 confidence: 0.0,
-                reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
+                reason_code: REJECTION_REASON_CODES.PASSPORT_MISMATCH,
                 mismatch_fields: mismatchFields,
                 candidate_fields: {
                   name: candidate.name,
@@ -324,7 +324,7 @@ export class IdentityMatchingService {
             matched: true,
             matched_on: matchedOn,
             confidence: 0.80,
-            reason_code: VERIFICATION_REASON_CODES.VERIFIED,
+            reason_code: REJECTION_REASON_CODES.MANUAL_REVIEW_REQUIRED, // Use MANUAL_REVIEW_REQUIRED for verified cases (legacy compatibility)
             candidate_fields: {
               name: candidate.name,
               email: candidate.email,
@@ -353,7 +353,7 @@ export class IdentityMatchingService {
             matched: true,
             matched_on: matchedOn,
             confidence: 0.75,
-            reason_code: VERIFICATION_REASON_CODES.VERIFIED,
+            reason_code: REJECTION_REASON_CODES.MANUAL_REVIEW_REQUIRED, // Use MANUAL_REVIEW_REQUIRED for verified cases (legacy compatibility)
             candidate_fields: {
               name: candidate.name,
               phone: candidate.phone,
@@ -382,7 +382,7 @@ export class IdentityMatchingService {
             matched: true,
             matched_on: matchedOn,
             confidence: 0.70, // Lower confidence for name-only match
-            reason_code: VERIFICATION_REASON_CODES.VERIFIED,
+            reason_code: REJECTION_REASON_CODES.MANUAL_REVIEW_REQUIRED, // Use MANUAL_REVIEW_REQUIRED for verified cases (legacy compatibility)
             candidate_fields: {
               name: candidate.name,
             },
@@ -423,7 +423,7 @@ export class IdentityMatchingService {
             matched: false,
             matched_on: [],
             confidence: 0.0,
-            reason_code: VERIFICATION_REASON_CODES.IDENTITY_MISMATCH,
+            reason_code: REJECTION_REASON_CODES.IDENTITY_MISMATCH,
             mismatch_fields: rejectionResult.mismatchFields,
             candidate_fields: {
               name: candidate.name,
@@ -444,7 +444,7 @@ export class IdentityMatchingService {
             matched: false,
             matched_on: [],
             confidence: 0.0,
-            reason_code: VERIFICATION_REASON_CODES.IDENTITY_MISMATCH,
+            reason_code: REJECTION_REASON_CODES.IDENTITY_MISMATCH,
             mismatch_fields: mismatchFields,
             candidate_fields: {
               name: candidate.name,
@@ -477,7 +477,7 @@ export class IdentityMatchingService {
           matched: false,
           matched_on: [],
           confidence: 0.0,
-          reason_code: VERIFICATION_REASON_CODES.NO_ID_FOUND,
+          reason_code: REJECTION_REASON_CODES.NO_ID_FOUND,
           candidate_fields: {
             name: candidate.name,
           },
@@ -495,7 +495,7 @@ export class IdentityMatchingService {
           matched: false,
           matched_on: [],
           confidence: 0.0,
-          reason_code: VERIFICATION_REASON_CODES.NO_ID_FOUND,
+          reason_code: REJECTION_REASON_CODES.NO_ID_FOUND,
           candidate_fields: {
             name: candidate.name,
           },

@@ -688,10 +688,10 @@ export async function reprocessDocumentVerification(documentId: string): Promise
   const requestId = generateRequestId();
 
   try {
-    // Get document details
+    // Get document details including retry information
     const { data: document, error: docError } = await db
       .from('candidate_documents')
-      .select('id, candidate_id, storage_path, file_name, mime_type, storage_bucket')
+      .select('id, candidate_id, storage_path, file_name, mime_type, storage_bucket, retry_count, max_retries, verification_status')
       .eq('id', documentId)
       .single();
 
@@ -699,7 +699,22 @@ export async function reprocessDocumentVerification(documentId: string): Promise
       throw new AppError('Document not found', ErrorType.NOT_FOUND, 404);
     }
 
-    // Reset document status to pending_ai
+    // FIX 4: Check retry limit before reprocessing
+    const currentRetryCount = document.retry_count || 0;
+    const maxRetries = document.max_retries || 2;
+
+    if (currentRetryCount >= maxRetries) {
+      throw new AppError(
+        `Maximum retry limit reached (${currentRetryCount}/${maxRetries}). Document cannot be reprocessed automatically.`,
+        ErrorType.VALIDATION,
+        400
+      );
+    }
+
+    // FIX 4: Increment retry_count
+    const newRetryCount = currentRetryCount + 1;
+
+    // Reset document status to pending_ai and increment retry count
     await db
       .from('candidate_documents')
       .update({
@@ -709,6 +724,7 @@ export async function reprocessDocumentVerification(documentId: string): Promise
         ai_processing_started_at: null,
         ai_processing_completed_at: null,
         verification_completed_at: null,
+        retry_count: newRetryCount, // Increment retry count
         updated_at: new Date().toISOString(),
       })
       .eq('id', documentId);

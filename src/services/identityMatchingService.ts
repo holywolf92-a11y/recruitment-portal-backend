@@ -159,8 +159,21 @@ export class IdentityMatchingService {
               notes: `Passport belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
             };
           } else {
-            // Passport doesn't match, but not found in system
+            // Passport doesn't match candidate's passport, but not found in system
+            // This is a mismatch - passport numbers are unique identifiers
             mismatchFields.push('passport');
+            return {
+              matched: false,
+              matched_on: [],
+              confidence: 0.0,
+              reason_code: VERIFICATION_REASON_CODES.PASSPORT_MISMATCH,
+              mismatch_fields: mismatchFields,
+              candidate_fields: {
+                name: candidate.name,
+                passport_normalized: candidate.passport_normalized,
+              },
+              notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Passport numbers are unique identifiers.`,
+            };
           }
         }
       }
@@ -223,32 +236,24 @@ export class IdentityMatchingService {
         }
       }
 
-      // PRIORITY 5: Name-only matching (check BEFORE mismatch decision)
-      // This allows verification even if passport/CNIC don't match, as long as name matches
-      // This handles test documents or updated passports where numbers might differ
-      if (extractedIdentity.name) {
+      // PRIORITY 5: Name-only matching (only if no strong identifiers were found)
+      // This is ONLY for cases where passport/CNIC/email/phone were NOT extracted
+      // If passport/CNIC were extracted but don't match, we already rejected above
+      // Multiple candidates can have the same name, so name-only matching is unreliable
+      if (extractedIdentity.name && !extractedPassport && !extractedCnic && !extractedIdentity.email && !extractedPhone) {
         const nameMatch = this.fuzzyNameMatch(extractedIdentity.name, candidate.name);
         if (nameMatch) {
-          // Name matches - verify with lower confidence
-          // Allow verification even if passport doesn't match (as long as passport doesn't belong to someone else)
-          // This handles cases like test documents or updated passports
+          // Name matches and no strong identifiers found - verify with lower confidence
           matchedOn.push('name');
-          const hasPassportMismatch = mismatchFields.includes('passport');
-          const hasCnicMismatch = mismatchFields.includes('cnic');
-          const confidence = (hasPassportMismatch || hasCnicMismatch) ? 0.65 : 0.70; // Lower confidence if ID differs
-          const notes = (hasPassportMismatch || hasCnicMismatch)
-            ? `Verified by name match (${hasPassportMismatch ? 'passport' : 'CNIC'} number differs but name matches - may be test document or updated ID)`
-            : 'Verified by name only (no strong identifiers found in document, but name matches)';
-          
           return {
             matched: true,
             matched_on: matchedOn,
-            confidence,
+            confidence: 0.70, // Lower confidence for name-only match
             reason_code: VERIFICATION_REASON_CODES.VERIFIED,
             candidate_fields: {
               name: candidate.name,
             },
-            notes,
+            notes: 'Verified by name only (no strong identifiers found in document, but name matches)',
           };
         } else {
           // Name doesn't match - add to mismatch fields

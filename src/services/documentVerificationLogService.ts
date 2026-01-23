@@ -50,7 +50,7 @@ export interface DocumentVerificationLog {
   ocr_confidence?: number;
   extracted_fields?: Record<string, any>;
   verification_status?: VerificationStatus;
-  reason_code?: VerificationReasonCode | string;
+  reason_code?: VerificationReasonCode | string; // Legacy field
   mismatch_fields?: string[];
   matching_result?: Record<string, any>;
   raw_ai_response?: Record<string, any>;
@@ -62,6 +62,15 @@ export interface DocumentVerificationLog {
   scan_end_time?: string;
   verify_time?: string;
   metadata?: Record<string, any>;
+  // New rejection details (from migration 017)
+  rejection_code?: string | null;
+  rejection_reason?: string | null;
+  error_stage?: 'OCR' | 'Vision' | 'Matching' | 'Extraction' | 'Categorization' | null;
+  retry_possible?: boolean | null;
+  retry_count?: number | null;
+  max_retries?: number | null;
+  document_expiry_date?: string | null;
+  rejection_context?: Record<string, any> | null;
 }
 
 /**
@@ -227,14 +236,23 @@ export class DocumentVerificationLogService {
   }
 
   /**
-   * Log AI scan failed event
+   * Log AI scan failed event with rejection details
    */
   async logAIScanFailed(
     requestId: string,
     documentId: string,
     candidateId: string,
     errorMessage: string,
-    errorStack?: string
+    errorStack?: string,
+    rejectionDetails?: {
+      rejection_code?: string;
+      rejection_reason?: string;
+      error_stage?: 'OCR' | 'Vision' | 'Matching' | 'Extraction' | 'Categorization';
+      retry_possible?: boolean;
+      retry_count?: number;
+      max_retries?: number;
+      rejection_context?: Record<string, any>;
+    }
   ): Promise<DocumentVerificationLog> {
     return this.log({
       request_id: requestId,
@@ -245,11 +263,19 @@ export class DocumentVerificationLogService {
       error_message: errorMessage,
       error_stack: errorStack,
       scan_end_time: new Date().toISOString(),
+      // Include rejection details if provided
+      rejection_code: rejectionDetails?.rejection_code || null,
+      rejection_reason: rejectionDetails?.rejection_reason || null,
+      error_stage: rejectionDetails?.error_stage || null,
+      retry_possible: rejectionDetails?.retry_possible ?? false,
+      retry_count: rejectionDetails?.retry_count ?? 0,
+      max_retries: rejectionDetails?.max_retries ?? 2,
+      rejection_context: rejectionDetails?.rejection_context || null,
     });
   }
 
   /**
-   * Log identity verification completed event
+   * Log identity verification completed event with detailed rejection information
    */
   async logIdentityVerificationCompleted(
     requestId: string,
@@ -258,7 +284,17 @@ export class DocumentVerificationLogService {
     verificationStatus: VerificationStatus,
     reasonCode?: VerificationReasonCode | string,
     mismatchFields?: string[],
-    matchingResult?: Record<string, any>
+    matchingResult?: Record<string, any>,
+    rejectionDetails?: {
+      rejection_code?: string;
+      rejection_reason?: string;
+      error_stage?: 'OCR' | 'Vision' | 'Matching' | 'Extraction' | 'Categorization';
+      retry_possible?: boolean;
+      retry_count?: number;
+      max_retries?: number;
+      document_expiry_date?: string;
+      rejection_context?: Record<string, any>;
+    }
   ): Promise<DocumentVerificationLog> {
     return this.log({
       request_id: requestId,
@@ -267,10 +303,19 @@ export class DocumentVerificationLogService {
       event_type: LOG_EVENT_TYPES.IDENTITY_VERIFICATION_COMPLETED,
       event_status: LOG_EVENT_STATUS.SUCCESS,
       verification_status: verificationStatus,
-      reason_code: reasonCode,
+      reason_code: reasonCode, // Legacy field for backward compatibility
       mismatch_fields: mismatchFields,
       matching_result: matchingResult,
       verify_time: new Date().toISOString(),
+      // Include detailed rejection information if provided
+      rejection_code: rejectionDetails?.rejection_code || null,
+      rejection_reason: rejectionDetails?.rejection_reason || null,
+      error_stage: rejectionDetails?.error_stage || null,
+      retry_possible: rejectionDetails?.retry_possible ?? false,
+      retry_count: rejectionDetails?.retry_count ?? 0,
+      max_retries: rejectionDetails?.max_retries ?? 2,
+      document_expiry_date: rejectionDetails?.document_expiry_date || null,
+      rejection_context: rejectionDetails?.rejection_context || null,
     });
   }
 

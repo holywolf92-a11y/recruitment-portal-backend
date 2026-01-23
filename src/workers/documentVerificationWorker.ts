@@ -274,11 +274,36 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       };
       const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
       
+      // AI scan failed - use DocumentRejectionService to determine rejection code
+      errorStage = 'Categorization';
+      const rejectionContext: RejectionContext = {
+        documentCategory: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // Unknown category
+        extractedIdentity: undefined,
+        candidateData: undefined,
+        aiConfidence: undefined,
+        ocrConfidence: undefined,
+        expiryDate: undefined,
+        errorStage: 'Categorization',
+      };
+      const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
+      
       await documentVerificationLogService.logAIScanFailed(
         requestId,
         documentId,
         candidateId,
-        aiResult.error || 'Unknown AI service error'
+        aiResult.error || 'Unknown AI service error',
+        undefined, // errorStack
+        {
+          rejection_code: rejectionResult.code,
+          rejection_reason: rejectionResult.reason,
+          error_stage: 'Categorization',
+          retry_possible: rejectionResult.retryPossible,
+          retry_count: 0,
+          max_retries: 2,
+          rejection_context: {
+            error_message: aiResult.error,
+          },
+        }
       );
 
       // Update document with failure status and rejection details
@@ -417,6 +442,18 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
                   notes: `Candidate not found. Attempted matching by: ${JSON.stringify(matchCriteria)}. Provided candidate_id also not found.`,
                   auto_match_attempted: true,
                   match_result: candidateMatch
+                },
+                {
+                  rejection_code: rejectionCode || REJECTION_REASON_CODES.CANDIDATE_NOT_FOUND,
+                  rejection_reason: rejectionReason || 'No matching candidate found',
+                  error_stage: 'Matching',
+                  retry_possible: false,
+                  retry_count: 0,
+                  max_retries: 2,
+                  rejection_context: {
+                    mismatch_fields: mismatchFields,
+                    match_criteria: matchCriteria,
+                  },
                 }
               );
             } else {
@@ -433,7 +470,19 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
                 VERIFICATION_STATUS.NEEDS_REVIEW,
                 reasonCode,
                 mismatchFields,
-                { notes: `Identity matching error: ${matchError.message}` }
+                { notes: `Identity matching error: ${matchError.message}` },
+                {
+                  rejection_code: rejectionCode || REJECTION_REASON_CODES.NO_ID_FOUND,
+                  rejection_reason: rejectionReason || 'Identity matching failed',
+                  error_stage: 'Matching',
+                  retry_possible: false,
+                  retry_count: 0,
+                  max_retries: 2,
+                  rejection_context: {
+                    mismatch_fields: mismatchFields,
+                    error_message: matchError.message,
+                  },
+                }
               );
             }
           }
@@ -466,13 +515,43 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
             VERIFICATION_STATUS.NEEDS_REVIEW,
             reasonCode,
             mismatchFields,
-            { notes: `Auto-match failed: ${autoMatchError.message}. Identity matching also failed: ${matchError.message}` }
+            { notes: `Auto-match failed: ${autoMatchError.message}. Identity matching also failed: ${matchError.message}` },
+            {
+              rejection_code: rejectionCode || REJECTION_REASON_CODES.NO_ID_FOUND,
+              rejection_reason: rejectionReason || 'Auto-matching and identity matching both failed',
+              error_stage: 'Matching',
+              retry_possible: false,
+              retry_count: 0,
+              max_retries: 2,
+              rejection_context: {
+                mismatch_fields: mismatchFields,
+                auto_match_error: autoMatchError.message,
+                identity_match_error: matchError.message,
+              },
+            }
           );
         }
       }
 
       // Log identity verification result (only if matching succeeded)
       if (matchResult) {
+        // Prepare rejection details from matchResult
+        const rejectionDetails = matchResult.rejection_code ? {
+          rejection_code: matchResult.rejection_code,
+          rejection_reason: matchResult.rejection_reason || null,
+          error_stage: errorStage || null,
+          retry_possible: matchResult.retry_possible || false,
+          retry_count: 0, // Initial attempt
+          max_retries: 2,
+          document_expiry_date: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date || null,
+          rejection_context: {
+            mismatch_fields: matchResult.mismatch_fields || [],
+            matched: matchResult.matched,
+            matched_on: matchResult.matched_on || [],
+            confidence: matchResult.confidence,
+          },
+        } : undefined;
+
         await documentVerificationLogService.logIdentityVerificationCompleted(
           requestId,
           documentId,
@@ -480,7 +559,8 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           matchResult.matched ? VERIFICATION_STATUS.VERIFIED : VERIFICATION_STATUS.NEEDS_REVIEW,
           matchResult.reason_code,
           matchResult.mismatch_fields,
-          matchResult
+          matchResult,
+          rejectionDetails
         );
 
         // Determine verification status based on identity match
@@ -552,7 +632,8 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           VERIFICATION_STATUS.VERIFIED,
           reasonCode,
           undefined,
-          { notes: 'No identity fields extracted, but verified based on manual upload and correct category identification' }
+          { notes: 'No identity fields extracted, but verified based on manual upload and correct category identification' },
+          undefined // No rejection details for verified documents
         );
       } else {
         // Low confidence or no candidate_id - needs manual review
@@ -566,7 +647,19 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           VERIFICATION_STATUS.NEEDS_REVIEW,
           reasonCode,
           undefined,
-          { notes: `No identity fields extracted. Confidence: ${aiResult.confidence || 'N/A'}, Candidate ID provided: ${!!candidateId}` }
+          { notes: `No identity fields extracted. Confidence: ${aiResult.confidence || 'N/A'}, Candidate ID provided: ${!!candidateId}` },
+          {
+            rejection_code: REJECTION_REASON_CODES.NO_ID_FOUND,
+            rejection_reason: 'No identity fields extracted from document',
+            error_stage: 'Extraction',
+            retry_possible: true, // Can retry with better image/processing
+            retry_count: 0,
+            max_retries: 2,
+            rejection_context: {
+              ai_confidence: aiResult.confidence,
+              candidate_id_provided: !!candidateId,
+            },
+          }
         );
       }
     }

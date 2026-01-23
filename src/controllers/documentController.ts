@@ -7,6 +7,7 @@ import {
   getCandidateDocumentSignedUrl,
   deleteCandidateDocument,
   reprocessDocumentVerification,
+  overrideDocumentVerification,
   UploadCandidateDocumentData,
   formatDocumentResponse, // NEW: Helper to format document with rejection details
 } from '../services/candidateDocumentService';
@@ -79,7 +80,7 @@ export async function uploadCandidateDocumentController(req: Request, res: Respo
 
   res.status(201).json({
     success: true,
-    document: formatDocumentResponse(document), // Use formatted response with rejection details
+    document: await formatDocumentResponse(document), // Use formatted response with rejection details
     request_id,
     message: 'Document uploaded successfully. AI verification in progress.',
   });
@@ -104,7 +105,7 @@ export async function getCandidateDocumentController(req: Request, res: Response
     }
 
     // Format document with rejection details for ALL document types
-    res.json({ document: formatDocumentResponse(document) });
+    res.json({ document: await formatDocumentResponse(document) });
   } catch (error: any) {
     console.error('Error fetching candidate document:', error);
     res.status(500).json({ error: 'Failed to fetch document' });
@@ -130,7 +131,7 @@ export async function listCandidateDocumentsControllerNew(req: Request, res: Res
     );
 
     // Format all documents with rejection details
-    const formattedDocuments = documents.map(doc => formatDocumentResponse(doc));
+    const formattedDocuments = await Promise.all(documents.map(doc => formatDocumentResponse(doc)));
 
     // Group by category for frontend
     const groupedByCategory = formattedDocuments.reduce((acc: any, doc) => {
@@ -222,6 +223,65 @@ export async function reprocessCandidateDocumentController(req: Request, res: Re
   } catch (error: any) {
     console.error('Error reprocessing candidate document:', error);
     res.status(500).json({ error: error.message || 'Failed to reprocess document' });
+  }
+}
+
+/**
+ * Admin override document verification
+ * POST /api/candidate-documents/:id/override
+ * Requires admin role and password verification
+ */
+export async function overrideCandidateDocumentController(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { admin_email, admin_password, justification } = req.body;
+    const authUser = (req as any).user;
+
+    if (!id) {
+      return res.status(400).json({ error: 'Document ID is required' });
+    }
+
+    if (!admin_email) {
+      return res.status(400).json({ error: 'Admin email is required' });
+    }
+
+    if (!admin_password) {
+      return res.status(400).json({ error: 'Admin password is required' });
+    }
+
+    if (!justification || justification.trim().length < 10) {
+      return res.status(400).json({ error: 'Justification must be at least 10 characters' });
+    }
+
+    // Get admin user info from auth context (if available) or from password verification
+    // For now, we'll get it from password verification in the service
+    // In production, auth middleware should provide req.user
+    const adminUserId = authUser?.id || null; // Will be verified in service via password
+    const adminRole = authUser?.role?.toLowerCase() || 'admin'; // Default to admin, will be verified in service
+
+    const document = await overrideDocumentVerification(
+      id,
+      adminUserId || 'temp', // Will be replaced by actual user ID from password verification
+      admin_email,
+      admin_password,
+      justification.trim(),
+      adminRole as 'admin' | 'super_admin'
+    );
+
+    res.json({
+      success: true,
+      document: await formatDocumentResponse(document),
+      message: 'Document verification override successful',
+    });
+  } catch (error: any) {
+    console.error('Error overriding candidate document:', error);
+    
+    // Map AppError to appropriate status codes
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ error: error.message });
+    }
+    
+    res.status(500).json({ error: error.message || 'Failed to override document verification' });
   }
 }
 

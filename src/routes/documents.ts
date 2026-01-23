@@ -10,7 +10,8 @@ import {
   listCandidateDocumentsControllerNew,
   getCandidateDocumentDownloadUrlController,
   deleteCandidateDocumentController,
-  reprocessCandidateDocumentController
+  reprocessCandidateDocumentController,
+  overrideCandidateDocumentController
 } from '../controllers/documentController';
 
 const logger = createLogger('DocumentsRouter');
@@ -91,6 +92,9 @@ router.delete('/candidate-documents/:id', deleteCandidateDocumentController);
 
 // Reprocess document verification (re-run AI verification with updated logic)
 router.post('/candidate-documents/:id/reprocess', reprocessCandidateDocumentController);
+
+// Admin override document verification (requires admin role)
+router.post('/candidate-documents/:id/override', overrideCandidateDocumentController);
 
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', listCandidateDocumentsControllerNew);

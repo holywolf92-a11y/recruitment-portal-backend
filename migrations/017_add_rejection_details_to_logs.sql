@@ -34,7 +34,7 @@ BEGIN
     WHERE table_name = 'document_verification_logs' AND column_name = 'error_stage'
   ) THEN
     ALTER TABLE document_verification_logs
-      ADD COLUMN error_stage TEXT CHECK (error_stage IN ('OCR', 'Vision', 'Matching', 'Extraction', 'Categorization'));
+      ADD COLUMN error_stage TEXT;
   END IF;
 
   -- Retry semantics
@@ -82,6 +82,19 @@ BEGIN
   END IF;
 END $$;
 
+-- Add CHECK constraint for error_stage (outside DO block to avoid syntax issues)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'check_document_verification_logs_error_stage'
+  ) THEN
+    ALTER TABLE document_verification_logs
+      ADD CONSTRAINT check_document_verification_logs_error_stage
+      CHECK (error_stage IS NULL OR error_stage IN ('OCR', 'Vision', 'Matching', 'Extraction', 'Categorization'));
+  END IF;
+END $$;
+
 -- =============================================================================
 -- PART 2: Add indexes for efficient querying
 -- =============================================================================
@@ -106,7 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_verification_logs_retry
 -- =============================================================================
 
 COMMENT ON COLUMN document_verification_logs.rejection_code IS 'Standardized rejection reason code (CNIC_MISMATCH, PASSPORT_MISMATCH, EXPIRED_PASSPORT, LOW_OCR_CONFIDENCE, etc.). Universal across all document types.';
-COMMENT ON COLUMN document_verification_logs.rejection_reason IS 'Human-readable rejection reason message, document-type aware (e.g., "Passport expired on 2023-06-09" vs "CNIC number in passport does not match candidate\'s CNIC")';
+COMMENT ON COLUMN document_verification_logs.rejection_reason IS 'Human-readable rejection reason message, document-type aware (e.g., "Passport expired on 2023-06-09" vs "CNIC number in passport does not match candidate''s CNIC")';
 COMMENT ON COLUMN document_verification_logs.error_stage IS 'Stage in the verification pipeline where error occurred: OCR, Vision, Matching, Extraction, Categorization';
 COMMENT ON COLUMN document_verification_logs.retry_possible IS 'Whether this rejection/failure can be retried (e.g., OCR failures can be retried, expired documents cannot)';
 COMMENT ON COLUMN document_verification_logs.retry_count IS 'Number of times this document has been retried';

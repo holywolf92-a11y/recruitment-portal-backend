@@ -526,8 +526,8 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         // Prepare rejection details from matchResult
         const rejectionDetails = matchResult.rejection_code ? {
           rejection_code: matchResult.rejection_code,
-          rejection_reason: matchResult.rejection_reason || null,
-          error_stage: errorStage || null,
+          rejection_reason: matchResult.rejection_reason || undefined,
+          error_stage: errorStage || undefined,
           retry_possible: matchResult.retry_possible || false,
           retry_count: 0, // Initial attempt
           max_retries: 2,
@@ -562,7 +562,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           // Extract rejection details if available
           if (matchResult.rejection_code) {
             rejectionCode = matchResult.rejection_code;
-            rejectionReason = matchResult.rejection_reason || null;
+            rejectionReason = matchResult.rejection_reason || undefined;
             retryPossible = matchResult.retry_possible || false;
             isOverridable = matchResult.is_overridable !== undefined ? matchResult.is_overridable : true;
             requiredRole = matchResult.required_role || 'admin';
@@ -575,7 +575,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           // Extract rejection details (FIX 5: Mandatory rejection_code)
           if (matchResult.rejection_code) {
             rejectionCode = matchResult.rejection_code;
-            rejectionReason = matchResult.rejection_reason || null;
+            rejectionReason = matchResult.rejection_reason || undefined;
             retryPossible = matchResult.retry_possible || false;
             isOverridable = matchResult.is_overridable !== undefined ? matchResult.is_overridable : true;
             requiredRole = matchResult.required_role || 'admin';
@@ -699,7 +699,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         aiConfidence: aiResult.confidence,
         ocrConfidence: aiResult.ocr_confidence,
         expiryDate: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
-        errorStage: errorStage || null,
+        errorStage: errorStage || undefined,
         mismatchFields,
       };
       const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);

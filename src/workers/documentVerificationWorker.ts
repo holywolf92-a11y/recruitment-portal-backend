@@ -274,19 +274,6 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       };
       const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
       
-      // AI scan failed - use DocumentRejectionService to determine rejection code
-      errorStage = 'Categorization';
-      const rejectionContext: RejectionContext = {
-        documentCategory: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // Unknown category
-        extractedIdentity: undefined,
-        candidateData: undefined,
-        aiConfidence: undefined,
-        ocrConfidence: undefined,
-        expiryDate: undefined,
-        errorStage: 'Categorization',
-      };
-      const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
-      
       await documentVerificationLogService.logAIScanFailed(
         requestId,
         documentId,

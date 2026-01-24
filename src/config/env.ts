@@ -37,7 +37,10 @@ export function validateEnv() {
     'WHATSAPP_ACCESS_TOKEN',
     'WHATSAPP_PHONE_NUMBER_ID',
     'WHATSAPP_APP_SECRET',
-    'WEBHOOK_VERIFY_TOKEN'
+    'WEBHOOK_VERIFY_TOKEN',
+    'PYTHON_CV_PARSER_URL',
+    'PARSER_URL',
+    'PYTHON_HMAC_SECRET',
   ];
 
   const missingOptional = optional.filter((k) => !process.env[k]);

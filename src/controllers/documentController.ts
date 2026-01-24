@@ -14,6 +14,7 @@ import {
 import { updateDocumentFlagsController } from './candidateController';
 import { asyncHandler } from '../utils/errorHandling';
 import { DOCUMENT_CATEGORY_DISPLAY_NAMES } from '../config/documentCategories';
+import { splitUpload } from '../services/splitUploadService';
 
 /**
  * Upload document with AI verification workflow (NEW)
@@ -291,14 +292,50 @@ export async function overrideCandidateDocumentController(req: Request, res: Res
 
 // ============================================================================
 // OLD CONTROLLERS - REMOVED
-// These controllers are no longer used as the old endpoints have been removed.
 // Use the new candidate-documents controllers instead.
 // ============================================================================
-//
-// REMOVED CONTROLLERS (use new unified system instead):
-// - uploadDocumentController → Use uploadCandidateDocumentController
-// - getDocumentController → Use getCandidateDocumentController
-// - listCandidateDocumentsController → Use listCandidateDocumentsControllerNew
-// - getDocumentSignedUrlController → Use getCandidateDocumentDownloadUrlController
-// - deleteDocumentController → Use deleteCandidateDocumentController
-//
+
+/**
+ * Split-and-categorize upload: preserve original -> parser -> create candidate if none -> one doc per documents[].
+ * Body: file (multer), optional candidate_id, optional candidate_data (JSON string), optional use_textract.
+ */
+export async function splitUploadController(req: Request, res: Response) {
+  try {
+    const userId = (req as any).user?.id || 'system';
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    const candidateId = (req.body?.candidate_id as string) || undefined;
+    let candidateData: Record<string, unknown> | undefined;
+    try {
+      const raw = req.body?.candidate_data;
+      if (typeof raw === 'string' && raw) candidateData = JSON.parse(raw) as Record<string, unknown>;
+      else if (raw && typeof raw === 'object') candidateData = raw as Record<string, unknown>;
+    } catch {
+      candidateData = undefined;
+    }
+    const useTextract = req.body?.use_textract !== 'false' && req.body?.use_textract !== false;
+
+    const result = await splitUpload({
+      buffer: req.file.buffer,
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      candidateId,
+      candidateData,
+      useTextract,
+      userId,
+    });
+
+    return res.status(201).json({
+      message: 'Split upload complete',
+      uploadId: result.uploadId,
+      originalPath: result.originalPath,
+      candidateId: result.candidateId,
+      engineUsed: result.engineUsed,
+      documentCount: result.documentCount,
+    });
+  } catch (error: any) {
+    console.error('Split upload error:', error);
+    return res.status(400).json({ error: error.message || 'Split upload failed' });
+  }
+}

@@ -174,7 +174,8 @@ export async function getCandidateDocumentDownloadUrlController(req: Request, re
 
     const signedUrl = await getCandidateDocumentSignedUrl(id, expiresIn);
     
-    res.json({ signedUrl, expiresIn });
+    // Backward compatibility: frontend expects `download_url`
+    res.json({ signedUrl, download_url: signedUrl, expiresIn });
   } catch (error: any) {
     console.error('Error generating signed URL:', error);
     res.status(500).json({ error: error.message || 'Failed to generate signed URL' });

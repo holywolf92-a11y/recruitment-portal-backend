@@ -986,16 +986,27 @@ export function startDocumentVerificationWorker() {
     },
   });
 
+  worker.on('active', (job) => {
+    console.log(`[DocumentVerificationWorker] Job ${job.id} is now active - processing document ${job.data.documentId}`);
+  });
+
   worker.on('completed', (job) => {
     console.log(`[DocumentVerificationWorker] Job ${job.id} completed successfully`);
   });
 
   worker.on('failed', (job, err) => {
     console.error(`[DocumentVerificationWorker] Job ${job?.id} failed:`, err.message);
+    if (job) {
+      console.error(`[DocumentVerificationWorker] Failed job data:`, JSON.stringify(job.data, null, 2));
+    }
   });
 
   worker.on('error', (err) => {
     console.error('[DocumentVerificationWorker] Worker error:', err);
+  });
+
+  worker.on('stalled', (jobId) => {
+    console.warn(`[DocumentVerificationWorker] Job ${jobId} stalled`);
   });
 
   console.log('[DocumentVerificationWorker] Worker started, listening for jobs...');

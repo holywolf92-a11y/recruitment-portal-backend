@@ -309,7 +309,8 @@ async function uploadCandidateDocument(data) {
                         // Enqueue AI verification job for this split document
                         const splitRequestId = (0, documentVerificationLogService_1.generateRequestId)();
                         try {
-                            await queue_1.documentVerificationQueue.add('verify-document', {
+                            console.log(`[UploadDocument] Attempting to enqueue verification job for split doc ${createdDoc.id}...`);
+                            const jobResult = await queue_1.documentVerificationQueue.add('verify-document', {
                                 requestId: splitRequestId,
                                 documentId: createdDoc.id,
                                 candidateId: data.candidate_id,
@@ -321,10 +322,11 @@ async function uploadCandidateDocument(data) {
                                 attempts: 3,
                                 backoff: { type: 'exponential', delay: 2000 },
                             });
-                            console.log(`[UploadDocument] Enqueued AI verification for split doc ${createdDoc.id} (${splitDoc.doc_type})`);
+                            console.log(`[UploadDocument] ✅ Enqueued AI verification for split doc ${createdDoc.id} (${splitDoc.doc_type}) - Job ID: ${jobResult.id}`);
                         }
                         catch (queueErr) {
-                            console.error(`[UploadDocument] Failed to enqueue job for split doc ${createdDoc.id}:`, queueErr);
+                            console.error(`[UploadDocument] ❌ Failed to enqueue job for split doc ${createdDoc.id}:`, queueErr.message || queueErr);
+                            console.error(`[UploadDocument] Queue error details:`, queueErr);
                         }
                     }
                     if (createdDocuments.length > 0) {

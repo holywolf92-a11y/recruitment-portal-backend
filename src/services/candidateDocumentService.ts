@@ -302,10 +302,29 @@ export async function uploadCandidateDocument(
             };
             const category = categoryMap[splitDoc.doc_type] || DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
 
+            // Map parser doc_type to database document_type (must match CHECK constraint)
+            // Allowed values: 'passport', 'cnic', 'degree', 'medical', 'visa', 'certificate', 'other'
+            const docTypeMap: Record<string, string> = {
+              passport: 'passport',
+              cnic: 'cnic',
+              national_id: 'cnic',
+              cv_resume: 'other', // CV/resume maps to 'other' in database
+              medical_reports: 'medical',
+              medical_certificate: 'medical',
+              certificate: 'certificate',
+              certificates: 'certificate',
+              driving_license: 'other',
+              contracts: 'other',
+              contract: 'other',
+              photos: 'other',
+              other_documents: 'other',
+            };
+            const dbDocumentType = docTypeMap[splitDoc.doc_type] || 'other';
+
             // Create candidate_documents record
             const splitDocData = {
               candidate_id: data.candidate_id,
-              document_type: splitDoc.doc_type,
+              document_type: dbDocumentType,
               category,
               detected_category: category,
               confidence: splitDoc.confidence || null,

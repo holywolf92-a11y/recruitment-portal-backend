@@ -151,7 +151,20 @@ export async function enrichCandidateData(
         });
         continue; // Skip cnic field itself
       } else if (field === 'passport' && typeof extractedValue === 'string') {
+        // Map passport to passport_normalized (database column name)
         normalizedValue = normalizePassport(extractedValue);
+        updates.passport_normalized = normalizedValue;
+        updated.push('passport_normalized');
+        
+        // Track source
+        sourceTracking.push({
+          field: 'passport_normalized',
+          source,
+          document_id: documentId,
+          document_type: documentType,
+          updated_at: new Date().toISOString(),
+        });
+        continue; // Skip passport field itself
       } else if (field === 'passport_no' && typeof extractedValue === 'string') {
         // Map passport_no to passport_normalized
         normalizedValue = normalizePassport(extractedValue);

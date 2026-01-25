@@ -1,6 +1,6 @@
 import { supabaseAdminClient } from '../config/database';
 import crypto from 'crypto';
-import { VERIFICATION_STATUS, DocumentCategory, isRejectionOverridable, getRequiredOverrideRole, RejectionReasonCode, REJECTION_REASON_CODES } from '../config/documentCategories';
+import { VERIFICATION_STATUS, DocumentCategory, DOCUMENT_CATEGORIES, isRejectionOverridable, getRequiredOverrideRole, RejectionReasonCode, REJECTION_REASON_CODES } from '../config/documentCategories';
 import { DocumentVerificationLogService, generateRequestId } from './documentVerificationLogService';
 import { documentVerificationQueue } from '../config/queue';
 import { AppError, ErrorType } from '../utils/errorHandling';
@@ -286,21 +286,21 @@ export async function uploadCandidateDocument(
 
             // Map parser doc_type to candidate_documents category
             const categoryMap: Record<string, DocumentCategory> = {
-              cv_resume: 'CV',
-              passport: 'Passport',
-              national_id: 'CNIC',
-              cnic: 'CNIC',
-              driving_license: 'Other',
-              medical_reports: 'Medical',
-              medical_certificate: 'Medical',
-              certificates: 'Certificate',
-              certificate: 'Certificate',
-              contracts: 'Contract',
-              contract: 'Contract',
-              photos: 'Photo',
-              other_documents: 'Other',
+              cv_resume: DOCUMENT_CATEGORIES.CV_RESUME,
+              passport: DOCUMENT_CATEGORIES.PASSPORT,
+              national_id: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // CNIC not in enum, use other_documents
+              cnic: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // CNIC not in enum, use other_documents
+              driving_license: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // driving_license not in enum
+              medical_reports: DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+              medical_certificate: DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+              certificates: DOCUMENT_CATEGORIES.CERTIFICATES,
+              certificate: DOCUMENT_CATEGORIES.CERTIFICATES,
+              contracts: DOCUMENT_CATEGORIES.CONTRACTS,
+              contract: DOCUMENT_CATEGORIES.CONTRACTS,
+              photos: DOCUMENT_CATEGORIES.PHOTOS,
+              other_documents: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
             };
-            const category = categoryMap[splitDoc.doc_type] || 'Other';
+            const category = categoryMap[splitDoc.doc_type] || DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
 
             // Create candidate_documents record
             const splitDocData = {

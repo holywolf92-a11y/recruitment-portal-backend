@@ -7,10 +7,12 @@ exports.getCandidateDocumentDownloadUrlController = getCandidateDocumentDownload
 exports.deleteCandidateDocumentController = deleteCandidateDocumentController;
 exports.reprocessCandidateDocumentController = reprocessCandidateDocumentController;
 exports.overrideCandidateDocumentController = overrideCandidateDocumentController;
+exports.splitUploadController = splitUploadController;
 // Old documentService imports removed - using candidateDocumentService instead
 const candidateDocumentService_1 = require("../services/candidateDocumentService");
 const candidateController_1 = require("./candidateController");
 const documentCategories_1 = require("../config/documentCategories");
+const splitUploadService_1 = require("../services/splitUploadService");
 /**
  * Upload document with AI verification workflow (NEW)
  * POST /api/candidate-documents
@@ -242,14 +244,51 @@ async function overrideCandidateDocumentController(req, res) {
 // ============================================================================
 // ============================================================================
 // OLD CONTROLLERS - REMOVED
-// These controllers are no longer used as the old endpoints have been removed.
 // Use the new candidate-documents controllers instead.
 // ============================================================================
-//
-// REMOVED CONTROLLERS (use new unified system instead):
-// - uploadDocumentController → Use uploadCandidateDocumentController
-// - getDocumentController → Use getCandidateDocumentController
-// - listCandidateDocumentsController → Use listCandidateDocumentsControllerNew
-// - getDocumentSignedUrlController → Use getCandidateDocumentDownloadUrlController
-// - deleteDocumentController → Use deleteCandidateDocumentController
-//
+/**
+ * Split-and-categorize upload: preserve original -> parser -> create candidate if none -> one doc per documents[].
+ * Body: file (multer), optional candidate_id, optional candidate_data (JSON string), optional use_textract.
+ */
+async function splitUploadController(req, res) {
+    try {
+        const userId = req.user?.id || 'system';
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        const candidateId = req.body?.candidate_id || undefined;
+        let candidateData;
+        try {
+            const raw = req.body?.candidate_data;
+            if (typeof raw === 'string' && raw)
+                candidateData = JSON.parse(raw);
+            else if (raw && typeof raw === 'object')
+                candidateData = raw;
+        }
+        catch {
+            candidateData = undefined;
+        }
+        const useTextract = req.body?.use_textract !== 'false' && req.body?.use_textract !== false;
+        const result = await (0, splitUploadService_1.splitUpload)({
+            buffer: req.file.buffer,
+            fileName: req.file.originalname,
+            mimeType: req.file.mimetype,
+            candidateId,
+            candidateData,
+            useTextract,
+            userId,
+        });
+        return res.status(201).json({
+            message: 'Split upload complete',
+            uploadId: result.uploadId,
+            originalPath: result.originalPath,
+            candidateId: result.candidateId,
+            engineUsed: result.engineUsed,
+            documentCount: result.documentCount,
+        });
+    }
+    catch (error) {
+        console.error('Split upload error:', error);
+        return res.status(400).json({ error: error.message || 'Split upload failed' });
+    }
+}

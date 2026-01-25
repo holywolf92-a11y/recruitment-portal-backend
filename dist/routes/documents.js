@@ -27,13 +27,15 @@ const upload = (0, multer_1.default)({
             'image/jpeg',
             'image/png',
             'image/jpg',
+            'image/gif',
+            'image/webp',
             'text/plain',
         ];
         if (allowedMimeTypes.includes(file.mimetype)) {
             cb(null, true);
         }
         else {
-            cb(new Error('Invalid file type. Only PDF, DOC, DOCX, JPG, PNG, and TXT files are allowed.'));
+            cb(new Error('Invalid file type. Only PDF, DOC, DOCX, JPG, PNG, GIF, WEBP, and TXT files are allowed.'));
         }
     },
 });
@@ -42,28 +44,27 @@ const upload = (0, multer_1.default)({
 // ============================================================================
 // NEW ROUTES - AI Document Verification System
 // ============================================================================
-// Upload document with AI verification
-const errorHandling_2 = require("../utils/errorHandling");
 // Multer error handler middleware
 const handleMulterError = (err, req, res, next) => {
     if (err instanceof multer_1.default.MulterError) {
-        return next(err); // Pass to global error handler
+        return next(err);
     }
     if (err) {
-        return next(err); // Pass other errors (like fileFilter errors)
+        return next(err);
     }
     next();
 };
+// Split-and-categorize upload: preserve original -> parser -> create docs (create candidate if none)
+router.post('/split-upload', upload.single('file'), handleMulterError, (0, errorHandling_1.asyncHandler)(documentController_1.splitUploadController));
 // Upload endpoint with extended timeout for large files
 router.post('/candidate-documents', (req, res, next) => {
-    // Set timeout to 5 minutes for this specific route
     req.setTimeout(300000, () => {
         if (!res.headersSent) {
             res.status(408).json({ error: 'Upload timeout. Please try again with a smaller file.' });
         }
     });
     next();
-}, upload.single('file'), handleMulterError, (0, errorHandling_2.asyncHandler)(documentController_1.uploadCandidateDocumentController));
+}, upload.single('file'), handleMulterError, (0, errorHandling_1.asyncHandler)(documentController_1.uploadCandidateDocumentController));
 // Get candidate document by ID
 router.get('/candidate-documents/:id', documentController_1.getCandidateDocumentController);
 // Get signed URL for download

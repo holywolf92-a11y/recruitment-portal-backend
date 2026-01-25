@@ -26,8 +26,19 @@ try {
   const app = express();
   const PORT = parseInt(process.env.PORT || '1000', 10);
 
-  app.use(helmet());
-  app.use(cors());
+  app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginEmbedderPolicy: false, // Disable COEP to allow CORS
+  }));
+  app.use(cors({
+    origin: '*', // Allow all origins
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-HMAC-Signature'],
+    credentials: false,
+  }));
+
+  // Handle preflight OPTIONS requests explicitly
+  app.options('*', cors());
   
   // Increase request timeout for file uploads (5 minutes)
   app.use((req, res, next) => {

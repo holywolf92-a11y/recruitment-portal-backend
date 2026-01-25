@@ -118,6 +118,11 @@ export function createLogger(context: string): Logger {
 export function errorHandler(err: any, req: any, res: any, next: any) {
   const logger = createLogger('ErrorHandler');
 
+  // Ensure CORS headers are set for all error responses
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+
   // Handle Multer errors (file upload errors)
   if (err.code && err.code.startsWith('LIMIT_')) {
     logger.error(`Multer error: ${err.code}`, err, {

@@ -26,8 +26,18 @@ logger.info('Environment variables loaded', {
 try {
     const app = (0, express_1.default)();
     const PORT = parseInt(process.env.PORT || '1000', 10);
-    app.use((0, helmet_1.default)());
-    app.use((0, cors_1.default)());
+    app.use((0, helmet_1.default)({
+        crossOriginResourcePolicy: { policy: "cross-origin" },
+        crossOriginEmbedderPolicy: false, // Disable COEP to allow CORS
+    }));
+    app.use((0, cors_1.default)({
+        origin: '*', // Allow all origins
+        methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-HMAC-Signature'],
+        credentials: false,
+    }));
+    // Handle preflight OPTIONS requests explicitly
+    app.options('*', (0, cors_1.default)());
     // Increase request timeout for file uploads (5 minutes)
     app.use((req, res, next) => {
         // Set timeout to 5 minutes for file uploads

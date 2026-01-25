@@ -225,6 +225,61 @@ async function uploadOneSplitDoc(
     throw new Error(`Failed to create document record: ${insErr.message}`);
   }
 
+  // Update candidate flags based on document type
+  // Note: Database trigger should handle this, but we also update here for immediate consistency
+  try {
+    const updateFlags: Record<string, unknown> = {};
+    const docType = (doc.doc_type || '').toLowerCase();
+    const now = new Date().toISOString();
+
+    if (docType === 'passport') {
+      updateFlags.passport_received = true;
+      updateFlags.passport_received_at = now;
+    } else if (docType === 'cnic' || docType === 'national_id') {
+      updateFlags.cnic_received = true;
+      updateFlags.cnic_received_at = now;
+    } else if (docType === 'driving_license' || docType === 'drivers_license' || docType === 'driver_license') {
+      updateFlags.driving_license_received = true;
+      updateFlags.driving_license_received_at = now;
+    } else if (docType === 'police_character_certificate' || docType === 'police_clearance' || docType === 'pcc') {
+      updateFlags.police_character_received = true;
+      updateFlags.police_character_received_at = now;
+    } else if (docType === 'cv' || docType === 'cv_resume') {
+      updateFlags.cv_received = true;
+      updateFlags.cv_received_at = now;
+    } else if (docType === 'photo' || docType === 'photos') {
+      updateFlags.photo_received = true;
+      updateFlags.photo_received_at = now;
+    } else if (docType.includes('medical')) {
+      updateFlags.medical_received = true;
+      updateFlags.medical_received_at = now;
+    } else if (docType === 'degree' || docType.includes('diploma') || docType.includes('transcript')) {
+      updateFlags.degree_received = true;
+      updateFlags.degree_received_at = now;
+    } else if (docType === 'visa') {
+      updateFlags.visa_received = true;
+      updateFlags.visa_received_at = now;
+    } else if (docType === 'certificate' || docType === 'certificates') {
+      updateFlags.certificate_received = true;
+      updateFlags.certificate_received_at = now;
+    }
+
+    if (Object.keys(updateFlags).length > 0) {
+      const { error: flagError } = await db
+        .from('candidates')
+        .update(updateFlags)
+        .eq('id', candidateId);
+      
+      if (flagError) {
+        console.error(`[SplitUpload] Failed to update flags for ${doc.doc_type}:`, flagError);
+        // Don't throw - flag update is not critical, trigger should handle it
+      }
+    }
+  } catch (flagErr) {
+    console.error('[SplitUpload] Error updating candidate flags:', flagErr);
+    // Don't throw - flag update is not critical
+  }
+
   try {
     await logDocumentUploaded(candidateId, userId, {
       doc_type: doc.doc_type,

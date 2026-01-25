@@ -52,6 +52,54 @@ if (!HMAC_SECRET) {
     throw new Error('PYTHON_HMAC_SECRET environment variable is required for document verification worker');
 }
 /**
+ * Parse date string in various formats (DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD) to ISO format (YYYY-MM-DD)
+ * Returns null if date cannot be parsed
+ */
+function parseDateToISO(dateStr) {
+    if (!dateStr || typeof dateStr !== 'string')
+        return null;
+    const trimmed = dateStr.trim();
+    if (!trimmed)
+        return null;
+    // Try ISO format first (YYYY-MM-DD)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        const date = new Date(trimmed);
+        if (!isNaN(date.getTime())) {
+            return trimmed; // Already in correct format
+        }
+    }
+    // Try DD/MM/YYYY or DD-MM-YYYY format
+    const ddmmyyyyMatch = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (ddmmyyyyMatch) {
+        const [, day, month, year] = ddmmyyyyMatch;
+        const isoDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+        const date = new Date(isoDate);
+        if (!isNaN(date.getTime())) {
+            return isoDate;
+        }
+    }
+    // Try YYYY/MM/DD format
+    const yyyymmddMatch = trimmed.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+    if (yyyymmddMatch) {
+        const [, year, month, day] = yyyymmddMatch;
+        const isoDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+        const date = new Date(isoDate);
+        if (!isNaN(date.getTime())) {
+            return isoDate;
+        }
+    }
+    // Try parsing as-is (might work for some formats)
+    const date = new Date(trimmed);
+    if (!isNaN(date.getTime())) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+    console.warn(`[DateParser] Could not parse date: ${dateStr}`);
+    return null;
+}
+/**
  * Sign request body with HMAC-SHA256
  */
 function signHmac(body) {
@@ -416,7 +464,7 @@ async function processDocumentVerification(job) {
                     retry_possible: matchResult.retry_possible || false,
                     retry_count: 0, // Initial attempt
                     max_retries: 2,
-                    document_expiry_date: (aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date) || undefined,
+                    document_expiry_date: parseDateToISO(aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date) || undefined,
                     rejection_context: {
                         mismatch_fields: matchResult.mismatch_fields || [],
                         matched: matchResult.matched,
@@ -588,9 +636,10 @@ async function processDocumentVerification(job) {
             updateData.retry_possible = retryPossible;
             updateData.retry_count = 0; // Initialize retry count
             updateData.max_retries = 2; // Default max retries
-            // Set document expiry date if available
-            if (aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date) {
-                updateData.document_expiry_date = aiResult.extracted_identity.passport_expiry || aiResult.extracted_identity.expiry_date;
+            // Set document expiry date if available (parse to ISO format)
+            const expiryDate = parseDateToISO(aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date);
+            if (expiryDate) {
+                updateData.document_expiry_date = expiryDate;
             }
             // Set rejection context (JSONB) with mismatch fields
             if (mismatchFields.length > 0) {

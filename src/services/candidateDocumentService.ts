@@ -4,7 +4,7 @@ import { VERIFICATION_STATUS, DocumentCategory, DOCUMENT_CATEGORIES, isRejection
 import { DocumentVerificationLogService, generateRequestId } from './documentVerificationLogService';
 import { documentVerificationQueue } from '../config/queue';
 import { AppError, ErrorType } from '../utils/errorHandling';
-import { callSplitAndCategorize, preserveOriginalPdf, SplitDoc } from './splitUploadService';
+import { callSplitAndCategorize, preserveOriginalPdf, SplitDoc, docTypeToFolder } from './splitUploadService';
 import { randomUUID } from 'crypto';
 
 const STORAGE_BUCKET = 'documents';
@@ -269,7 +269,9 @@ export async function uploadCandidateDocument(
           for (const splitDoc of splitResult.documents) {
             const pdfBuffer = Buffer.from(splitDoc.pdf_base64, 'base64');
             const ts = Date.now();
-            const splitStoragePath = `candidates/${data.candidate_id}/documents/${splitDoc.doc_type}/${ts}_${uploadId}_pages_${splitDoc.pages.join('-')}.pdf`;
+            // Use folder mapping from splitUploadService (e.g., passport -> passport/, national_id -> national_id/)
+            const folder = docTypeToFolder(splitDoc.doc_type);
+            const splitStoragePath = `candidates/${data.candidate_id}/${folder}/${ts}_${uploadId}_pages_${splitDoc.pages.join('-')}.pdf`;
             
             // Upload split PDF
             const { error: splitUploadErr } = await db.storage

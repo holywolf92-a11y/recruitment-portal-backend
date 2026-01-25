@@ -110,6 +110,31 @@ export class IdentityMatchingService {
               phone: candidate.phone,
             },
           };
+        } else if (!candidate.cnic_normalized) {
+          // Candidate doesn't have CNIC set yet - this is a new CNIC document
+          // Since document was manually uploaded for this candidate, trust it and update candidate
+          console.log(`[IdentityMatching] Candidate ${candidateId} doesn't have cnic_normalized. Document has CNIC ${extractedCnic}. Updating candidate and verifying.`);
+          
+          // Update candidate's cnic_normalized
+          await db
+            .from('candidates')
+            .update({ cnic_normalized: extractedCnic })
+            .eq('id', candidateId);
+          
+          // Verify the document
+          matchedOn.push('cnic');
+          return {
+            matched: true,
+            matched_on: matchedOn,
+            confidence: 0.95, // High confidence since we're setting it for the first time
+            reason_code: REJECTION_REASON_CODES.MANUAL_REVIEW_REQUIRED,
+            candidate_fields: {
+              name: candidate.name,
+              email: candidate.email,
+              phone: candidate.phone,
+            },
+            notes: `CNIC ${extractedCnic} extracted from document and set as candidate's CNIC`,
+          };
         } else if (candidate.cnic_normalized && extractedCnic !== candidate.cnic_normalized) {
           // CNIC exists but doesn't match - Check if it belongs to someone else
         const { data: otherCandidate } = await db
@@ -192,6 +217,31 @@ export class IdentityMatchingService {
               email: candidate.email,
               phone: candidate.phone,
             },
+          };
+        } else if (!candidate.passport_normalized) {
+          // Candidate doesn't have passport set yet - this is a new passport document
+          // Since document was manually uploaded for this candidate, trust it and update candidate
+          console.log(`[IdentityMatching] Candidate ${candidateId} doesn't have passport_normalized. Document has passport ${extractedPassport}. Updating candidate and verifying.`);
+          
+          // Update candidate's passport_normalized
+          await db
+            .from('candidates')
+            .update({ passport_normalized: extractedPassport })
+            .eq('id', candidateId);
+          
+          // Verify the document
+          matchedOn.push('passport');
+          return {
+            matched: true,
+            matched_on: matchedOn,
+            confidence: 0.90, // Slightly lower confidence since we're setting it for the first time
+            reason_code: REJECTION_REASON_CODES.MANUAL_REVIEW_REQUIRED,
+            candidate_fields: {
+              name: candidate.name,
+              email: candidate.email,
+              phone: candidate.phone,
+            },
+            notes: `Passport ${extractedPassport} extracted from document and set as candidate's passport`,
           };
         } else if (candidate.passport_normalized && extractedPassport !== candidate.passport_normalized) {
           // Passport exists but doesn't match - Check if it belongs to someone else

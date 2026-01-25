@@ -659,7 +659,53 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       // No identity fields extracted from document
       // If document was manually uploaded for a specific candidate AND category is correctly identified,
       // we can still verify it since the user explicitly linked it to that candidate
-      if (candidateId && aiResult.confidence && aiResult.confidence >= AI_CONFIDENCE_THRESHOLD) {
+      
+      // Special handling for photos: Photos don't have identity fields, so auto-verify if manually uploaded
+      if (aiResult.category === 'photos' || aiResult.category === 'photo') {
+        if (candidateId && aiResult.confidence && aiResult.confidence >= AI_CONFIDENCE_THRESHOLD) {
+          console.log(`[DocumentVerification] Photo document detected. No identity fields needed. Verifying based on manual upload and high confidence (${aiResult.confidence}).`);
+          finalStatus = VERIFICATION_STATUS.VERIFIED;
+          reasonCode = ''; // Empty string for verified (no rejection code needed)
+
+          await documentVerificationLogService.logIdentityVerificationCompleted(
+            requestId,
+            documentId,
+            candidateId,
+            VERIFICATION_STATUS.VERIFIED,
+            reasonCode,
+            undefined,
+            { notes: 'Photo document verified - no identity fields required for photos' },
+            undefined // No rejection details for verified documents
+          );
+        } else {
+          // Low confidence or no candidate_id - needs manual review
+          finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
+          reasonCode = REJECTION_REASON_CODES.NO_ID_FOUND;
+
+          await documentVerificationLogService.logIdentityVerificationCompleted(
+            requestId,
+            documentId,
+            candidateId,
+            VERIFICATION_STATUS.NEEDS_REVIEW,
+            reasonCode,
+            undefined,
+            { notes: `Photo document - low confidence (${aiResult.confidence || 'N/A'}) or no candidate_id provided` },
+            {
+              rejection_code: REJECTION_REASON_CODES.NO_ID_FOUND,
+              rejection_reason: 'Photo document - needs manual review',
+              error_stage: 'Extraction',
+              retry_possible: true,
+              retry_count: 0,
+              max_retries: 2,
+              rejection_context: {
+                ai_confidence: aiResult.confidence,
+                candidate_id_provided: !!candidateId,
+                document_type: 'photo',
+              },
+            }
+          );
+        }
+      } else if (candidateId && aiResult.confidence && aiResult.confidence >= AI_CONFIDENCE_THRESHOLD) {
         // Document category was correctly identified (high confidence) and candidate_id is provided
         // This is a manual upload - trust the user's selection
         console.log(`[DocumentVerification] No identity fields extracted, but document category correctly identified (confidence: ${aiResult.confidence}) and candidate_id provided. Verifying based on manual upload.`);

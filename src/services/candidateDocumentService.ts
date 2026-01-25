@@ -4,6 +4,8 @@ import { VERIFICATION_STATUS, DocumentCategory, isRejectionOverridable, getRequi
 import { DocumentVerificationLogService, generateRequestId } from './documentVerificationLogService';
 import { documentVerificationQueue } from '../config/queue';
 import { AppError, ErrorType } from '../utils/errorHandling';
+import { callSplitAndCategorize, preserveOriginalPdf, SplitDoc } from './splitUploadService';
+import { randomUUID } from 'crypto';
 
 const STORAGE_BUCKET = 'documents';
 
@@ -235,6 +237,147 @@ export async function uploadCandidateDocument(
       data.buffer.length,
       data.uploaded_by_user_id
     );
+
+    // ============================================================================
+    // SPLIT-AND-CATEGORIZE: For PDFs, try splitting into multiple documents
+    // ============================================================================
+    if (data.mime_type === 'application/pdf') {
+      try {
+        console.log(`[UploadDocument] PDF detected, attempting split-and-categorize`);
+        
+        // Preserve original PDF
+        const uploadId = randomUUID();
+        const originalPath = await preserveOriginalPdf(data.buffer, uploadId, data.mime_type);
+        console.log(`[UploadDocument] Original PDF preserved at: ${originalPath}`);
+
+        // Call split-and-categorize
+        const base64 = data.buffer.toString('base64');
+        const splitResult = await callSplitAndCategorize(
+          base64,
+          data.file_name,
+          data.mime_type,
+          undefined, // candidateData - could fetch candidate data if needed
+          true // useTextract
+        );
+
+        // If split returned multiple documents, create candidate_documents for each
+        if (splitResult.documents && splitResult.documents.length > 1) {
+          console.log(`[UploadDocument] Split returned ${splitResult.documents.length} documents, creating candidate_documents records`);
+          
+          const createdDocuments: CandidateDocument[] = [];
+          
+          for (const splitDoc of splitResult.documents) {
+            const pdfBuffer = Buffer.from(splitDoc.pdf_base64, 'base64');
+            const ts = Date.now();
+            const splitStoragePath = `candidates/${data.candidate_id}/documents/${splitDoc.doc_type}/${ts}_${uploadId}_pages_${splitDoc.pages.join('-')}.pdf`;
+            
+            // Upload split PDF
+            const { error: splitUploadErr } = await db.storage
+              .from(STORAGE_BUCKET)
+              .upload(splitStoragePath, pdfBuffer, {
+                contentType: 'application/pdf',
+                upsert: false,
+              });
+            
+            if (splitUploadErr) {
+              console.error(`[UploadDocument] Failed to upload split doc ${splitDoc.doc_type}:`, splitUploadErr);
+              continue;
+            }
+
+            // Map parser doc_type to candidate_documents category
+            const categoryMap: Record<string, DocumentCategory> = {
+              cv_resume: 'CV',
+              passport: 'Passport',
+              national_id: 'CNIC',
+              cnic: 'CNIC',
+              driving_license: 'Other',
+              medical_reports: 'Medical',
+              medical_certificate: 'Medical',
+              certificates: 'Certificate',
+              certificate: 'Certificate',
+              contracts: 'Contract',
+              contract: 'Contract',
+              photos: 'Photo',
+              other_documents: 'Other',
+            };
+            const category = categoryMap[splitDoc.doc_type] || 'Other';
+
+            // Create candidate_documents record
+            const splitDocData = {
+              candidate_id: data.candidate_id,
+              document_type: splitDoc.doc_type,
+              category,
+              detected_category: category,
+              confidence: splitDoc.confidence || null,
+              storage_bucket: STORAGE_BUCKET,
+              storage_path: splitStoragePath,
+              file_name: `split_${splitDoc.doc_type}_${ts}.pdf`,
+              mime_type: 'application/pdf',
+              source: data.source || 'manual',
+              status: 'received',
+              verification_status: VERIFICATION_STATUS.PENDING_AI,
+              received_at: new Date().toISOString(),
+            };
+
+            const { data: createdDoc, error: splitDbErr } = await db
+              .from('candidate_documents')
+              .insert(splitDocData)
+              .select()
+              .single();
+
+            if (splitDbErr) {
+              console.error(`[UploadDocument] Failed to create candidate_document for ${splitDoc.doc_type}:`, splitDbErr);
+              await db.storage.from(STORAGE_BUCKET).remove([splitStoragePath]);
+              continue;
+            }
+
+            createdDocuments.push(createdDoc);
+
+            // Enqueue AI verification job for this split document
+            const splitRequestId = generateRequestId();
+            try {
+              await documentVerificationQueue.add('verify-document', {
+                requestId: splitRequestId,
+                documentId: createdDoc.id,
+                candidateId: data.candidate_id,
+                storageBucket: STORAGE_BUCKET,
+                storagePath: splitStoragePath,
+                fileName: createdDoc.file_name,
+                mimeType: 'application/pdf',
+              }, {
+                attempts: 3,
+                backoff: { type: 'exponential', delay: 2000 },
+              });
+              console.log(`[UploadDocument] Enqueued AI verification for split doc ${createdDoc.id} (${splitDoc.doc_type})`);
+            } catch (queueErr) {
+              console.error(`[UploadDocument] Failed to enqueue job for split doc ${createdDoc.id}:`, queueErr);
+            }
+          }
+
+          if (createdDocuments.length > 0) {
+            console.log(`[UploadDocument] Successfully created ${createdDocuments.length} candidate_documents from split`);
+            // Return the first document (for API compatibility)
+            return {
+              document: createdDocuments[0],
+              request_id: requestId,
+            };
+          }
+        } else if (splitResult.documents && splitResult.documents.length === 1) {
+          console.log(`[UploadDocument] Split returned 1 document, continuing with single-document flow`);
+          // Fall through to single-document flow below
+        } else {
+          console.log(`[UploadDocument] Split returned 0 documents, falling back to single-document flow`);
+          // Fall through to single-document flow below
+        }
+      } catch (splitError: any) {
+        console.error(`[UploadDocument] Split-and-categorize failed, falling back to single-document flow:`, splitError.message);
+        // Fall through to single-document flow below
+      }
+    }
+
+    // ============================================================================
+    // SINGLE-DOCUMENT FLOW: Upload as one document (fallback or non-PDF)
+    // ============================================================================
 
     // Generate storage path
     const storagePath = generateStoragePath(data.candidate_id, data.file_name);

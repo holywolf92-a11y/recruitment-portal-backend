@@ -232,7 +232,9 @@ async function uploadCandidateDocument(data) {
                     for (const splitDoc of splitResult.documents) {
                         const pdfBuffer = Buffer.from(splitDoc.pdf_base64, 'base64');
                         const ts = Date.now();
-                        const splitStoragePath = `candidates/${data.candidate_id}/documents/${splitDoc.doc_type}/${ts}_${uploadId}_pages_${splitDoc.pages.join('-')}.pdf`;
+                        // Use folder mapping from splitUploadService (e.g., passport -> passport/, national_id -> national_id/)
+                        const folder = (0, splitUploadService_1.docTypeToFolder)(splitDoc.doc_type);
+                        const splitStoragePath = `candidates/${data.candidate_id}/${folder}/${ts}_${uploadId}_pages_${splitDoc.pages.join('-')}.pdf`;
                         // Upload split PDF
                         const { error: splitUploadErr } = await db.storage
                             .from(STORAGE_BUCKET)

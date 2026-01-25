@@ -868,6 +868,8 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           documentSource = 'cv';
         } else if (aiResult.category === 'passport') {
           documentSource = 'passport';
+        } else if (aiResult.category === 'cnic') {
+          documentSource = 'passport'; // Use 'passport' source type for CNIC to ensure nationality precedence
         } else if (aiResult.category === 'driving_license') {
           documentSource = 'driving_license';
         } else if (aiResult.category === 'medical_report' || aiResult.category === 'medical') {

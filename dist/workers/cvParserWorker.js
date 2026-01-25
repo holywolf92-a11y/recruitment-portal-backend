@@ -43,8 +43,14 @@ const crypto_1 = __importDefault(require("crypto"));
 const parsingJobsService_1 = require("../services/parsingJobsService");
 const candidateService_1 = require("../services/candidateService");
 const database_1 = require("../config/database");
+const splitUploadService_1 = require("../services/splitUploadService");
+const documentCategories_1 = require("../config/documentCategories");
+const queue_1 = require("../config/queue");
+const documentVerificationLogService_1 = require("../services/documentVerificationLogService");
+const crypto_2 = require("crypto");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
+const STORAGE_BUCKET = 'documents';
 function signHmac(body) {
     return crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
 }
@@ -138,6 +144,32 @@ function startCvParserWorker() {
             attempts: (job.attemptsMade ?? 0) + 1,
         });
         try {
+            // Fetch attachment metadata (preferred filename/mimetype) and file bytes ONCE.
+            const db = (0, database_1.supabaseAdminClient)();
+            const { data: attachmentMeta } = await db
+                .from('inbox_attachments')
+                .select('file_name, mime_type')
+                .eq('id', attachmentId)
+                .maybeSingle();
+            const safeUrl = (() => {
+                try {
+                    return new URL(fileUrl);
+                }
+                catch {
+                    return null;
+                }
+            })();
+            const fileNameFromUrl = safeUrl?.pathname?.split('/').pop() || 'upload.pdf';
+            const fileName = attachmentMeta?.file_name || fileNameFromUrl;
+            const mimeType = attachmentMeta?.mime_type ||
+                (fileName.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
+            const fileResponse = await fetch(fileUrl);
+            if (!fileResponse.ok) {
+                throw new Error(`Failed to fetch file: ${fileResponse.status}`);
+            }
+            const fileArrayBuffer = await fileResponse.arrayBuffer();
+            const fileBytes = Buffer.from(fileArrayBuffer);
+            const fileBase64 = fileBytes.toString('base64');
             const payloadObj = {
                 attachment_id: attachmentId,
                 file_url: fileUrl,
@@ -164,17 +196,6 @@ function startCvParserWorker() {
             // Note: categorize-document needs file_content (base64), not file_url
             let identityFields = null;
             try {
-                // Fetch the file and convert to base64
-                const fileResponse = await fetch(fileUrl);
-                if (!fileResponse.ok) {
-                    throw new Error(`Failed to fetch file: ${fileResponse.status}`);
-                }
-                const fileBuffer = await fileResponse.arrayBuffer();
-                const fileBase64 = Buffer.from(fileBuffer).toString('base64');
-                const fileName = fileUrl.split('/').pop() || 'cv.pdf';
-                const mimeType = fileName.endsWith('.pdf') ? 'application/pdf' :
-                    fileName.endsWith('.docx') ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' :
-                        'application/octet-stream';
                 const categorizePayload = JSON.stringify({
                     file_content: fileBase64,
                     file_name: fileName,
@@ -218,7 +239,6 @@ function startCvParserWorker() {
             // Use progressive completion service to find existing candidate
             // Priority: CNIC > Passport > Email/Phone > Name + Father Name + DOB
             const { findExistingCandidate, enrichCandidateData, updateMissingFields } = await Promise.resolve().then(() => __importStar(require('../services/progressiveDataCompletionService')));
-            const db = (0, database_1.supabaseAdminClient)();
             // Combine data from both sources (parse-cv and categorize-document)
             const parsedCandidate = parsed.candidate || {};
             const combinedData = {
@@ -313,12 +333,127 @@ function startCvParserWorker() {
                 }
             }
             const newCandidate = candidate;
+            // ============================================================================
+            // SPLIT-AND-CATEGORIZE for multi-document PDFs uploaded via CV Inbox (Web Form)
+            // This is required so inbox uploads also create candidate_documents + mapped folders.
+            // ============================================================================
+            if (newCandidate?.id && mimeType === 'application/pdf') {
+                try {
+                    console.log(`[CVParser] PDF detected for attachment ${attachmentId}. Running split-and-categorize for candidate ${newCandidate.id}...`);
+                    // Preserve original PDF for audit/reprocessing
+                    const uploadId = (0, crypto_2.randomUUID)();
+                    const originalPath = await (0, splitUploadService_1.preserveOriginalPdf)(fileBytes, uploadId, mimeType);
+                    console.log(`[CVParser] Original PDF preserved at: ${originalPath}`);
+                    const splitResult = await (0, splitUploadService_1.callSplitAndCategorize)(fileBase64, fileName, mimeType, undefined, true);
+                    const docs = splitResult?.documents || [];
+                    console.log(`[CVParser] Split returned ${docs.length} document(s) (engine=${splitResult.engine_used})`);
+                    // Only create records when we have at least 1 doc (normally always true)
+                    for (const d of docs) {
+                        try {
+                            const ts = Date.now();
+                            const folder = (0, splitUploadService_1.docTypeToFolder)(d.doc_type);
+                            const splitStoragePath = `candidates/${newCandidate.id}/${folder}/${ts}_${uploadId}_pages_${(d.pages || []).join('-')}.pdf`;
+                            const pdfBuffer = Buffer.from(d.pdf_base64, 'base64');
+                            const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(splitStoragePath, pdfBuffer, {
+                                contentType: 'application/pdf',
+                                upsert: false,
+                            });
+                            if (upErr) {
+                                console.error(`[CVParser] Failed to upload split doc ${d.doc_type} -> ${splitStoragePath}:`, upErr);
+                                continue;
+                            }
+                            // Map parser doc_type to candidate_documents category
+                            const categoryMap = {
+                                cv_resume: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+                                passport: documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT,
+                                national_id: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                cnic: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                driving_license: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                medical_reports: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+                                medical_certificate: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+                                certificates: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+                                certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+                                contracts: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
+                                contract: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
+                                photos: documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS,
+                                other_documents: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                            };
+                            const category = categoryMap[d.doc_type] || documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
+                            // Map parser doc_type to DB constraint document_type
+                            const docTypeMap = {
+                                passport: 'passport',
+                                cnic: 'cnic',
+                                national_id: 'cnic',
+                                cv_resume: 'other',
+                                medical_reports: 'medical',
+                                medical_certificate: 'medical',
+                                certificate: 'certificate',
+                                certificates: 'certificate',
+                                driving_license: 'other',
+                                contracts: 'other',
+                                contract: 'other',
+                                photos: 'other',
+                                other_documents: 'other',
+                            };
+                            const dbDocumentType = docTypeMap[d.doc_type] || 'other';
+                            const splitDocData = {
+                                candidate_id: newCandidate.id,
+                                inbox_attachment_id: attachmentId,
+                                document_type: dbDocumentType,
+                                category,
+                                detected_category: category,
+                                confidence: d.confidence ?? null,
+                                storage_bucket: STORAGE_BUCKET,
+                                storage_path: splitStoragePath,
+                                file_name: `split_${d.doc_type}_${ts}.pdf`,
+                                mime_type: 'application/pdf',
+                                source: 'web',
+                                status: 'received',
+                                verification_status: documentCategories_1.VERIFICATION_STATUS.PENDING_AI,
+                                received_at: new Date().toISOString(),
+                            };
+                            const { data: createdDoc, error: insErr } = await db
+                                .from('candidate_documents')
+                                .insert(splitDocData)
+                                .select()
+                                .single();
+                            if (insErr || !createdDoc) {
+                                console.error(`[CVParser] Failed to create candidate_document for ${d.doc_type}:`, insErr);
+                                await db.storage.from(STORAGE_BUCKET).remove([splitStoragePath]);
+                                continue;
+                            }
+                            // Enqueue verification job
+                            const splitRequestId = (0, documentVerificationLogService_1.generateRequestId)();
+                            try {
+                                await queue_1.documentVerificationQueue.add('verify-document', {
+                                    requestId: splitRequestId,
+                                    documentId: createdDoc.id,
+                                    candidateId: newCandidate.id,
+                                    storageBucket: STORAGE_BUCKET,
+                                    storagePath: splitStoragePath,
+                                    fileName: createdDoc.file_name,
+                                    mimeType: 'application/pdf',
+                                }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
+                            }
+                            catch (qErr) {
+                                console.error(`[CVParser] Failed to enqueue verification for split doc ${createdDoc.id}:`, qErr?.message || qErr);
+                            }
+                        }
+                        catch (oneErr) {
+                            console.error(`[CVParser] Error processing split doc:`, oneErr?.message || oneErr);
+                        }
+                    }
+                }
+                catch (splitErr) {
+                    console.error(`[CVParser] Split-and-categorize failed for attachment ${attachmentId}:`, splitErr?.message || splitErr);
+                    // Non-blocking: CV parsing should still succeed even if splitting fails
+                }
+            }
             // IMPORTANT: Set cv_received flag immediately after candidate is created from inbox CV
             // This ensures the document flag shows green/red on the card from the start
             if (newCandidate?.id) {
                 try {
                     // Call the service function directly instead of the controller to avoid mock response issues
-                    const db = (0, database_1.supabaseAdminClient)();
                     const { data: documents } = await db
                         .from('candidate_documents')
                         .select('category')

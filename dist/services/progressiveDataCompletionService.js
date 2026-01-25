@@ -103,10 +103,34 @@ async function enrichCandidateData(candidateId, extractedData, source, documentI
             // Normalize special fields
             let normalizedValue = extractedValue;
             if (field === 'cnic' && typeof extractedValue === 'string') {
+                // Map cnic to cnic_normalized (database column name)
                 normalizedValue = (0, candidateService_1.normalizeCNIC)(extractedValue);
+                updates.cnic_normalized = normalizedValue;
+                updated.push('cnic_normalized');
+                // Track source
+                sourceTracking.push({
+                    field: 'cnic_normalized',
+                    source,
+                    document_id: documentId,
+                    document_type: documentType,
+                    updated_at: new Date().toISOString(),
+                });
+                continue; // Skip cnic field itself
             }
             else if (field === 'passport' && typeof extractedValue === 'string') {
+                // Map passport to passport_normalized (database column name)
                 normalizedValue = (0, candidateService_1.normalizePassport)(extractedValue);
+                updates.passport_normalized = normalizedValue;
+                updated.push('passport_normalized');
+                // Track source
+                sourceTracking.push({
+                    field: 'passport_normalized',
+                    source,
+                    document_id: documentId,
+                    document_type: documentType,
+                    updated_at: new Date().toISOString(),
+                });
+                continue; // Skip passport field itself
             }
             else if (field === 'passport_no' && typeof extractedValue === 'string') {
                 // Map passport_no to passport_normalized
@@ -251,31 +275,42 @@ async function updateFieldManually(candidateId, field, value, userId) {
         throw new Error(`Candidate not found: ${candidateId}`);
     }
     const currentFieldSources = candidate.field_sources || {};
-    // Get old value for audit logging (before update)
-    const oldValue = candidate[field] || null;
+    // Determine database field name for CNIC/passport
+    let dbFieldName = field;
+    if (field === 'cnic') {
+        dbFieldName = 'cnic_normalized';
+    }
+    else if (field === 'passport') {
+        dbFieldName = 'passport_normalized';
+    }
+    // Get old value for audit logging (before update) - use dbFieldName
+    const oldValue = candidate[dbFieldName] || null;
     // Normalize special fields
     let normalizedValue = value;
     if (field === 'cnic' && typeof value === 'string') {
+        // Map cnic to cnic_normalized (database column name)
         normalizedValue = (0, candidateService_1.normalizeCNIC)(value);
+        dbFieldName = 'cnic_normalized';
     }
     else if (field === 'passport' && typeof value === 'string') {
         normalizedValue = (0, candidateService_1.normalizePassport)(value);
+        dbFieldName = 'passport_normalized';
     }
     else if (field === 'date_of_birth' && typeof value === 'string') {
         normalizedValue = parseDate(value);
     }
-    // Update field with manual source
+    // Update field with manual source (use dbFieldName for database update)
     const newFieldSources = {
         ...currentFieldSources,
-        [field]: {
-            field,
+        [dbFieldName]: {
+            field: dbFieldName,
             source: 'manual',
             updated_at: new Date().toISOString(),
             updated_by: userId,
         },
     };
     const updates = {
-        [field]: normalizedValue,
+        [dbFieldName]: normalizedValue,
         field_sources: newFieldSources,
         updated_at: new Date().toISOString(),
     };
@@ -288,8 +323,8 @@ async function updateFieldManually(candidateId, field, value, userId) {
     }
     // Recalculate missing fields
     await updateMissingFields(candidateId);
-    // Log enrichment event
-    await logEnrichmentEvent(candidateId, [field], [], 'manual', undefined, oldValue, normalizedValue);
+    // Log enrichment event (use dbFieldName for logging)
+    await logEnrichmentEvent(candidateId, [dbFieldName], [], 'manual', undefined, oldValue, normalizedValue);
 }
 /**
  * Parse date from various formats

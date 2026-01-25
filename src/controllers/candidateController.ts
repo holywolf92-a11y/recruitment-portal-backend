@@ -320,6 +320,21 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
         updateFlags.passport_received_at = now;
         foundCategories.push('Passport');
       }
+      if (category === 'cnic' || docType === 'cnic' || fileName.includes('cnic') || fileName.includes('id card')) {
+        updateFlags.cnic_received = true;
+        updateFlags.cnic_received_at = now;
+        foundCategories.push('CNIC');
+      }
+      if (category === 'driving_license' || docType === 'driving_license' || fileName.includes('driving') || fileName.includes('license') || fileName.includes('dl')) {
+        updateFlags.driving_license_received = true;
+        updateFlags.driving_license_received_at = now;
+        foundCategories.push('Driving License');
+      }
+      if (category === 'police_character_certificate' || docType === 'police_character_certificate' || fileName.includes('police') || fileName.includes('character') || fileName.includes('pcc')) {
+        updateFlags.police_character_received = true;
+        updateFlags.police_character_received_at = now;
+        foundCategories.push('Police Character Certificate');
+      }
       if (category === 'certificates' || category === 'certificate' || docType === 'certificate' || fileName.includes('certificate')) {
         updateFlags.certificate_received = true;
         updateFlags.certificate_received_at = now;

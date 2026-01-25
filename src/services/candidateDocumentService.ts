@@ -547,13 +547,13 @@ export async function uploadCandidateDocument(
                  documentType === 'medical') {
         updateFlags.medical_received = true;
         updateFlags.medical_received_at = now;
-      } else if (documentType === 'cnic' || fileName.includes('cnic') || fileName.includes('id card')) {
+      } else if (category === 'cnic' || documentType === 'cnic' || fileName.includes('cnic') || fileName.includes('id card')) {
         updateFlags.cnic_received = true;
         updateFlags.cnic_received_at = now;
-      } else if (documentType === 'driving_license' || fileName.includes('driving') || fileName.includes('license') || fileName.includes('dl')) {
+      } else if (category === 'driving_license' || documentType === 'driving_license' || fileName.includes('driving') || fileName.includes('license') || fileName.includes('dl')) {
         updateFlags.driving_license_received = true;
         updateFlags.driving_license_received_at = now;
-      } else if (documentType === 'police_character_certificate' || fileName.includes('police') || fileName.includes('character') || fileName.includes('pcc')) {
+      } else if (category === 'police_character_certificate' || documentType === 'police_character_certificate' || fileName.includes('police') || fileName.includes('character') || fileName.includes('pcc')) {
         updateFlags.police_character_received = true;
         updateFlags.police_character_received_at = now;
       } else if (documentType === 'visa' || fileName.includes('visa')) {

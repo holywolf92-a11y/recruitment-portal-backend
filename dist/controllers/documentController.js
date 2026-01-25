@@ -148,7 +148,8 @@ async function getCandidateDocumentDownloadUrlController(req, res) {
             return res.status(400).json({ error: 'Document ID is required' });
         }
         const signedUrl = await (0, candidateDocumentService_1.getCandidateDocumentSignedUrl)(id, expiresIn);
-        res.json({ signedUrl, expiresIn });
+        // Backward compatibility: frontend expects `download_url`
+        res.json({ signedUrl, download_url: signedUrl, expiresIn });
     }
     catch (error) {
         console.error('Error generating signed URL:', error);

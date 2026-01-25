@@ -136,7 +136,20 @@ export async function enrichCandidateData(
       let normalizedValue = extractedValue;
       
       if (field === 'cnic' && typeof extractedValue === 'string') {
+        // Map cnic to cnic_normalized (database column name)
         normalizedValue = normalizeCNIC(extractedValue);
+        updates.cnic_normalized = normalizedValue;
+        updated.push('cnic_normalized');
+        
+        // Track source
+        sourceTracking.push({
+          field: 'cnic_normalized',
+          source,
+          document_id: documentId,
+          document_type: documentType,
+          updated_at: new Date().toISOString(),
+        });
+        continue; // Skip cnic field itself
       } else if (field === 'passport' && typeof extractedValue === 'string') {
         normalizedValue = normalizePassport(extractedValue);
       } else if (field === 'passport_no' && typeof extractedValue === 'string') {
@@ -321,24 +334,36 @@ export async function updateFieldManually(
   const currentFieldSources: Record<string, FieldSource> = 
     (candidate.field_sources as Record<string, FieldSource>) || {};
   
-  // Get old value for audit logging (before update)
-  const oldValue = (candidate as any)[field] || null;
+  // Determine database field name for CNIC/passport
+  let dbFieldName = field;
+  if (field === 'cnic') {
+    dbFieldName = 'cnic_normalized';
+  } else if (field === 'passport') {
+    dbFieldName = 'passport_normalized';
+  }
+  
+  // Get old value for audit logging (before update) - use dbFieldName
+  const oldValue = (candidate as any)[dbFieldName] || null;
   
   // Normalize special fields
   let normalizedValue = value;
+  
   if (field === 'cnic' && typeof value === 'string') {
+    // Map cnic to cnic_normalized (database column name)
     normalizedValue = normalizeCNIC(value);
+    dbFieldName = 'cnic_normalized';
   } else if (field === 'passport' && typeof value === 'string') {
     normalizedValue = normalizePassport(value);
+    dbFieldName = 'passport_normalized';
   } else if (field === 'date_of_birth' && typeof value === 'string') {
     normalizedValue = parseDate(value);
   }
   
-  // Update field with manual source
+  // Update field with manual source (use dbFieldName for database update)
   const newFieldSources: Record<string, FieldSource> = {
     ...currentFieldSources,
-    [field]: {
-      field,
+    [dbFieldName]: {
+      field: dbFieldName,
       source: 'manual',
       updated_at: new Date().toISOString(),
       updated_by: userId,
@@ -346,7 +371,7 @@ export async function updateFieldManually(
   };
   
   const updates: any = {
-    [field]: normalizedValue,
+    [dbFieldName]: normalizedValue,
     field_sources: newFieldSources,
     updated_at: new Date().toISOString(),
   };
@@ -363,8 +388,8 @@ export async function updateFieldManually(
   // Recalculate missing fields
   await updateMissingFields(candidateId);
   
-  // Log enrichment event
-  await logEnrichmentEvent(candidateId, [field], [], 'manual', undefined, oldValue, normalizedValue);
+  // Log enrichment event (use dbFieldName for logging)
+  await logEnrichmentEvent(candidateId, [dbFieldName], [], 'manual', undefined, oldValue, normalizedValue);
 }
 
 /**

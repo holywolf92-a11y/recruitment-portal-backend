@@ -6,6 +6,9 @@
 export const DOCUMENT_CATEGORIES = {
   CV_RESUME: 'cv_resume',
   PASSPORT: 'passport',
+  CNIC: 'cnic',
+  DRIVING_LICENSE: 'driving_license',
+  POLICE_CHARACTER_CERTIFICATE: 'police_character_certificate',
   CERTIFICATES: 'certificates',
   CONTRACTS: 'contracts',
   MEDICAL_REPORTS: 'medical_reports',
@@ -18,6 +21,9 @@ export type DocumentCategory = typeof DOCUMENT_CATEGORIES[keyof typeof DOCUMENT_
 export const DOCUMENT_CATEGORY_DISPLAY_NAMES: Record<DocumentCategory, string> = {
   [DOCUMENT_CATEGORIES.CV_RESUME]: 'CV / Resume',
   [DOCUMENT_CATEGORIES.PASSPORT]: 'Passport',
+  [DOCUMENT_CATEGORIES.CNIC]: 'CNIC (National ID)',
+  [DOCUMENT_CATEGORIES.DRIVING_LICENSE]: 'Driving License',
+  [DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE]: 'Police Character Certificate',
   [DOCUMENT_CATEGORIES.CERTIFICATES]: 'Certificates',
   [DOCUMENT_CATEGORIES.CONTRACTS]: 'Contracts',
   [DOCUMENT_CATEGORIES.MEDICAL_REPORTS]: 'Medical Reports',

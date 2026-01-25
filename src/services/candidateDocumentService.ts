@@ -290,9 +290,10 @@ export async function uploadCandidateDocument(
             const categoryMap: Record<string, DocumentCategory> = {
               cv_resume: DOCUMENT_CATEGORIES.CV_RESUME,
               passport: DOCUMENT_CATEGORIES.PASSPORT,
-              national_id: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // CNIC not in enum, use other_documents
-              cnic: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // CNIC not in enum, use other_documents
-              driving_license: DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // driving_license not in enum
+              national_id: DOCUMENT_CATEGORIES.CNIC,
+              cnic: DOCUMENT_CATEGORIES.CNIC,
+              driving_license: DOCUMENT_CATEGORIES.DRIVING_LICENSE,
+              police_character_certificate: DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
               medical_reports: DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
               medical_certificate: DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
               certificates: DOCUMENT_CATEGORIES.CERTIFICATES,
@@ -305,17 +306,18 @@ export async function uploadCandidateDocument(
             const category = categoryMap[splitDoc.doc_type] || DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
 
             // Map parser doc_type to database document_type (must match CHECK constraint)
-            // Allowed values: 'passport', 'cnic', 'degree', 'medical', 'visa', 'certificate', 'other'
+            // Allowed values: 'passport', 'cnic', 'driving_license', 'police_character_certificate', 'degree', 'medical', 'visa', 'certificate', 'other'
             const docTypeMap: Record<string, string> = {
               passport: 'passport',
               cnic: 'cnic',
               national_id: 'cnic',
+              driving_license: 'driving_license',
+              police_character_certificate: 'police_character_certificate',
               cv_resume: 'other', // CV/resume maps to 'other' in database
               medical_reports: 'medical',
               medical_certificate: 'medical',
               certificate: 'certificate',
               certificates: 'certificate',
-              driving_license: 'other',
               contracts: 'other',
               contract: 'other',
               photos: 'other',
@@ -548,6 +550,12 @@ export async function uploadCandidateDocument(
       } else if (documentType === 'cnic' || fileName.includes('cnic') || fileName.includes('id card')) {
         updateFlags.cnic_received = true;
         updateFlags.cnic_received_at = now;
+      } else if (documentType === 'driving_license' || fileName.includes('driving') || fileName.includes('license') || fileName.includes('dl')) {
+        updateFlags.driving_license_received = true;
+        updateFlags.driving_license_received_at = now;
+      } else if (documentType === 'police_character_certificate' || fileName.includes('police') || fileName.includes('character') || fileName.includes('pcc')) {
+        updateFlags.police_character_received = true;
+        updateFlags.police_character_received_at = now;
       } else if (documentType === 'visa' || fileName.includes('visa')) {
         updateFlags.visa_received = true;
         updateFlags.visa_received_at = now;

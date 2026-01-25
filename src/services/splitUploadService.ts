@@ -26,8 +26,9 @@ const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
 export const DOC_TYPE_TO_FOLDER: Record<string, string> = {
   passport: 'passport',
   driving_license: 'driving_license',
-  national_id: 'national_id',
-  cnic: 'national_id',
+  national_id: 'cnic',
+  cnic: 'cnic',
+  police_character_certificate: 'police_character_certificate',
   cv_resume: 'cv_resume',
   medical_certificate: 'medical_reports',
   medical_reports: 'medical_reports',

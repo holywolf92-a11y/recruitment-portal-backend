@@ -3,6 +3,7 @@ import { getCandidateById } from './candidateService';
 import { listCandidateDocumentsByCandidate } from './candidateDocumentService';
 import puppeteer from 'puppeteer';
 import crypto from 'crypto';
+import { getTemplateVersion } from '../config/cvTemplateConfig';
 
 const STORAGE_BUCKET = 'documents';
 
@@ -36,12 +37,6 @@ export interface CVGenerationResponse {
 }
 
 /**
- * Template version - increment this whenever the CV template design changes
- * This forces cache invalidation for all CVs when template is updated
- */
-const TEMPLATE_VERSION = 'v2.0-colorful-infographic-2026-01-27';
-
-/**
  * Calculate SHA256 hash of candidate data for cache invalidation
  */
 async function calculateCandidateVersionHash(candidateId: string): Promise<string> {
@@ -58,7 +53,7 @@ async function calculateCandidateVersionHash(candidateId: string): Promise<strin
   }
   
   const dataString = [
-    TEMPLATE_VERSION, // Include template version to bust cache when design changes
+    getTemplateVersion(), // Include template version to bust cache when design changes
     candidate.name || '',
     candidate.position || '',
     candidate.nationality || '',

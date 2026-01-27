@@ -24,8 +24,8 @@ export interface CVTemplateConfig {
  * This ensures all users get the updated design without manual cache clearing.
  */
 export const CV_TEMPLATE_CONFIG: CVTemplateConfig = {
-  version: 'v3.0.0',
-  description: 'Modern minimalist two-column layout: dark sidebar with skills/contact, clean main content area',
+  version: 'v3.0.1',
+  description: 'Modern minimalist two-column layout with profile photo support from profile_photo_url field',
   lastUpdated: '2026-01-27',
 };
 

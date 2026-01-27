@@ -44,7 +44,7 @@ async function calculateCandidateVersionHash(candidateId: string): Promise<strin
   
   const { data: candidate, error } = await db
     .from('candidates')
-    .select('name, position, nationality, experience_years, skills, languages, education, certifications, previous_employment, professional_summary, country_of_interest, updated_at')
+    .select('name, position, nationality, experience_years, skills, languages, education, certifications, previous_employment, professional_summary, country_of_interest, profile_photo_url, ai_score, updated_at')
     .eq('id', candidateId)
     .single();
   
@@ -431,7 +431,7 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
     <!-- Left Sidebar - Contact & Skills -->
     <div class="sidebar">
       <!-- Profile Photo -->
-      ${candidate.photo_url ? `<img src="${candidate.photo_url}" alt="Profile" class="profile-photo">` : ''}
+      ${candidate.profile_photo_url ? `<img src="${candidate.profile_photo_url}" alt="Profile" class="profile-photo">` : ''}
       
       <!-- Contact Information (Protected) -->
       <div class="sidebar-section">

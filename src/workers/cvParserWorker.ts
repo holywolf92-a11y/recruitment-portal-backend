@@ -18,40 +18,75 @@ function signHmac(body: string) {
   return crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
 }
 
+// Helper to parse and validate dates from various formats
+function parseDate(dateStr: string | undefined, fieldName: string): string | undefined {
+  if (!dateStr) return undefined;
+  
+  try {
+    // Try to parse formats like "13 October 1983", "13-10-1983", "23-09-2033", "1983-10-13"
+    if (dateStr.includes(' ')) {
+      // Format: "13 October 1983"
+      const date = new Date(dateStr);
+      if (!isNaN(date.getTime())) {
+        return date.toISOString().split('T')[0];
+      }
+    } else if (dateStr.includes('-')) {
+      // Format: "13-10-1983", "23-09-2033", or "1983-10-13"
+      const parts = dateStr.split('-');
+      if (parts.length === 3) {
+        if (parts[0].length === 4) {
+          // YYYY-MM-DD (already correct format)
+          return dateStr;
+        } else {
+          // DD-MM-YYYY → convert to YYYY-MM-DD
+          const day = parts[0];
+          const month = parts[1];
+          const year = parts[2];
+          return `${year}-${month}-${day}`;
+        }
+      }
+    } else if (dateStr.includes('/')) {
+      // Format: "13/10/1983" or "10/13/1983"
+      const parts = dateStr.split('/');
+      if (parts.length === 3) {
+        // Assume DD/MM/YYYY
+        const day = parts[0];
+        const month = parts[1];
+        const year = parts[2];
+        return `${year}-${month}-${day}`;
+      }
+    }
+    
+    // Try generic Date constructor as fallback
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      return date.toISOString().split('T')[0];
+    }
+    
+    console.warn(`[CVParser] Could not parse ${fieldName}: ${dateStr}`);
+    return undefined;
+  } catch (e) {
+    console.warn(`[CVParser] Failed to parse ${fieldName}: ${dateStr}`, e);
+    return undefined;
+  }
+}
+
 // Helper to create candidate from parsed CV data
 async function createCandidateFromParsedData(parsed: any, attachmentId: string, identityFields?: any) {
   try {
     const candidate = parsed.candidate || {};
     
     // Parse date of birth from various formats
-    let dateOfBirth: string | undefined = undefined;
-    if (identityFields?.date_of_birth || identityFields?.dob) {
-      const dobStr = identityFields.date_of_birth || identityFields.dob;
-      try {
-        // Try to parse formats like "13 October 1983", "13-10-1983", "1983-10-13"
-        if (dobStr.includes(' ')) {
-          // Format: "13 October 1983"
-          const date = new Date(dobStr);
-          if (!isNaN(date.getTime())) {
-            dateOfBirth = date.toISOString().split('T')[0];
-          }
-        } else if (dobStr.includes('-')) {
-          // Format: "13-10-1983" or "1983-10-13"
-          const parts = dobStr.split('-');
-          if (parts[0].length === 4) {
-            // YYYY-MM-DD
-            dateOfBirth = dobStr;
-          } else {
-            // DD-MM-YYYY
-            dateOfBirth = `${parts[2]}-${parts[1]}-${parts[0]}`;
-          }
-        } else {
-          dateOfBirth = dobStr;
-        }
-      } catch (e) {
-        console.warn(`[CVParser] Failed to parse date of birth: ${dobStr}`, e);
-      }
-    }
+    const dateOfBirth = parseDate(
+      identityFields?.date_of_birth || identityFields?.dob || candidate.date_of_birth,
+      'date_of_birth'
+    );
+    
+    // Parse passport expiry date (can be in the future - this is normal!)
+    const passportExpiry = parseDate(
+      candidate.passport_expiry || identityFields?.passport_expiry || identityFields?.expiry_date,
+      'passport_expiry'
+    );
     
     // Build candidate data from parsed CV - map all fields from Python parser
     // Include identity fields extracted from CV (father_name, cnic, passport, date_of_birth, etc.)
@@ -61,7 +96,7 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
       email: candidate.email || identityFields?.email || undefined,
       phone: candidate.phone || identityFields?.phone || undefined,
       address: candidate.location || undefined,
-      date_of_birth: dateOfBirth || candidate.date_of_birth || undefined,
+      date_of_birth: dateOfBirth,
       marital_status: candidate.marital_status || undefined,
       cnic: identityFields?.cnic || candidate.cnic || undefined,
       passport: identityFields?.passport_no || candidate.passport || undefined,
@@ -80,7 +115,7 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
           ? candidate.experience.map((e: any) => `${e.title} at ${e.company}`).join('; ')
           : undefined
       ),
-      passport_expiry: candidate.passport_expiry || identityFields?.passport_expiry || identityFields?.expiry_date || undefined,
+      passport_expiry: passportExpiry,
       professional_summary: candidate.professional_summary || candidate.summary || undefined,
     };
 
@@ -265,12 +300,20 @@ export function startCvParserWorker() {
           if (identityFields.email) combinedData.email = identityFields.email;
           if (identityFields.phone) combinedData.phone = identityFields.phone;
           if (identityFields.date_of_birth || identityFields.dob) {
-            combinedData.date_of_birth = identityFields.date_of_birth || identityFields.dob;
+            combinedData.date_of_birth = parseDate(identityFields.date_of_birth || identityFields.dob, 'date_of_birth');
           }
           if (identityFields.nationality) combinedData.nationality = identityFields.nationality;
           if (identityFields.passport_expiry || identityFields.expiry_date) {
-            combinedData.passport_expiry = identityFields.passport_expiry || identityFields.expiry_date;
+            combinedData.passport_expiry = parseDate(identityFields.passport_expiry || identityFields.expiry_date, 'passport_expiry');
           }
+        }
+        
+        // Also parse the initial dates from parsedCandidate
+        if (combinedData.date_of_birth) {
+          combinedData.date_of_birth = parseDate(combinedData.date_of_birth, 'date_of_birth');
+        }
+        if (combinedData.passport_expiry) {
+          combinedData.passport_expiry = parseDate(combinedData.passport_expiry, 'passport_expiry');
         }
         
         // Find existing candidate using progressive completion matching

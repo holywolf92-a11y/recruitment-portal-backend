@@ -408,8 +408,8 @@ export interface DailyStats {
 export async function getDailyStats(filters: DailyStatsFilters, userId: string): Promise<DailyStats> {
   const db = supabaseAdminClient();
 
-  function baseQuery() {
-    let q = db.from('candidates').select('id, status, cv_received, passport_received', { count: 'exact', head: false });
+  function buildBaseQuery() {
+    let q = db.from('candidates').select('id', { count: 'exact' });
     if (filters.search?.trim()) {
       const search = filters.search.trim();
       q = q.or(`name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,passport_normalized.ilike.%${search}%,cnic_normalized.ilike.%${search}%`);
@@ -429,16 +429,16 @@ export async function getDailyStats(filters: DailyStatsFilters, userId: string):
     } else if (filters.documents === 'missing') {
       q = q.or('cv_received.eq.false,passport_received.eq.false,certificate_received.eq.false,photo_received.eq.false,medical_received.eq.false');
     }
-    return q;
+    return q.limit(0);
   }
 
   const [totalRes, appliedRes, verifiedRes, pendingRes, rejectedRes, docsRes] = await Promise.all([
-    baseQuery().select('id', { count: 'exact', head: true }),
-    baseQuery().eq('status', 'Applied').select('id', { count: 'exact', head: true }),
-    baseQuery().eq('status', 'Deployed').select('id', { count: 'exact', head: true }),
-    baseQuery().eq('status', 'Pending').select('id', { count: 'exact', head: true }),
-    baseQuery().eq('status', 'Cancelled').select('id', { count: 'exact', head: true }),
-    baseQuery().or('cv_received.eq.true,passport_received.eq.true').select('id', { count: 'exact', head: true }),
+    buildBaseQuery(),
+    buildBaseQuery().eq('status', 'Applied'),
+    buildBaseQuery().eq('status', 'Deployed'),
+    buildBaseQuery().eq('status', 'Pending'),
+    buildBaseQuery().eq('status', 'Cancelled'),
+    buildBaseQuery().or('cv_received.eq.true,passport_received.eq.true'),
   ]);
 
   return {

@@ -305,10 +305,41 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
  * Generate PDF from HTML using Puppeteer
  */
 async function generatePDFFromHTML(html: string): Promise<Buffer> {
-  const browser = await puppeteer.launch({
+  // Use system Chromium if available (for Railway/production)
+  // Otherwise fall back to bundled Chromium (for local dev)
+  let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  
+  // Try to find system Chromium if not explicitly set
+  if (!executablePath && process.platform === 'linux') {
+    // Common paths for Chromium in Linux containers
+    const possiblePaths = [
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/nix/store/*chromium*/bin/chromium',
+    ];
+    
+    // Use first available path (simplified - in production, Railway will set PUPPETEER_EXECUTABLE_PATH)
+    executablePath = '/usr/bin/chromium';
+  }
+  
+  const launchOptions: any = {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  });
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-extensions',
+    ],
+  };
+  
+  // Only set executablePath if we have one (let Puppeteer use bundled Chromium otherwise)
+  if (executablePath) {
+    launchOptions.executablePath = executablePath;
+  }
+  
+  const browser = await puppeteer.launch(launchOptions);
   
   try {
     const page = await browser.newPage();

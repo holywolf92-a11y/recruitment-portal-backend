@@ -8,6 +8,7 @@
     "build": "npx tsc -p tsconfig.json",
     "prestart": "npm run build",
     "start": "node dist/server.js",
+    "postinstall": "node -e \"if (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD !== 'true') { require('puppeteer/install'); }\"",
     "lint": "eslint . --ext .ts",
     "test:inbox": "node scripts/testInboxApi.js",
     "test:webhook-security": "node scripts/testWebhookSecurity.js",

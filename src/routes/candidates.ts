@@ -6,6 +6,8 @@ import {
   createCandidateController,
   getCandidateController,
   listCandidatesController,
+  dailyStatsController,
+  exportCandidatesController,
   updateCandidateController,
   deleteCandidateController,
   bulkUpdateCandidateStatusController,
@@ -46,6 +48,12 @@ router.post('/', validateCandidate, createCandidateController);
 
 // List candidates with optional filters
 router.get('/', listCandidatesController);
+
+// Daily stats for Excel-style reports
+router.get('/daily-stats', dailyStatsController);
+
+// Export candidates (CSV/Excel)
+router.get('/export', exportCandidatesController);
 
 // Bulk operations
 router.patch('/bulk/status', bulkUpdateCandidateStatusController);

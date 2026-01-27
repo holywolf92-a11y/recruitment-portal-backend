@@ -4,11 +4,14 @@ import {
   createCandidate,
   getCandidateById,
   listCandidates,
+  getDailyStats,
+  exportCandidates,
   updateCandidate,
   deleteCandidate,
   bulkUpdateCandidateStatus,
   CreateCandidateData,
-  CandidateFilters
+  CandidateFilters,
+  DailyStatsFilters
 } from '../services/candidateService';
 import { linkExistingCVFromInbox } from '../services/linkCVService';
 import { supabaseAdminClient } from '../config/database';
@@ -72,6 +75,10 @@ export async function listCandidatesController(req: Request, res: Response) {
       position: req.query.position as string,
       country_of_interest: req.query.country_of_interest as string,
       documents: req.query.documents as string,
+      applied_from: req.query.applied_from as string,
+      applied_to: req.query.applied_to as string,
+      sort_by: req.query.sort_by as string,
+      sort_order: (req.query.sort_order as 'asc' | 'desc') || undefined,
       limit: req.query.limit ? parseInt(req.query.limit as string) : undefined,
       offset: req.query.offset ? parseInt(req.query.offset as string) : undefined,
     };
@@ -81,6 +88,57 @@ export async function listCandidatesController(req: Request, res: Response) {
   } catch (error: any) {
     console.error('Error listing candidates:', error);
     res.status(500).json({ error: 'Failed to fetch candidates' });
+  }
+}
+
+export async function dailyStatsController(req: Request, res: Response) {
+  try {
+    const userId = 'test-user-id';
+    const filters: DailyStatsFilters = {
+      search: req.query.search as string,
+      position: req.query.position as string,
+      country_of_interest: req.query.country_of_interest as string,
+      documents: req.query.documents as string,
+      applied_from: req.query.applied_from as string,
+      applied_to: req.query.applied_to as string,
+    };
+    const stats = await getDailyStats(filters, userId);
+    res.json(stats);
+  } catch (error: any) {
+    console.error('Error fetching daily stats:', error);
+    res.status(500).json({ error: 'Failed to fetch daily stats' });
+  }
+}
+
+export async function exportCandidatesController(req: Request, res: Response) {
+  try {
+    const userId = 'test-user-id';
+    const format = (req.query.format as 'csv' | 'xlsx') || 'csv';
+    
+    if (format !== 'csv' && format !== 'xlsx') {
+      return res.status(400).json({ error: 'Format must be csv or xlsx' });
+    }
+
+    const filters: CandidateFilters = {
+      search: req.query.search as string,
+      status: req.query.status as string,
+      position: req.query.position as string,
+      country_of_interest: req.query.country_of_interest as string,
+      documents: req.query.documents as string,
+      applied_from: req.query.applied_from as string,
+      applied_to: req.query.applied_to as string,
+      sort_by: req.query.sort_by as string,
+      sort_order: (req.query.sort_order as 'asc' | 'desc') || undefined,
+    };
+
+    const { buffer, filename } = await exportCandidates(filters, format, userId);
+    
+    res.setHeader('Content-Type', format === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error: any) {
+    console.error('Error exporting candidates:', error);
+    res.status(500).json({ error: 'Failed to export candidates' });
   }
 }
 

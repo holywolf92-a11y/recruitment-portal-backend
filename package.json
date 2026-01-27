@@ -11,7 +11,7 @@
     "build": "npx tsc -p tsconfig.json",
     "prestart": "npm run build",
     "start": "node dist/server.js",
-    "postinstall": "node -e \"if (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD !== 'true') { require('puppeteer/install'); }\"",
+    "postinstall": "node -e \"try { if (process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD !== 'true' && require('fs').existsSync('./node_modules/puppeteer/install.js')) { require('puppeteer/install'); } } catch(e) { console.log('Skipping Puppeteer install:', e.message); }\"",
     "lint": "eslint . --ext .ts",
     "test:inbox": "node scripts/testInboxApi.js",
     "test:webhook-security": "node scripts/testWebhookSecurity.js",

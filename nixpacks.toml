@@ -1,10 +1,23 @@
 [variables]
 NIXPACKS_NODE_VERSION = "20"
-NIXPACKS_INSTALL_CMD = "rm -rf /app/node_modules/.cache || true && PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium npm ci --production=false"
-NIXPACKS_BUILD_CMD = "npm run build"
 
 [phases.setup]
 nixPkgs = ["nodejs", "chromium"]
+
+[phases.install]
+env = {
+  PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"
+  PUPPETEER_EXECUTABLE_PATH = "/usr/bin/chromium"
+}
+cmds = [
+  "rm -rf /app/node_modules/.cache || true",
+  "npm ci --production=false"
+]
+
+[phases.build]
+cmds = [
+  "npm run build"
+]
 
 [start]
 cmd = "npm start"

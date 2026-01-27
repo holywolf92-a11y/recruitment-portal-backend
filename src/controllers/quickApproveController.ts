@@ -70,13 +70,18 @@ export async function quickApproveCandidateDocument(req: Request, res: Response)
     console.log(`[QuickApprove] Document ${id} approved by ${userId}`);
 
     // If this is a photo document, update the candidate's profile_photo_url
-    if (updatedDocument.category === 'photos' && updatedDocument.candidate_id && updatedDocument.file_url) {
+    if (updatedDocument.category === 'photos' && updatedDocument.candidate_id && updatedDocument.storage_path) {
       console.log(`[QuickApprove] Setting profile photo for candidate ${updatedDocument.candidate_id}`);
+      
+      // Build the full public URL for the photo
+      const supabaseUrl = process.env.SUPABASE_URL || '';
+      const bucket = updatedDocument.storage_bucket || 'documents';
+      const photoUrl = `${supabaseUrl}/storage/v1/object/public/${bucket}/${updatedDocument.storage_path}`;
       
       const { error: photoUpdateError } = await db
         .from('candidates')
         .update({
-          profile_photo_url: updatedDocument.file_url,
+          profile_photo_url: photoUrl,
           photo_received: true,
           updated_at: now,
         })
@@ -86,7 +91,7 @@ export async function quickApproveCandidateDocument(req: Request, res: Response)
         console.error(`[QuickApprove] Failed to update candidate profile photo:`, photoUpdateError);
         // Don't fail the whole operation, just log the error
       } else {
-        console.log(`[QuickApprove] ✓ Profile photo updated for candidate ${updatedDocument.candidate_id}`);
+        console.log(`[QuickApprove] ✓ Profile photo updated for candidate ${updatedDocument.candidate_id} - URL: ${photoUrl}`);
       }
     }
 

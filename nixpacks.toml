@@ -1,7 +1,10 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "chromium"]
+nixPkgs = ["nodejs", "chromium"]
 
 [phases.install]
+env = {
+  NIXPACKS_NODE_VERSION = "20"
+}
 cmds = [
   "rm -rf /app/node_modules/.cache || true",
   "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium npm ci --production=false"

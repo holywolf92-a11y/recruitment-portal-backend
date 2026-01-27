@@ -131,8 +131,23 @@ async function checkCache(options: CVGenerationOptions): Promise<{
  * Generate HTML template for employer-safe CV
  */
 function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
-  const skills = candidate.skills ? candidate.skills.split(',').map((s: string) => s.trim()) : [];
+  // Parse skills - handle JSON array or comma-separated string
+  let skills: string[] = [];
+  if (candidate.skills) {
+    try {
+      const parsed = JSON.parse(candidate.skills);
+      if (Array.isArray(parsed)) {
+        skills = parsed;
+      } else {
+        skills = candidate.skills.split(',').map((s: string) => s.trim());
+      }
+    } catch {
+      skills = candidate.skills.split(',').map((s: string) => s.trim());
+    }
+  }
+  
   const languages = candidate.languages ? candidate.languages.split(',').map((l: string) => l.trim()) : [];
+  const initial = (candidate.name || '?').charAt(0).toUpperCase();
   
   return `
 <!DOCTYPE html>
@@ -147,155 +162,334 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       line-height: 1.6;
       color: #1f2937;
-      background: #ffffff;
-      padding: 40px;
+      background: linear-gradient(135deg, #EFF6FF 0%, #F3E8FF 50%, #FCE7F3 100%);
+      padding: 40px 20px;
     }
-    .container { max-width: 800px; margin: 0 auto; }
-    .header {
-      background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-      color: white;
-      padding: 40px;
-      border-radius: 12px;
-      margin-bottom: 30px;
+    .container { max-width: 900px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
+    
+    /* Colorful Header with Avatar */
+    .cv-header {
       text-align: center;
+      padding: 50px 40px;
+      border-bottom: 4px solid #2563eb;
     }
-    .header h1 { font-size: 32px; margin-bottom: 10px; font-weight: 700; }
-    .header .position { font-size: 18px; opacity: 0.95; }
-    .section {
-      margin-bottom: 30px;
-      padding: 25px;
-      background: #f9fafb;
-      border-radius: 8px;
-      border-left: 4px solid #3b82f6;
+    .avatar {
+      width: 140px;
+      height: 140px;
+      margin: 0 auto 20px;
+      background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 60px;
+      font-weight: bold;
+      box-shadow: 0 10px 30px rgba(59, 130, 246, 0.4);
+      position: relative;
     }
-    .section h2 {
-      font-size: 20px;
-      color: #1f2937;
-      margin-bottom: 15px;
-      font-weight: 600;
+    .avatar::after {
+      content: '✓';
+      position: absolute;
+      bottom: 0;
+      right: 0;
+      width: 44px;
+      height: 44px;
+      background: #10b981;
+      border-radius: 50%;
+      border: 5px solid white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      color: white;
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
     }
-    .info-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 15px;
+    .cv-header h1 {
+      font-size: 42px;
+      font-weight: 700;
+      color: #111827;
+      margin-bottom: 8px;
+    }
+    .cv-header .position {
+      font-size: 22px;
+      color: #6b7280;
       margin-bottom: 20px;
     }
-    .info-item {
+    
+    /* Info Badges */
+    .info-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+      margin-top: 20px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 50px;
+      font-size: 14px;
+      font-weight: 600;
+      border: 2px solid;
+    }
+    .badge-blue { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+    .badge-purple { background: #f3e8ff; color: #6b21a8; border-color: #c084fc; }
+    .badge-green { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
+    
+    /* Content Section */
+    .content {
+      padding: 40px;
+    }
+    
+    /* Contact Protection Notice */
+    .protection-notice {
+      background: #fef3c7;
+      border: 2px solid #fbbf24;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 30px;
+    }
+    .protection-notice h3 {
+      font-size: 18px;
+      font-weight: 700;
+      color: #92400e;
+      margin-bottom: 8px;
+    }
+    .protection-notice p {
+      font-size: 14px;
+      color: #78350f;
+      margin-bottom: 12px;
+    }
+    .protection-contact {
+      background: white;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #fbbf24;
+    }
+    .protection-contact p {
+      font-size: 13px;
+      color: #374151;
+      margin: 4px 0;
+    }
+    .protection-contact strong {
+      color: #111827;
+    }
+    
+    /* Section Title */
+    .section-title {
+      font-size: 24px;
+      font-weight: 700;
+      color: #111827;
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 3px solid #2563eb;
       display: flex;
       align-items: center;
       gap: 10px;
     }
-    .info-label { font-weight: 600; color: #6b7280; }
-    .info-value { color: #1f2937; }
+    
+    /* Stats Cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+      margin-bottom: 30px;
+    }
+    .stat-card {
+      padding: 20px;
+      border-radius: 12px;
+      border: 2px solid;
+    }
+    .stat-card-blue { background: #eff6ff; border-color: #93c5fd; }
+    .stat-card-purple { background: #f5f3ff; border-color: #c4b5fd; }
+    .stat-card .label {
+      font-size: 14px;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 8px;
+    }
+    .stat-card .value {
+      font-size: 32px;
+      font-weight: 700;
+    }
+    .stat-card-blue .value { color: #1e40af; }
+    .stat-card-purple .value { color: #6b21a8; }
+    
+    /* Content Box */
+    .content-box {
+      background: #f9fafb;
+      border-left: 4px solid #3b82f6;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+    }
+    .content-box p {
+      font-size: 15px;
+      color: #374151;
+      line-height: 1.7;
+    }
+    
+    /* Skills Grid */
     .skills-grid {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 10px;
+      gap: 12px;
     }
     .skill-badge {
-      background: #dbeafe;
+      background: linear-gradient(135deg, #dbeafe 0%, #e0e7ff 100%);
       color: #1e40af;
-      padding: 6px 12px;
-      border-radius: 6px;
-      font-size: 14px;
-      font-weight: 500;
-    }
-    .notice {
-      background: #fef3c7;
-      border: 2px solid #f59e0b;
-      padding: 15px;
+      padding: 10px 18px;
       border-radius: 8px;
-      margin-top: 20px;
+      font-size: 14px;
+      font-weight: 600;
+      border: 2px solid #93c5fd;
+    }
+    
+    /* Footer Notice */
+    .footer-notice {
+      background: linear-gradient(135deg, #eff6ff 0%, #f5f3ff 100%);
+      border: 2px solid #93c5fd;
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 30px;
       text-align: center;
     }
-    .notice strong { color: #92400e; }
+    .footer-notice h3 {
+      font-size: 16px;
+      font-weight: 700;
+      color: #111827;
+      margin-bottom: 8px;
+    }
+    .footer-notice p {
+      font-size: 13px;
+      color: #4b5563;
+      margin: 4px 0;
+    }
+    .footer-notice strong {
+      color: #1e40af;
+    }
+    
     @media print {
-      body { padding: 20px; }
-      .section { page-break-inside: avoid; }
+      body { padding: 0; background: white; }
+      .container { box-shadow: none; }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="header">
+    <!-- Colorful Header -->
+    <div class="cv-header">
+      <div class="avatar">${initial}</div>
       <h1>${candidate.name || 'Candidate'}</h1>
-      <div class="position">${candidate.position || 'Professional'}</div>
+      <p class="position">${candidate.position || 'Professional'}</p>
+      
+      <!-- Info Badges -->
+      <div class="info-badges">
+        ${candidate.nationality ? `<span class="badge badge-blue">🌍 ${candidate.nationality}</span>` : ''}
+        ${candidate.country_of_interest ? `<span class="badge badge-purple">📍 Seeking: ${candidate.country_of_interest}</span>` : ''}
+        ${candidate.experience_years ? `<span class="badge badge-green">📅 ${candidate.experience_years} Years Experience</span>` : ''}
+      </div>
     </div>
     
-    <div class="section">
-      <h2>Professional Overview</h2>
-      <div class="info-grid">
-        <div class="info-item">
-          <span class="info-label">Nationality:</span>
-          <span class="info-value">${candidate.nationality || 'Not specified'}</span>
+    <!-- Content -->
+    <div class="content">
+      <!-- Contact Protection Notice -->
+      <div class="protection-notice">
+        <h3>🛡️ Contact Information Protected</h3>
+        <p>
+          For privacy and security, direct contact details have been removed from this CV. 
+          To connect with this candidate, please contact Falisha Manpower recruitment team.
+        </p>
+        <div class="protection-contact">
+          <p><strong>📧 Contact via Recruitment Agency:</strong></p>
+          <p>Email: falishamanpower4035@gmail.com</p>
+          <p>Phone: +92330 3333335</p>
         </div>
-        <div class="info-item">
-          <span class="info-label">Experience:</span>
-          <span class="info-value">${candidate.experience_years ? `${candidate.experience_years} years` : 'Not specified'}</span>
+      </div>
+      
+      <!-- Professional Summary -->
+      <h2 class="section-title">💼 Professional Summary</h2>
+      
+      <!-- Stats Cards -->
+      ${candidate.experience_years || candidate.ai_score ? `
+      <div class="stats-grid">
+        ${candidate.experience_years ? `
+        <div class="stat-card stat-card-blue">
+          <div class="label">📅 Experience</div>
+          <div class="value">${candidate.experience_years} Years</div>
         </div>
-        <div class="info-item">
-          <span class="info-label">Country of Interest:</span>
-          <span class="info-value">${candidate.country_of_interest || 'Not specified'}</span>
-        </div>
+        ` : ''}
         ${candidate.ai_score ? `
-        <div class="info-item">
-          <span class="info-label">AI Match Score:</span>
-          <span class="info-value">${candidate.ai_score}%</span>
+        <div class="stat-card stat-card-purple">
+          <div class="label">⭐ AI Match Score</div>
+          <div class="value">${typeof candidate.ai_score === 'number' ? candidate.ai_score.toFixed(1) : candidate.ai_score}/10</div>
         </div>
         ` : ''}
       </div>
-    </div>
-    
-    ${candidate.professional_summary ? `
-    <div class="section">
-      <h2>Professional Summary</h2>
-      <p>${candidate.professional_summary}</p>
-    </div>
-    ` : ''}
-    
-    ${skills.length > 0 ? `
-    <div class="section">
-      <h2>Skills & Competencies</h2>
+      ` : ''}
+      
+      ${candidate.professional_summary ? `
+      <div class="content-box">
+        <p>${candidate.professional_summary}</p>
+      </div>
+      ` : `
+      <div class="content-box">
+        <p>Highly skilled ${candidate.position || 'professional'} with ${candidate.experience_years || 0} years of professional experience. 
+        Seeking opportunities in ${candidate.country_of_interest || 'various markets'} to contribute expertise and drive excellence.</p>
+      </div>
+      `}
+      
+      <!-- Skills -->
+      ${skills.length > 0 ? `
+      <h2 class="section-title">⭐ Core Skills & Competencies</h2>
       <div class="skills-grid">
         ${skills.map((skill: string) => `<span class="skill-badge">${skill}</span>`).join('')}
       </div>
-    </div>
-    ` : ''}
-    
-    ${languages.length > 0 ? `
-    <div class="section">
-      <h2>Languages</h2>
-      <p>${languages.join(', ')}</p>
-    </div>
-    ` : ''}
-    
-    ${candidate.previous_employment ? `
-    <div class="section">
-      <h2>Previous Employment</h2>
-      <p>${candidate.previous_employment}</p>
-    </div>
-    ` : ''}
-    
-    ${candidate.education ? `
-    <div class="section">
-      <h2>Education</h2>
-      <p>${candidate.education}</p>
-    </div>
-    ` : ''}
-    
-    ${candidate.certifications ? `
-    <div class="section">
-      <h2>Certifications</h2>
-      <p>${candidate.certifications}</p>
-    </div>
-    ` : ''}
-    
-    <div class="notice">
-      <strong>🔒 Privacy Protected</strong><br>
-      This is an employer-safe CV generated by Falisha Manpower recruitment system.<br>
-      Contact information has been secured for candidate privacy.<br>
-      For candidate details, please contact Falisha Manpower.
+      <br><br>
+      ` : ''}
+      
+      <!-- Work Experience -->
+      ${candidate.previous_employment ? `
+      <h2 class="section-title">💼 Work Experience</h2>
+      <div class="content-box">
+        <p style="white-space: pre-line;">${candidate.previous_employment}</p>
+      </div>
+      ` : ''}
+      
+      <!-- Education -->
+      ${candidate.education ? `
+      <h2 class="section-title">🎓 Education</h2>
+      <div class="content-box">
+        <p style="white-space: pre-line;">${candidate.education}</p>
+      </div>
+      ` : ''}
+      
+      <!-- Certifications -->
+      ${candidate.certifications ? `
+      <h2 class="section-title">✅ Certifications</h2>
+      <div class="content-box">
+        <p style="white-space: pre-line;">${candidate.certifications}</p>
+      </div>
+      ` : ''}
+      
+      <!-- Languages -->
+      ${languages.length > 0 ? `
+      <h2 class="section-title">🌐 Languages</h2>
+      <div class="content-box">
+        <p>${languages.join(', ')}</p>
+      </div>
+      ` : ''}
+      
+      <!-- Footer Notice -->
+      <div class="footer-notice">
+        <h3>🛡️ Protected by Falisha Manpower</h3>
+        <p>This employer-safe CV protects candidate privacy. Contact information has been secured.</p>
+        <p><strong>For interviews:</strong> falishamanpower4035@gmail.com | +92330 3333335</p>
+        <p style="margin-top: 12px; font-size: 11px; color: #9ca3af;">Falisha Manpower AI Recruitment System | Candidate ID: ${candidate.id}</p>
+      </div>
     </div>
   </div>
 </body>

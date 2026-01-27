@@ -413,6 +413,10 @@ async function saveCVMetadata(
   const fileName = storagePath.split('/').pop() || 'cv.pdf';
   const sha256 = crypto.createHash('sha256').update(versionHash).digest('hex').substring(0, 64);
   
+  // Validate userId is a valid UUID, otherwise set to null
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const validUserId = userId && uuidRegex.test(userId) ? userId : null;
+  
   const { error } = await db
     .from('generated_cvs')
     .upsert({
@@ -423,7 +427,7 @@ async function saveCVMetadata(
       file_size: fileSize,
       version_hash: versionHash,
       sha256,
-      generated_by: userId || null,
+      generated_by: validUserId,
       storage_bucket: STORAGE_BUCKET,
     }, {
       onConflict: 'candidate_id,format,version_hash',

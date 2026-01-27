@@ -40,17 +40,25 @@ export async function quickApproveCandidateDocument(req: Request, res: Response)
 
     // Update document to verified
     const now = new Date().toISOString();
+    
+    // Prepare update data - only set overridden_by if we have a valid UUID
+    const updateData: any = {
+      verification_status: VERIFICATION_STATUS.VERIFIED,
+      verification_source: 'manual_approval',
+      override_reason: 'Quick approved by admin',
+      overridden_at: now,
+      verification_completed_at: now,
+      updated_at: now,
+    };
+    
+    // Only set overridden_by if we have a valid user ID (not 'system')
+    if (authUser?.id && authUser.id !== 'system') {
+      updateData.overridden_by = authUser.id;
+    }
+    
     const { data: updatedDocument, error: updateError } = await db
       .from('candidate_documents')
-      .update({
-        verification_status: VERIFICATION_STATUS.VERIFIED,
-        verification_source: 'manual_approval',
-        override_reason: 'Quick approved by admin',
-        overridden_by: userId,
-        overridden_at: now,
-        verification_completed_at: now,
-        updated_at: now,
-      })
+      .update(updateData)
       .eq('id', id)
       .select()
       .single();

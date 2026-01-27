@@ -15,6 +15,7 @@ import {
   splitUploadController,
 } from '../controllers/documentController';
 import { quickApproveCandidateDocument } from '../controllers/quickApproveController';
+import { fixApprovedPhotos } from '../controllers/fixApprovedPhotosController';
 
 const logger = createLogger('DocumentsRouter');
 
@@ -101,6 +102,9 @@ router.post('/candidate-documents/:id/override', overrideCandidateDocumentContro
 
 // Quick approve pending document (no password required for pending_ai/needs_review)
 router.post('/candidate-documents/:id/approve', quickApproveCandidateDocument);
+
+// Fix approved photos that are missing profile_photo_url (retroactive fix)
+router.post('/fix-approved-photos', fixApprovedPhotos);
 
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', listCandidateDocumentsControllerNew);

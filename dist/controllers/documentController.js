@@ -23,7 +23,7 @@ async function uploadCandidateDocumentController(req, res) {
         // Let this error propagate to global error handler
         throw new Error('No file uploaded');
     }
-    const { candidate_id, source } = req.body;
+    const { candidate_id, source, document_type } = req.body;
     // Validate candidate_id is provided
     if (!candidate_id) {
         throw new Error('candidate_id is required');
@@ -44,6 +44,7 @@ async function uploadCandidateDocumentController(req, res) {
         buffer: req.file.buffer,
         source: source || 'web',
         uploaded_by_user_id: userId,
+        document_type: document_type || undefined,
     };
     const { document, request_id } = await (0, candidateDocumentService_1.uploadCandidateDocument)(uploadData);
     // Update candidate document flags after upload

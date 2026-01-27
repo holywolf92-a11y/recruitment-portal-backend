@@ -36,6 +36,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createCandidateController = createCandidateController;
 exports.getCandidateController = getCandidateController;
 exports.listCandidatesController = listCandidatesController;
+exports.dailyStatsController = dailyStatsController;
+exports.exportCandidatesController = exportCandidatesController;
 exports.updateCandidateController = updateCandidateController;
 exports.deleteCandidateController = deleteCandidateController;
 exports.extractCandidateDataController = extractCandidateDataController;
@@ -105,6 +107,10 @@ async function listCandidatesController(req, res) {
             position: req.query.position,
             country_of_interest: req.query.country_of_interest,
             documents: req.query.documents,
+            applied_from: req.query.applied_from,
+            applied_to: req.query.applied_to,
+            sort_by: req.query.sort_by,
+            sort_order: req.query.sort_order || undefined,
             limit: req.query.limit ? parseInt(req.query.limit) : undefined,
             offset: req.query.offset ? parseInt(req.query.offset) : undefined,
         };
@@ -114,6 +120,53 @@ async function listCandidatesController(req, res) {
     catch (error) {
         console.error('Error listing candidates:', error);
         res.status(500).json({ error: 'Failed to fetch candidates' });
+    }
+}
+async function dailyStatsController(req, res) {
+    try {
+        const userId = 'test-user-id';
+        const filters = {
+            search: req.query.search,
+            position: req.query.position,
+            country_of_interest: req.query.country_of_interest,
+            documents: req.query.documents,
+            applied_from: req.query.applied_from,
+            applied_to: req.query.applied_to,
+        };
+        const stats = await (0, candidateService_1.getDailyStats)(filters, userId);
+        res.json(stats);
+    }
+    catch (error) {
+        console.error('Error fetching daily stats:', error);
+        res.status(500).json({ error: 'Failed to fetch daily stats' });
+    }
+}
+async function exportCandidatesController(req, res) {
+    try {
+        const userId = 'test-user-id';
+        const format = req.query.format || 'csv';
+        if (format !== 'csv' && format !== 'xlsx') {
+            return res.status(400).json({ error: 'Format must be csv or xlsx' });
+        }
+        const filters = {
+            search: req.query.search,
+            status: req.query.status,
+            position: req.query.position,
+            country_of_interest: req.query.country_of_interest,
+            documents: req.query.documents,
+            applied_from: req.query.applied_from,
+            applied_to: req.query.applied_to,
+            sort_by: req.query.sort_by,
+            sort_order: req.query.sort_order || undefined,
+        };
+        const { buffer, filename } = await (0, candidateService_1.exportCandidates)(filters, format, userId);
+        res.setHeader('Content-Type', format === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(buffer);
+    }
+    catch (error) {
+        console.error('Error exporting candidates:', error);
+        res.status(500).json({ error: 'Failed to export candidates' });
     }
 }
 async function updateCandidateController(req, res) {
@@ -327,6 +380,21 @@ async function updateDocumentFlagsController(req, res) {
                 updateFlags.passport_received = true;
                 updateFlags.passport_received_at = now;
                 foundCategories.push('Passport');
+            }
+            if (category === 'cnic' || docType === 'cnic' || fileName.includes('cnic') || fileName.includes('id card')) {
+                updateFlags.cnic_received = true;
+                updateFlags.cnic_received_at = now;
+                foundCategories.push('CNIC');
+            }
+            if (category === 'driving_license' || docType === 'driving_license' || fileName.includes('driving') || fileName.includes('license') || fileName.includes('dl')) {
+                updateFlags.driving_license_received = true;
+                updateFlags.driving_license_received_at = now;
+                foundCategories.push('Driving License');
+            }
+            if (category === 'police_character_certificate' || docType === 'police_character_certificate' || fileName.includes('police') || fileName.includes('character') || fileName.includes('pcc')) {
+                updateFlags.police_character_received = true;
+                updateFlags.police_character_received_at = now;
+                foundCategories.push('Police Character Certificate');
             }
             if (category === 'certificates' || category === 'certificate' || docType === 'certificate' || fileName.includes('certificate')) {
                 updateFlags.certificate_received = true;

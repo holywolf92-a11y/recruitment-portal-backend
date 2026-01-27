@@ -98,8 +98,36 @@ async function enrichCandidateData(candidateId, extractedData, source, documentI
             skipped.push(field);
             continue;
         }
-        // Only update if field is missing
-        if (isMissing) {
+        // Special precedence for nationality: CNIC/Passport should override CV
+        // CNIC and Passport are authoritative identity documents, CV may have incorrect nationality
+        if (field === 'nationality' && currentValue && typeof currentValue === 'string') {
+            const currentNationality = currentValue.trim().toLowerCase();
+            const extractedNationality = typeof extractedValue === 'string' ? extractedValue.trim().toLowerCase() : '';
+            // Check if current nationality is from CV (less authoritative)
+            const isFromCV = currentSource?.source === 'cv';
+            // Check if new source is authoritative (CNIC, Passport, Driving License)
+            const isAuthoritativeSource = source === 'passport' ||
+                source === 'driving_license' ||
+                documentType === 'cnic' ||
+                documentType === 'passport' ||
+                documentType === 'driving_license';
+            // If current nationality is from CV and new source is authoritative, override
+            if (isFromCV && isAuthoritativeSource) {
+                console.log(`[ProgressiveCompletion] Overriding nationality from CV (${currentNationality}) with authoritative source ${source}/${documentType} nationality (${extractedNationality})`);
+                // Continue to update below (bypass the isMissing check)
+            }
+            else if (!isMissing && !isFromCV) {
+                // Field exists and not from CV, don't overwrite (unless manual)
+                skipped.push(field);
+                continue;
+            }
+        }
+        // Only update if field is missing OR nationality override case above
+        const shouldUpdate = isMissing ||
+            (field === 'nationality' &&
+                currentSource?.source === 'cv' &&
+                (source === 'passport' || source === 'driving_license' || documentType === 'cnic' || documentType === 'passport' || documentType === 'driving_license'));
+        if (shouldUpdate) {
             // Normalize special fields
             let normalizedValue = extractedValue;
             if (field === 'cnic' && typeof extractedValue === 'string') {

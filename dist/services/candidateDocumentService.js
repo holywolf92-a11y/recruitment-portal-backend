@@ -250,9 +250,10 @@ async function uploadCandidateDocument(data) {
                         const categoryMap = {
                             cv_resume: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
                             passport: documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT,
-                            national_id: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // CNIC not in enum, use other_documents
-                            cnic: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // CNIC not in enum, use other_documents
-                            driving_license: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, // driving_license not in enum
+                            national_id: documentCategories_1.DOCUMENT_CATEGORIES.CNIC,
+                            cnic: documentCategories_1.DOCUMENT_CATEGORIES.CNIC,
+                            driving_license: documentCategories_1.DOCUMENT_CATEGORIES.DRIVING_LICENSE,
+                            police_character_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
                             medical_reports: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
                             medical_certificate: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
                             certificates: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
@@ -264,17 +265,18 @@ async function uploadCandidateDocument(data) {
                         };
                         const category = categoryMap[splitDoc.doc_type] || documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
                         // Map parser doc_type to database document_type (must match CHECK constraint)
-                        // Allowed values: 'passport', 'cnic', 'degree', 'medical', 'visa', 'certificate', 'other'
+                        // Allowed values: 'passport', 'cnic', 'driving_license', 'police_character_certificate', 'degree', 'medical', 'visa', 'certificate', 'other'
                         const docTypeMap = {
                             passport: 'passport',
                             cnic: 'cnic',
                             national_id: 'cnic',
+                            driving_license: 'driving_license',
+                            police_character_certificate: 'police_character_certificate',
                             cv_resume: 'other', // CV/resume maps to 'other' in database
                             medical_reports: 'medical',
                             medical_certificate: 'medical',
                             certificate: 'certificate',
                             certificates: 'certificate',
-                            driving_license: 'other',
                             contracts: 'other',
                             contract: 'other',
                             photos: 'other',
@@ -371,20 +373,49 @@ async function uploadCandidateDocument(data) {
             throw new Error(`Failed to upload file: ${uploadError.message}`);
         }
         console.log(`[UploadDocument] File uploaded to storage: ${storagePath}`);
-        // Create candidate_documents record with status = PENDING_AI
+        // Map frontend document_type (passport, cnic, cv, etc.) to DB category and document_type for "expected type" validation
+        const uploadDocType = (data.document_type || '').toLowerCase().replace(/\s+/g, '_');
+        const uploadCategoryMap = {
+            passport: documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT,
+            cnic: documentCategories_1.DOCUMENT_CATEGORIES.CNIC,
+            driving_license: documentCategories_1.DOCUMENT_CATEGORIES.DRIVING_LICENSE,
+            police_character_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+            certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+            photo: documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS,
+            medical: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+            cv: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+            resume: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+        };
+        const uploadDocTypeMap = {
+            passport: 'passport',
+            cnic: 'cnic',
+            driving_license: 'driving_license',
+            police_character_certificate: 'police_character_certificate',
+            certificate: 'certificate',
+            photo: 'photo',
+            medical: 'medical',
+            cv: 'other', // DB may use 'other' for cv when single upload; category holds cv_resume
+            resume: 'other',
+        };
+        const expectedCategory = uploadCategoryMap[uploadDocType];
+        const expectedDocType = uploadDocTypeMap[uploadDocType] || 'other';
+        // Create candidate_documents record with status = PENDING_AI; store expected type when provided
         const documentData = {
             candidate_id: data.candidate_id,
-            // Provide a safe default to satisfy NOT NULL constraint
-            document_type: 'other',
+            document_type: expectedCategory ? expectedDocType : 'other',
             storage_bucket: STORAGE_BUCKET,
             storage_path: storagePath,
             file_name: data.file_name,
             mime_type: data.mime_type,
-            source: data.source || 'manual', // Use 'manual' as safe default (constraint allows it)
-            status: 'received', // Legacy field
-            verification_status: documentCategories_1.VERIFICATION_STATUS.PENDING_AI, // New AI workflow status
+            source: data.source || 'manual',
+            status: 'received',
+            verification_status: documentCategories_1.VERIFICATION_STATUS.PENDING_AI,
             received_at: new Date().toISOString(),
         };
+        if (expectedCategory) {
+            documentData.category = expectedCategory;
+            documentData.detected_category = expectedCategory;
+        }
         const { data: document, error: dbError } = await db
             .from('candidate_documents')
             .insert(documentData)
@@ -466,9 +497,17 @@ async function uploadCandidateDocument(data) {
                 updateFlags.medical_received = true;
                 updateFlags.medical_received_at = now;
             }
-            else if (documentType === 'cnic' || fileName.includes('cnic') || fileName.includes('id card')) {
+            else if (category === 'cnic' || documentType === 'cnic' || fileName.includes('cnic') || fileName.includes('id card')) {
                 updateFlags.cnic_received = true;
                 updateFlags.cnic_received_at = now;
+            }
+            else if (category === 'driving_license' || documentType === 'driving_license' || fileName.includes('driving') || fileName.includes('license') || fileName.includes('dl')) {
+                updateFlags.driving_license_received = true;
+                updateFlags.driving_license_received_at = now;
+            }
+            else if (category === 'police_character_certificate' || documentType === 'police_character_certificate' || fileName.includes('police') || fileName.includes('character') || fileName.includes('pcc')) {
+                updateFlags.police_character_received = true;
+                updateFlags.police_character_received_at = now;
             }
             else if (documentType === 'visa' || fileName.includes('visa')) {
                 updateFlags.visa_received = true;

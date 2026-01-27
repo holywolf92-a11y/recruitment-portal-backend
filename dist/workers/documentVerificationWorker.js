@@ -317,6 +317,66 @@ async function processDocumentVerification(job) {
             throw new Error(`AI categorization failed: ${aiResult.error}`);
         }
         // =============================================================================
+        // STEP 3b: Document-type validation — reject if user uploaded as "passport" (etc.) but AI says it's not
+        // =============================================================================
+        const { data: docRow } = await db
+            .from('candidate_documents')
+            .select('category')
+            .eq('id', documentId)
+            .single();
+        const expectedCategory = (docRow?.category || '').toString().toLowerCase();
+        const aiCategory = (aiResult.category || '').toString().toLowerCase().replace(/^photo$/, 'photos').replace(/^cv$/, 'cv_resume');
+        const strictTypes = [
+            documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT,
+            documentCategories_1.DOCUMENT_CATEGORIES.CNIC,
+            documentCategories_1.DOCUMENT_CATEGORIES.DRIVING_LICENSE,
+            documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+            documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+            documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+            documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS,
+            documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+        ];
+        const expectedNorm = expectedCategory.replace(/^photo$/, 'photos').replace(/^cv$/, 'cv_resume');
+        const isStrictExpected = strictTypes.some((t) => t.toLowerCase() === expectedNorm);
+        const categoriesMatch = expectedNorm === aiCategory ||
+            (expectedNorm === 'photos' && aiCategory === 'photo') ||
+            (expectedNorm === 'cv_resume' && (aiCategory === 'cv' || aiCategory === 'cv_resume'));
+        if (isStrictExpected && !categoriesMatch) {
+            const rejectCategory = strictTypes.find((t) => t.toLowerCase() === expectedNorm) || expectedNorm;
+            const rejectionReason = (0, documentCategories_1.getRejectionReasonMessage)(documentCategories_1.REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE, rejectCategory);
+            console.log(`[DocumentVerification] Wrong document type: expected ${expectedNorm}, AI detected ${aiCategory}. Rejecting with: ${rejectionReason}`);
+            await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.REJECTED_MISMATCH, documentCategories_1.REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE, ['document_type_mismatch'], { notes: `Expected ${expectedNorm}, AI detected ${aiCategory}` }, {
+                rejection_code: documentCategories_1.REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE,
+                rejection_reason: rejectionReason,
+                error_stage: 'Categorization',
+                retry_possible: false,
+                retry_count: 0,
+                max_retries: 2,
+                rejection_context: { expected_category: expectedNorm, detected_category: aiCategory },
+            });
+            await db
+                .from('candidate_documents')
+                .update({
+                verification_status: documentCategories_1.VERIFICATION_STATUS.REJECTED_MISMATCH,
+                verification_reason_code: documentCategories_1.REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE,
+                rejection_code: documentCategories_1.REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE,
+                rejection_reason: rejectionReason,
+                category: expectedNorm,
+                detected_category: aiResult.category,
+                confidence: aiResult.confidence ?? null,
+                ai_confidence: aiResult.confidence ?? null,
+                ocr_confidence: aiResult.ocr_confidence ?? null,
+                ai_processing_completed_at: new Date().toISOString(),
+                verification_completed_at: new Date().toISOString(),
+                error_stage: 'Categorization',
+                retry_possible: false,
+                retry_count: 0,
+                max_retries: 2,
+            })
+                .eq('id', documentId);
+            return; // Job completed — document rejected with clear reason, no retry
+        }
+        // =============================================================================
         // STEP 4: Log AI scan completed
         // =============================================================================
         await documentVerificationLogService_1.documentVerificationLogService.logAIScanCompleted(requestId, documentId, candidateId, aiResult.category || documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS, aiResult.confidence || 0, aiResult.ocr_confidence || 0, aiResult.extracted_identity || {}, aiResult // raw AI response
@@ -532,7 +592,35 @@ async function processDocumentVerification(job) {
             // No identity fields extracted from document
             // If document was manually uploaded for a specific candidate AND category is correctly identified,
             // we can still verify it since the user explicitly linked it to that candidate
-            if (candidateId && aiResult.confidence && aiResult.confidence >= documentCategories_1.AI_CONFIDENCE_THRESHOLD) {
+            // Special handling for photos: Photos don't have identity fields, so auto-verify if manually uploaded
+            if (aiResult.category === 'photos' || aiResult.category === 'photo') {
+                if (candidateId && aiResult.confidence && aiResult.confidence >= documentCategories_1.AI_CONFIDENCE_THRESHOLD) {
+                    console.log(`[DocumentVerification] Photo document detected. No identity fields needed. Verifying based on manual upload and high confidence (${aiResult.confidence}).`);
+                    finalStatus = documentCategories_1.VERIFICATION_STATUS.VERIFIED;
+                    reasonCode = ''; // Empty string for verified (no rejection code needed)
+                    await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.VERIFIED, reasonCode, undefined, { notes: 'Photo document verified - no identity fields required for photos' }, undefined // No rejection details for verified documents
+                    );
+                }
+                else {
+                    // Low confidence or no candidate_id - needs manual review
+                    finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
+                    reasonCode = documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND;
+                    await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, undefined, { notes: `Photo document - low confidence (${aiResult.confidence || 'N/A'}) or no candidate_id provided` }, {
+                        rejection_code: documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND,
+                        rejection_reason: 'Photo document - needs manual review',
+                        error_stage: 'Extraction',
+                        retry_possible: true,
+                        retry_count: 0,
+                        max_retries: 2,
+                        rejection_context: {
+                            ai_confidence: aiResult.confidence,
+                            candidate_id_provided: !!candidateId,
+                            document_type: 'photo',
+                        },
+                    });
+                }
+            }
+            else if (candidateId && aiResult.confidence && aiResult.confidence >= documentCategories_1.AI_CONFIDENCE_THRESHOLD) {
                 // Document category was correctly identified (high confidence) and candidate_id is provided
                 // This is a manual upload - trust the user's selection
                 console.log(`[DocumentVerification] No identity fields extracted, but document category correctly identified (confidence: ${aiResult.confidence}) and candidate_id provided. Verifying based on manual upload.`);
@@ -712,6 +800,9 @@ async function processDocumentVerification(job) {
                 }
                 else if (aiResult.category === 'passport') {
                     documentSource = 'passport';
+                }
+                else if (aiResult.category === 'cnic') {
+                    documentSource = 'passport'; // Use 'passport' source type for CNIC to ensure nationality precedence
                 }
                 else if (aiResult.category === 'driving_license') {
                     documentSource = 'driving_license';

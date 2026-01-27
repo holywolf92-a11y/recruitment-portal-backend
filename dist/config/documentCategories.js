@@ -11,6 +11,9 @@ exports.getRequiredOverrideRole = getRequiredOverrideRole;
 exports.DOCUMENT_CATEGORIES = {
     CV_RESUME: 'cv_resume',
     PASSPORT: 'passport',
+    CNIC: 'cnic',
+    DRIVING_LICENSE: 'driving_license',
+    POLICE_CHARACTER_CERTIFICATE: 'police_character_certificate',
     CERTIFICATES: 'certificates',
     CONTRACTS: 'contracts',
     MEDICAL_REPORTS: 'medical_reports',
@@ -20,6 +23,9 @@ exports.DOCUMENT_CATEGORIES = {
 exports.DOCUMENT_CATEGORY_DISPLAY_NAMES = {
     [exports.DOCUMENT_CATEGORIES.CV_RESUME]: 'CV / Resume',
     [exports.DOCUMENT_CATEGORIES.PASSPORT]: 'Passport',
+    [exports.DOCUMENT_CATEGORIES.CNIC]: 'CNIC (National ID)',
+    [exports.DOCUMENT_CATEGORIES.DRIVING_LICENSE]: 'Driving License',
+    [exports.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE]: 'Police Character Certificate',
     [exports.DOCUMENT_CATEGORIES.CERTIFICATES]: 'Certificates',
     [exports.DOCUMENT_CATEGORIES.CONTRACTS]: 'Contracts',
     [exports.DOCUMENT_CATEGORIES.MEDICAL_REPORTS]: 'Medical Reports',
@@ -182,7 +188,27 @@ function getRejectionReasonMessage(code, documentCategory, context) {
         case exports.REJECTION_REASON_CODES.INVALID_FORMAT:
             return `${docType} format is invalid or unsupported`;
         case exports.REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE:
-            return `Document type mismatch: expected ${docType.toLowerCase()}, got different type`;
+            // User-friendly "not a passport" style messages per document type
+            switch (category) {
+                case exports.DOCUMENT_CATEGORIES.PASSPORT:
+                    return 'This is not a passport. Please upload a valid passport document.';
+                case exports.DOCUMENT_CATEGORIES.CNIC:
+                    return 'This is not a CNIC / national ID. Please upload a valid CNIC document.';
+                case exports.DOCUMENT_CATEGORIES.DRIVING_LICENSE:
+                    return 'This is not a driving license. Please upload a valid driving license document.';
+                case exports.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE:
+                    return 'This is not a police character certificate. Please upload a valid PCC document.';
+                case exports.DOCUMENT_CATEGORIES.CERTIFICATES:
+                    return 'This is not a certificate or degree. Please upload a valid certificate document.';
+                case exports.DOCUMENT_CATEGORIES.MEDICAL_REPORTS:
+                    return 'This is not a medical report. Please upload a valid medical certificate.';
+                case exports.DOCUMENT_CATEGORIES.PHOTOS:
+                    return 'This is not a valid photo. Please upload a clear profile photo.';
+                case exports.DOCUMENT_CATEGORIES.CV_RESUME:
+                    return 'This is not a CV or resume. Please upload a valid CV/resume document.';
+                default:
+                    return `Document type mismatch: expected ${docType.toLowerCase()}, got different type`;
+            }
         case exports.REJECTION_REASON_CODES.INCOMPLETE_DOCUMENT:
             return `${docType} is incomplete or missing required sections`;
         case exports.REJECTION_REASON_CODES.DUPLICATE_DOCUMENT:

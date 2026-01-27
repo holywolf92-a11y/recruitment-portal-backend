@@ -31,6 +31,10 @@ const photoUpload = (0, multer_1.default)({
 router.post('/', validation_1.validateCandidate, candidateController_1.createCandidateController);
 // List candidates with optional filters
 router.get('/', candidateController_1.listCandidatesController);
+// Daily stats for Excel-style reports
+router.get('/daily-stats', candidateController_1.dailyStatsController);
+// Export candidates (CSV/Excel)
+router.get('/export', candidateController_1.exportCandidatesController);
 // Bulk operations
 router.patch('/bulk/status', candidateController_1.bulkUpdateCandidateStatusController);
 // Get single candidate

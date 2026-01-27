@@ -8,6 +8,8 @@ exports.checkForDuplicates = checkForDuplicates;
 exports.createCandidate = createCandidate;
 exports.getCandidateById = getCandidateById;
 exports.listCandidates = listCandidates;
+exports.getDailyStats = getDailyStats;
+exports.exportCandidates = exportCandidates;
 exports.bulkUpdateCandidateStatus = bulkUpdateCandidateStatus;
 exports.updateCandidate = updateCandidate;
 exports.deleteCandidate = deleteCandidate;
@@ -224,9 +226,10 @@ async function getCandidateById(id, userId) {
 async function listCandidates(filters = {}, userId) {
     const db = (0, database_1.supabaseAdminClient)();
     let query = db.from('candidates').select('*', { count: 'exact' });
-    // Apply search filter (name, email, candidate_code)
-    if (filters.search) {
-        query = query.or(`name.ilike.%${filters.search}%,email.ilike.%${filters.search}%,candidate_code.ilike.%${filters.search}%`);
+    // Global search: partial, case-insensitive, across name, passport, CNIC, email, phone (server-side)
+    if (filters.search && filters.search.trim()) {
+        const q = filters.search.trim();
+        query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%`);
     }
     // Apply status filter
     if (filters.status && filters.status !== 'all') {
@@ -239,6 +242,19 @@ async function listCandidates(filters = {}, userId) {
     // Apply country-of-interest filter
     if (filters.country_of_interest && filters.country_of_interest !== 'all') {
         query = query.eq('country_of_interest', filters.country_of_interest);
+    }
+    // Date Applied filter (created_at = when candidate applied)
+    if (filters.applied_from) {
+        const from = filters.applied_from.endsWith('Z') || filters.applied_from.includes('T')
+            ? filters.applied_from
+            : `${filters.applied_from}T00:00:00.000Z`;
+        query = query.gte('created_at', from);
+    }
+    if (filters.applied_to) {
+        const to = filters.applied_to.endsWith('Z') || filters.applied_to.includes('T')
+            ? filters.applied_to
+            : `${filters.applied_to}T23:59:59.999Z`;
+        query = query.lte('created_at', to);
     }
     // Apply document completeness filter (card-required docs)
     // Complete means: CV + Passport + Certificate + Photo + Medical are present.
@@ -260,8 +276,13 @@ async function listCandidates(filters = {}, userId) {
     else if (filters.limit) {
         query = query.limit(filters.limit);
     }
-    // Order by created_at desc
-    query = query.order('created_at', { ascending: false });
+    // Multi-column sort (server-side). Default: created_at desc
+    const orderCol = filters.sort_by || 'created_at';
+    const ascending = filters.sort_order === 'asc';
+    query = query.order(orderCol, { ascending });
+    if (orderCol !== 'created_at') {
+        query = query.order('created_at', { ascending: false }); // secondary tie-break
+    }
     const { data, error, count } = await query;
     if (error)
         throw error;
@@ -277,6 +298,146 @@ async function listCandidates(filters = {}, userId) {
         limit: filters.limit,
         offset: filters.offset
     };
+}
+/** Daily summary for Excel-style report cards. Respects same filters as list (date range, folder, search). */
+async function getDailyStats(filters, userId) {
+    const db = (0, database_1.supabaseAdminClient)();
+    function buildBaseQuery() {
+        let q = db.from('candidates').select('id', { count: 'exact' });
+        if (filters.search?.trim()) {
+            const search = filters.search.trim();
+            q = q.or(`name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,passport_normalized.ilike.%${search}%,cnic_normalized.ilike.%${search}%`);
+        }
+        if (filters.position && filters.position !== 'all')
+            q = q.eq('position', filters.position);
+        if (filters.country_of_interest && filters.country_of_interest !== 'all')
+            q = q.eq('country_of_interest', filters.country_of_interest);
+        if (filters.applied_from) {
+            const from = filters.applied_from.endsWith('Z') || filters.applied_from.includes('T') ? filters.applied_from : `${filters.applied_from}T00:00:00.000Z`;
+            q = q.gte('created_at', from);
+        }
+        if (filters.applied_to) {
+            const to = filters.applied_to.endsWith('Z') || filters.applied_to.includes('T') ? filters.applied_to : `${filters.applied_to}T23:59:59.999Z`;
+            q = q.lte('created_at', to);
+        }
+        if (filters.documents === 'complete') {
+            q = q.eq('cv_received', true).eq('passport_received', true).eq('certificate_received', true).eq('photo_received', true).eq('medical_received', true);
+        }
+        else if (filters.documents === 'missing') {
+            q = q.or('cv_received.eq.false,passport_received.eq.false,certificate_received.eq.false,photo_received.eq.false,medical_received.eq.false');
+        }
+        return q.limit(0);
+    }
+    const [totalRes, appliedRes, verifiedRes, pendingRes, rejectedRes, docsRes] = await Promise.all([
+        buildBaseQuery(),
+        buildBaseQuery().eq('status', 'Applied'),
+        buildBaseQuery().eq('status', 'Deployed'),
+        buildBaseQuery().eq('status', 'Pending'),
+        buildBaseQuery().eq('status', 'Cancelled'),
+        buildBaseQuery().or('cv_received.eq.true,passport_received.eq.true'),
+    ]);
+    return {
+        total: totalRes.count ?? 0,
+        applied: appliedRes.count ?? 0,
+        verified: verifiedRes.count ?? 0,
+        pending: pendingRes.count ?? 0,
+        rejected: rejectedRes.count ?? 0,
+        documents_uploaded: docsRes.count ?? 0,
+    };
+}
+/** Export candidates to CSV or Excel. Returns buffer and filename. */
+async function exportCandidates(filters, format, userId) {
+    // Fetch all candidates matching filters (no pagination)
+    const exportFilters = { ...filters, limit: undefined, offset: undefined };
+    const result = await listCandidates(exportFilters, userId);
+    const candidates = result.candidates || [];
+    if (format === 'csv') {
+        return exportToCSV(candidates);
+    }
+    else {
+        return exportToExcel(candidates);
+    }
+}
+function exportToCSV(candidates) {
+    if (candidates.length === 0) {
+        return { buffer: Buffer.from(''), filename: `candidates_${new Date().toISOString().split('T')[0]}.csv` };
+    }
+    // CSV headers
+    const headers = [
+        'ID', 'Code', 'Name', 'Email', 'Phone', 'Position', 'Nationality', 'Country of Interest',
+        'Status', 'Age', 'Experience (Years)', 'Date of Birth', 'Gender', 'Marital Status',
+        'Passport', 'CNIC', 'Passport Expiry', 'Address', 'Applied Date', 'Updated Date'
+    ];
+    // Build CSV rows
+    const rows = [headers.join(',')];
+    for (const c of candidates) {
+        const age = c.date_of_birth ? calculateAgeFromDOB(c.date_of_birth) : '';
+        const row = [
+            c.id || '',
+            c.candidate_code || '',
+            escapeCSV(c.name || ''),
+            escapeCSV(c.email || ''),
+            escapeCSV(c.phone || ''),
+            escapeCSV(c.position || ''),
+            escapeCSV(c.nationality || ''),
+            escapeCSV(c.country_of_interest || ''),
+            escapeCSV(c.status || ''),
+            age,
+            c.experience_years || '',
+            c.date_of_birth || '',
+            escapeCSV(c.gender || ''),
+            escapeCSV(c.marital_status || ''),
+            escapeCSV(c.passport || ''),
+            escapeCSV(c.cnic || ''),
+            c.passport_expiry || '',
+            escapeCSV(c.address || ''),
+            c.created_at || '',
+            c.updated_at || ''
+        ];
+        rows.push(row.join(','));
+    }
+    const csv = rows.join('\n');
+    const buffer = Buffer.from(csv, 'utf-8');
+    const filename = `candidates_${new Date().toISOString().split('T')[0]}.csv`;
+    return { buffer, filename };
+}
+function exportToExcel(candidates) {
+    // For now, return CSV format (can be enhanced with xlsx library later)
+    // Install: npm install xlsx @types/xlsx
+    // Then use: const XLSX = require('xlsx'); const wb = XLSX.utils.book_new(); ...
+    // For MVP, return CSV with .xlsx extension - client can handle conversion
+    const csvResult = exportToCSV(candidates);
+    return {
+        buffer: csvResult.buffer,
+        filename: csvResult.filename.replace('.csv', '.xlsx')
+    };
+}
+function escapeCSV(value) {
+    if (!value)
+        return '';
+    // Escape quotes and wrap in quotes if contains comma, quote, or newline
+    const str = String(value).replace(/"/g, '""');
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str}"`;
+    }
+    return str;
+}
+function calculateAgeFromDOB(dateOfBirth) {
+    if (!dateOfBirth)
+        return '';
+    try {
+        const birthDate = new Date(dateOfBirth);
+        const today = new Date();
+        let age = today.getFullYear() - birthDate.getFullYear();
+        const monthDiff = today.getMonth() - birthDate.getMonth();
+        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+            age--;
+        }
+        return age;
+    }
+    catch {
+        return '';
+    }
 }
 async function bulkUpdateCandidateStatus(candidateIds, status, userId) {
     const db = (0, database_1.supabaseAdminClient)();

@@ -307,60 +307,72 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
  * Generate PDF from HTML using Puppeteer
  */
 async function generatePDFFromHTML(html: string): Promise<Buffer> {
-  // Use system Chromium if available (for Railway/production)
-  // Otherwise fall back to bundled Chromium (for local dev)
-  let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  
-  // Try to find system Chromium if not explicitly set
-  if (!executablePath && process.platform === 'linux') {
-    // Common paths for Chromium in Linux containers
-    const possiblePaths = [
-      '/usr/bin/chromium',
-      '/usr/bin/chromium-browser',
-      '/nix/store/*chromium*/bin/chromium',
-    ];
-    
-    // Use first available path (simplified - in production, Railway will set PUPPETEER_EXECUTABLE_PATH)
-    executablePath = '/usr/bin/chromium';
-  }
-  
-  const launchOptions: any = {
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-software-rasterizer',
-      '--disable-extensions',
-    ],
-  };
-  
-  // Only set executablePath if we have one (let Puppeteer use bundled Chromium otherwise)
-  if (executablePath) {
-    launchOptions.executablePath = executablePath;
-  }
-  
-  const browser = await puppeteer.launch(launchOptions);
-  
   try {
-    const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    // Use system Chromium if available (for Railway/production)
+    // Otherwise fall back to bundled Chromium (for local dev)
+    let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
     
-    const pdfBuffer = await page.pdf({
-      format: 'A4',
-      printBackground: true,
-      margin: {
-        top: '20mm',
-        right: '15mm',
-        bottom: '20mm',
-        left: '15mm',
-      },
+    console.log(`[CVGenerator] Puppeteer launch config:`, {
+      executablePath: executablePath || 'bundled',
+      platform: process.platform,
+      env_skip: process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD,
     });
     
-    return Buffer.from(pdfBuffer);
-  } finally {
-    await browser.close();
+    // Try to find system Chromium if not explicitly set
+    if (!executablePath && process.platform === 'linux') {
+      // Common paths for Chromium in Linux containers
+      executablePath = '/usr/bin/chromium';
+      console.log(`[CVGenerator] Using default Linux Chromium path: ${executablePath}`);
+    }
+    
+    const launchOptions: any = {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-extensions',
+      ],
+    };
+    
+    // Only set executablePath if we have one (let Puppeteer use bundled Chromium otherwise)
+    if (executablePath) {
+      launchOptions.executablePath = executablePath;
+    }
+    
+    console.log(`[CVGenerator] Launching Puppeteer with options:`, JSON.stringify(launchOptions, null, 2));
+    const browser = await puppeteer.launch(launchOptions);
+    console.log(`[CVGenerator] Puppeteer launched successfully`);
+    
+    try {
+      const page = await browser.newPage();
+      await page.setContent(html, { waitUntil: 'networkidle0' });
+      
+      const pdfBuffer = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: {
+          top: '20mm',
+          right: '15mm',
+          bottom: '20mm',
+          left: '15mm',
+        },
+      });
+      
+      console.log(`[CVGenerator] PDF generated, size: ${pdfBuffer.length} bytes`);
+      return Buffer.from(pdfBuffer);
+    } finally {
+      await browser.close();
+    }
+  } catch (error: any) {
+    console.error(`[CVGenerator] Puppeteer error:`, {
+      message: error.message,
+      stack: error.stack,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
+    });
+    throw new Error(`Failed to generate PDF: ${error.message}`);
   }
 }
 
@@ -429,8 +441,11 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
   const startTime = Date.now();
   
   try {
+    console.log(`[CVGenerator] Starting CV generation for candidate ${options.candidateId}, format: ${options.format}`);
+    
     // 1. Check cache
     if (!options.forceRegenerate) {
+      console.log(`[CVGenerator] Checking cache...`);
       const cached = await checkCache(options);
       if (cached.exists && cached.signed_url) {
         console.log(`[CVGenerator] Cache hit for candidate ${options.candidateId}, format: ${options.format}`);
@@ -440,20 +455,28 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
           version_hash: cached.version_hash || '',
         };
       }
+      console.log(`[CVGenerator] Cache miss, proceeding with generation`);
     }
     
     console.log(`[CVGenerator] Generating new CV for candidate ${options.candidateId}, format: ${options.format}`);
     
     // 2. Fetch candidate data
+    console.log(`[CVGenerator] Step 2/9: Fetching candidate data...`);
     const candidate = await getCandidateById(options.candidateId, options.userId || 'system');
+    console.log(`[CVGenerator] Candidate data fetched: ${candidate.name}`);
     
     // 3. Fetch candidate documents (for future use - currently not displayed in employer-safe CV)
+    console.log(`[CVGenerator] Step 3/9: Fetching candidate documents...`);
     const documents = await listCandidateDocumentsByCandidate(options.candidateId);
+    console.log(`[CVGenerator] Documents fetched: ${documents.length} documents`);
     
     // 4. Calculate version hash
+    console.log(`[CVGenerator] Step 4/9: Calculating version hash...`);
     const versionHash = await calculateCandidateVersionHash(options.candidateId);
+    console.log(`[CVGenerator] Version hash: ${versionHash}`);
     
     // 5. Generate HTML based on format
+    console.log(`[CVGenerator] Step 5/9: Generating HTML template...`);
     let html: string;
     if (options.format === 'employer-safe') {
       html = generateEmployerSafeCVHTML(candidate, documents);
@@ -461,16 +484,22 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
       // For internal/standard format, include contact info (to be implemented)
       html = generateEmployerSafeCVHTML(candidate, documents); // Placeholder
     }
+    console.log(`[CVGenerator] HTML generated, length: ${html.length} chars`);
     
     // 6. Generate PDF
+    console.log(`[CVGenerator] Step 6/9: Generating PDF from HTML...`);
     const pdfBuffer = await generatePDFFromHTML(html);
     const fileSize = pdfBuffer.length;
+    console.log(`[CVGenerator] PDF generated, size: ${fileSize} bytes`);
     
     // 7. Upload to storage
+    console.log(`[CVGenerator] Step 7/9: Uploading PDF to storage...`);
     const storagePath = `cvs/${options.candidateId}/${options.format}_${versionHash}.pdf`;
     await uploadPDFToStorage(storagePath, pdfBuffer);
+    console.log(`[CVGenerator] PDF uploaded to: ${storagePath}`);
     
     // 8. Save metadata
+    console.log(`[CVGenerator] Step 8/9: Saving CV metadata...`);
     await saveCVMetadata(
       options.candidateId,
       options.format,
@@ -479,8 +508,10 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
       fileSize,
       options.userId
     );
+    console.log(`[CVGenerator] Metadata saved`);
     
     // 9. Generate signed URL
+    console.log(`[CVGenerator] Step 9/9: Generating signed URL...`);
     const db = supabaseAdminClient();
     const { data: signedUrlData, error: urlError } = await db.storage
       .from(STORAGE_BUCKET)
@@ -489,6 +520,7 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
     if (urlError || !signedUrlData) {
       throw new Error(`Failed to generate signed URL: ${urlError?.message}`);
     }
+    console.log(`[CVGenerator] Signed URL generated successfully`);
     
     const generationTime = Date.now() - startTime;
     console.log(`[CVGenerator] CV generated successfully in ${generationTime}ms, size: ${fileSize} bytes`);
@@ -500,7 +532,12 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
       file_size: fileSize,
     };
   } catch (error: any) {
-    console.error(`[CVGenerator] Failed to generate CV:`, error);
+    console.error(`[CVGenerator] Failed to generate CV for ${options.candidateId}:`, {
+      message: error.message,
+      stack: error.stack,
+      candidateId: options.candidateId,
+      format: options.format,
+    });
     throw error;
   }
 }

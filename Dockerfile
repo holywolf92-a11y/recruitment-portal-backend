@@ -31,7 +31,7 @@ COPY package*.json ./
 # Install dependencies
 RUN npm ci --production=false
 
-# Copy source code
+# Copy source code (bust cache: 2026-01-27)
 COPY . .
 
 # Build TypeScript using node directly

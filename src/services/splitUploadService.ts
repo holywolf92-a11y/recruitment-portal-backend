@@ -12,6 +12,7 @@ import { supabaseAdminClient } from '../config/database';
 import { createCandidate, checkForDuplicates, CreateCandidateData } from './candidateService';
 import { logDocumentUploaded } from './timelineService';
 import { calculateSHA256 } from './documentService';
+import { generateDescriptiveFilename } from '../utils/documentNaming';
 
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
@@ -199,6 +200,31 @@ async function uploadOneSplitDoc(
   });
   if (upErr) throw new Error(`Failed to upload split doc: ${upErr.message}`);
 
+  // Fetch candidate name for better filename
+  let candidateName: string | undefined;
+  try {
+    const { data: candidate } = await db
+      .from('candidates')
+      .select('name')
+      .eq('id', candidateId)
+      .single();
+    candidateName = candidate?.name;
+  } catch (e) {
+    console.log('[uploadOneSplitDoc] Could not fetch candidate name, using default');
+  }
+
+  // Generate descriptive filename
+  const descriptiveFilename = generateDescriptiveFilename(
+    {
+      doc_type: doc.doc_type,
+      pages: doc.pages,
+      split_strategy: doc.split_strategy,
+      page_number: doc.pages && doc.pages.length === 1 ? doc.pages[0] : undefined,
+    },
+    candidateName,
+    ts
+  );
+
   const metadata: Record<string, unknown> = {
     split_strategy: doc.split_strategy,
     engine_used: engineUsed,
@@ -210,7 +236,7 @@ async function uploadOneSplitDoc(
     doc_type: doc.doc_type,
     storage_bucket: STORAGE_BUCKET,
     storage_path: storagePath,
-    file_name: `split_${doc.doc_type}_${ts}.pdf`,
+    file_name: descriptiveFilename,
     mime_type: 'application/pdf',
     sha256,
     is_primary: false,
@@ -283,7 +309,7 @@ async function uploadOneSplitDoc(
   try {
     await logDocumentUploaded(candidateId, userId, {
       doc_type: doc.doc_type,
-      file_name: `split_${doc.doc_type}_${ts}.pdf`,
+      file_name: descriptiveFilename,
       mime_type: 'application/pdf',
       split_strategy: doc.split_strategy,
       needs_review: doc.needs_review,

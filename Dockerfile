@@ -31,6 +31,9 @@ COPY package*.json ./
 # Install dependencies
 RUN npm ci --production=false
 
+# Fix permissions for node_modules binaries
+RUN chmod -R +x node_modules/.bin || true
+
 # Copy source code
 COPY . .
 

@@ -31,14 +31,11 @@ COPY package*.json ./
 # Install dependencies
 RUN npm ci --production=false
 
-# Fix permissions for node_modules binaries
-RUN chmod -R +x node_modules/.bin || true
-
 # Copy source code
 COPY . .
 
-# Build TypeScript
-RUN npm run build
+# Build TypeScript using npx with full path
+RUN npx --yes typescript@5.0.0 -- tsc -p tsconfig.json
 
 # Start the app
 CMD ["npm", "start"]

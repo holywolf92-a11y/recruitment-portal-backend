@@ -34,8 +34,8 @@ RUN npm ci --production=false
 # Copy source code
 COPY . .
 
-# Build TypeScript
-RUN ./node_modules/.bin/tsc -p tsconfig.json
+# Build TypeScript using node directly
+RUN node node_modules/typescript/bin/tsc -p tsconfig.json
 
 # Start the app
 CMD ["npm", "start"]

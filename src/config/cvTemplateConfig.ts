@@ -46,14 +46,23 @@ export function getTemplateConfig(): CVTemplateConfig {
 /**
  * Version History (for reference)
  * 
- * v2.0.0 (2026-01-27): Colorful infographic redesign
+ * v2.1.0 (2026-01-27): Professional PDF-optimized layout
+ *   - A4 page sizing (210mm x 297mm)
+ *   - Proper font sizes (8pt-20pt range)
+ *   - PDF-friendly spacing (pt/mm units)
+ *   - Removed emojis (better PDF rendering)
+ *   - Removed large avatar (space optimization)
+ *   - Page break controls
+ *   - Print-optimized colors
+ *   - Professional section titles
+ *   - Clean, hireable appearance
+ * 
+ * v2.0.0 (2026-01-27): Colorful infographic redesign (Web-focused)
  *   - Gradient circular avatar with checkmark badge
- *   - Blue/purple/green color-coded info badges
- *   - Yellow contact protection notice box
- *   - Stat cards for experience and AI score
- *   - Gradient skill badges
+ *   - Color-coded info badges
  *   - Emoji section icons
- *   - Gradient footer notice
+ *   - Large fonts (oversized for PDF)
+ *   - [DEPRECATED - Not suitable for PDF output]
  * 
  * v1.0.0 (2026-01-XX): Initial simple template
  *   - Basic gradient header

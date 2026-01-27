@@ -69,6 +69,27 @@ export async function quickApproveCandidateDocument(req: Request, res: Response)
 
     console.log(`[QuickApprove] Document ${id} approved by ${userId}`);
 
+    // If this is a photo document, update the candidate's profile_photo_url
+    if (updatedDocument.category === 'photos' && updatedDocument.candidate_id && updatedDocument.file_url) {
+      console.log(`[QuickApprove] Setting profile photo for candidate ${updatedDocument.candidate_id}`);
+      
+      const { error: photoUpdateError } = await db
+        .from('candidates')
+        .update({
+          profile_photo_url: updatedDocument.file_url,
+          photo_received: true,
+          updated_at: now,
+        })
+        .eq('id', updatedDocument.candidate_id);
+
+      if (photoUpdateError) {
+        console.error(`[QuickApprove] Failed to update candidate profile photo:`, photoUpdateError);
+        // Don't fail the whole operation, just log the error
+      } else {
+        console.log(`[QuickApprove] ✓ Profile photo updated for candidate ${updatedDocument.candidate_id}`);
+      }
+    }
+
     res.json({
       success: true,
       document: updatedDocument,

@@ -12,7 +12,8 @@ import {
   REJECTION_REASON_CODES,
   AI_CONFIDENCE_THRESHOLD,
   VerificationStatus,
-  DocumentCategory
+  DocumentCategory,
+  getRejectionReasonMessage,
 } from '../config/documentCategories';
 import { DocumentRejectionService, RejectionContext } from '../services/documentRejectionService';
 
@@ -365,6 +366,79 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         .eq('id', documentId);
 
       throw new Error(`AI categorization failed: ${aiResult.error}`);
+    }
+
+    // =============================================================================
+    // STEP 3b: Document-type validation — reject if user uploaded as "passport" (etc.) but AI says it's not
+    // =============================================================================
+    const { data: docRow } = await db
+      .from('candidate_documents')
+      .select('category')
+      .eq('id', documentId)
+      .single();
+    const expectedCategory = (docRow?.category || '').toString().toLowerCase();
+    const aiCategory = (aiResult.category || '').toString().toLowerCase().replace(/^photo$/, 'photos').replace(/^cv$/, 'cv_resume');
+    const strictTypes = [
+      DOCUMENT_CATEGORIES.PASSPORT,
+      DOCUMENT_CATEGORIES.CNIC,
+      DOCUMENT_CATEGORIES.DRIVING_LICENSE,
+      DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+      DOCUMENT_CATEGORIES.CERTIFICATES,
+      DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+      DOCUMENT_CATEGORIES.PHOTOS,
+      DOCUMENT_CATEGORIES.CV_RESUME,
+    ];
+    const expectedNorm = expectedCategory.replace(/^photo$/, 'photos').replace(/^cv$/, 'cv_resume');
+    const isStrictExpected = strictTypes.some((t) => t.toLowerCase() === expectedNorm);
+    const categoriesMatch =
+      expectedNorm === aiCategory ||
+      (expectedNorm === 'photos' && aiCategory === 'photo') ||
+      (expectedNorm === 'cv_resume' && (aiCategory === 'cv' || aiCategory === 'cv_resume'));
+
+    if (isStrictExpected && !categoriesMatch) {
+      const rejectCategory = strictTypes.find((t) => t.toLowerCase() === expectedNorm) || (expectedNorm as DocumentCategory);
+      const rejectionReason = getRejectionReasonMessage(REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE, rejectCategory);
+      console.log(`[DocumentVerification] Wrong document type: expected ${expectedNorm}, AI detected ${aiCategory}. Rejecting with: ${rejectionReason}`);
+
+      await documentVerificationLogService.logIdentityVerificationCompleted(
+        requestId,
+        documentId,
+        candidateId,
+        VERIFICATION_STATUS.REJECTED_MISMATCH,
+        REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE,
+        ['document_type_mismatch'],
+        { notes: `Expected ${expectedNorm}, AI detected ${aiCategory}` },
+        {
+          rejection_code: REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE,
+          rejection_reason: rejectionReason,
+          error_stage: 'Categorization',
+          retry_possible: false,
+          retry_count: 0,
+          max_retries: 2,
+          rejection_context: { expected_category: expectedNorm, detected_category: aiCategory },
+        }
+      );
+
+      await db
+        .from('candidate_documents')
+        .update({
+          verification_status: VERIFICATION_STATUS.REJECTED_MISMATCH,
+          verification_reason_code: REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE,
+          rejection_code: REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE,
+          rejection_reason: rejectionReason,
+          category: expectedNorm as DocumentCategory,
+          detected_category: aiResult.category as DocumentCategory,
+          confidence: aiResult.confidence,
+          ai_processing_completed_at: new Date().toISOString(),
+          verification_completed_at: new Date().toISOString(),
+          error_stage: 'Categorization',
+          retry_possible: false,
+          retry_count: 0,
+          max_retries: 2,
+        })
+        .eq('id', documentId);
+
+      return; // Job completed — document rejected with clear reason, no retry
     }
 
     // =============================================================================

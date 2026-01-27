@@ -28,7 +28,7 @@ export async function uploadCandidateDocumentController(req: Request, res: Respo
     throw new Error('No file uploaded');
   }
 
-  const { candidate_id, source } = req.body;
+  const { candidate_id, source, document_type } = req.body;
 
   // Validate candidate_id is provided
   if (!candidate_id) {
@@ -53,6 +53,7 @@ export async function uploadCandidateDocumentController(req: Request, res: Respo
     buffer: req.file.buffer,
     source: source || 'web',
     uploaded_by_user_id: userId,
+    document_type: document_type || undefined,
   };
 
   const { document, request_id } = await uploadCandidateDocument(uploadData);

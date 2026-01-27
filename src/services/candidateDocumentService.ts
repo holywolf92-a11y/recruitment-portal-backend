@@ -53,6 +53,8 @@ export interface UploadCandidateDocumentData {
   buffer: Buffer;
   source?: string; // 'web' | 'email' | 'api' | 'manual'
   uploaded_by_user_id?: string;
+  /** Expected document type from the uploader (e.g. passport, cnic, driving_license). Used to reject wrong-type uploads with a clear reason. */
+  document_type?: string;
 }
 
 /**
@@ -428,20 +430,50 @@ export async function uploadCandidateDocument(
 
     console.log(`[UploadDocument] File uploaded to storage: ${storagePath}`);
 
-    // Create candidate_documents record with status = PENDING_AI
-    const documentData = {
+    // Map frontend document_type (passport, cnic, cv, etc.) to DB category and document_type for "expected type" validation
+    const uploadDocType = (data.document_type || '').toLowerCase().replace(/\s+/g, '_');
+    const uploadCategoryMap: Record<string, DocumentCategory> = {
+      passport: DOCUMENT_CATEGORIES.PASSPORT,
+      cnic: DOCUMENT_CATEGORIES.CNIC,
+      driving_license: DOCUMENT_CATEGORIES.DRIVING_LICENSE,
+      police_character_certificate: DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+      certificate: DOCUMENT_CATEGORIES.CERTIFICATES,
+      photo: DOCUMENT_CATEGORIES.PHOTOS,
+      medical: DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+      cv: DOCUMENT_CATEGORIES.CV_RESUME,
+      resume: DOCUMENT_CATEGORIES.CV_RESUME,
+    };
+    const uploadDocTypeMap: Record<string, string> = {
+      passport: 'passport',
+      cnic: 'cnic',
+      driving_license: 'driving_license',
+      police_character_certificate: 'police_character_certificate',
+      certificate: 'certificate',
+      photo: 'photo',
+      medical: 'medical',
+      cv: 'other', // DB may use 'other' for cv when single upload; category holds cv_resume
+      resume: 'other',
+    };
+    const expectedCategory = uploadCategoryMap[uploadDocType];
+    const expectedDocType = uploadDocTypeMap[uploadDocType] || 'other';
+
+    // Create candidate_documents record with status = PENDING_AI; store expected type when provided
+    const documentData: Record<string, unknown> = {
       candidate_id: data.candidate_id,
-      // Provide a safe default to satisfy NOT NULL constraint
-      document_type: 'other',
+      document_type: expectedCategory ? expectedDocType : 'other',
       storage_bucket: STORAGE_BUCKET,
       storage_path: storagePath,
       file_name: data.file_name,
       mime_type: data.mime_type,
-      source: data.source || 'manual', // Use 'manual' as safe default (constraint allows it)
-      status: 'received', // Legacy field
-      verification_status: VERIFICATION_STATUS.PENDING_AI, // New AI workflow status
+      source: data.source || 'manual',
+      status: 'received',
+      verification_status: VERIFICATION_STATUS.PENDING_AI,
       received_at: new Date().toISOString(),
     };
+    if (expectedCategory) {
+      (documentData as any).category = expectedCategory;
+      (documentData as any).detected_category = expectedCategory;
+    }
 
     const { data: document, error: dbError } = await db
       .from('candidate_documents')

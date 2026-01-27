@@ -239,7 +239,27 @@ export function getRejectionReasonMessage(
       return `${docType} format is invalid or unsupported`;
     
     case REJECTION_REASON_CODES.WRONG_DOCUMENT_TYPE:
-      return `Document type mismatch: expected ${docType.toLowerCase()}, got different type`;
+      // User-friendly "not a passport" style messages per document type
+      switch (category) {
+        case DOCUMENT_CATEGORIES.PASSPORT:
+          return 'This is not a passport. Please upload a valid passport document.';
+        case DOCUMENT_CATEGORIES.CNIC:
+          return 'This is not a CNIC / national ID. Please upload a valid CNIC document.';
+        case DOCUMENT_CATEGORIES.DRIVING_LICENSE:
+          return 'This is not a driving license. Please upload a valid driving license document.';
+        case DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE:
+          return 'This is not a police character certificate. Please upload a valid PCC document.';
+        case DOCUMENT_CATEGORIES.CERTIFICATES:
+          return 'This is not a certificate or degree. Please upload a valid certificate document.';
+        case DOCUMENT_CATEGORIES.MEDICAL_REPORTS:
+          return 'This is not a medical report. Please upload a valid medical certificate.';
+        case DOCUMENT_CATEGORIES.PHOTOS:
+          return 'This is not a valid photo. Please upload a clear profile photo.';
+        case DOCUMENT_CATEGORIES.CV_RESUME:
+          return 'This is not a CV or resume. Please upload a valid CV/resume document.';
+        default:
+          return `Document type mismatch: expected ${docType.toLowerCase()}, got different type`;
+      }
     
     case REJECTION_REASON_CODES.INCOMPLETE_DOCUMENT:
       return `${docType} is incomplete or missing required sections`;

@@ -159,240 +159,269 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Employer-Safe CV - ${candidate.name || 'Candidate'}</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      line-height: 1.6;
-      color: #1f2937;
-      background: linear-gradient(135deg, #EFF6FF 0%, #F3E8FF 50%, #FCE7F3 100%);
-      padding: 40px 20px;
+    /* PDF-Optimized Styles - Professional CV Layout */
+    @page {
+      size: A4;
+      margin: 0;
     }
-    .container { max-width: 900px; margin: 0 auto; background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
     
-    /* Colorful Header with Avatar */
-    .cv-header {
-      text-align: center;
-      padding: 50px 40px;
-      border-bottom: 4px solid #2563eb;
+    * { 
+      margin: 0; 
+      padding: 0; 
+      box-sizing: border-box;
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
     }
-    .avatar {
-      width: 140px;
-      height: 140px;
-      margin: 0 auto 20px;
-      background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      line-height: 1.5;
+      color: #1f2937;
+      background: #ffffff;
+      font-size: 10pt;
+      width: 210mm;  /* A4 width */
+      height: 297mm; /* A4 height */
+      margin: 0;
+      padding: 0;
+    }
+    
+    .container { 
+      width: 100%; 
+      height: 100%;
+      background: white;
+      position: relative;
+      overflow: hidden;
+    }
+    
+    /* Professional Header with Gradient Banner */
+    .cv-header {
+      background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
       color: white;
-      font-size: 60px;
-      font-weight: bold;
-      box-shadow: 0 10px 30px rgba(59, 130, 246, 0.4);
+      padding: 25mm 15mm 15mm 15mm;
       position: relative;
     }
-    .avatar::after {
-      content: '✓';
-      position: absolute;
-      bottom: 0;
-      right: 0;
-      width: 44px;
-      height: 44px;
-      background: #10b981;
-      border-radius: 50%;
-      border: 5px solid white;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 24px;
-      color: white;
-      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
-    }
+    
     .cv-header h1 {
-      font-size: 42px;
+      font-size: 20pt;
       font-weight: 700;
-      color: #111827;
-      margin-bottom: 8px;
-    }
-    .cv-header .position {
-      font-size: 22px;
-      color: #6b7280;
-      margin-bottom: 20px;
+      margin-bottom: 4pt;
+      letter-spacing: 0.5pt;
     }
     
-    /* Info Badges */
+    .cv-header .position {
+      font-size: 12pt;
+      opacity: 0.95;
+      margin-bottom: 8pt;
+      font-weight: 500;
+    }
+    
+    /* Info Badges - Compact for PDF */
     .info-badges {
       display: flex;
       flex-wrap: wrap;
-      gap: 12px;
-      justify-content: center;
-      margin-top: 20px;
+      gap: 6pt;
+      margin-top: 8pt;
     }
+    
     .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 20px;
-      border-radius: 50px;
-      font-size: 14px;
+      display: inline-block;
+      padding: 4pt 10pt;
+      border-radius: 12pt;
+      font-size: 8.5pt;
       font-weight: 600;
-      border: 2px solid;
+      background: rgba(255, 255, 255, 0.2);
+      border: 1pt solid rgba(255, 255, 255, 0.3);
     }
-    .badge-blue { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
-    .badge-purple { background: #f3e8ff; color: #6b21a8; border-color: #c084fc; }
-    .badge-green { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
     
-    /* Content Section */
+    /* Content Section - Proper Spacing */
     .content {
-      padding: 40px;
+      padding: 15mm;
     }
     
-    /* Contact Protection Notice */
+    /* Contact Protection Notice - Compact */
     .protection-notice {
       background: #fef3c7;
-      border: 2px solid #fbbf24;
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 30px;
+      border: 1.5pt solid #f59e0b;
+      border-radius: 6pt;
+      padding: 10pt;
+      margin-bottom: 12pt;
+      page-break-inside: avoid;
     }
+    
     .protection-notice h3 {
-      font-size: 18px;
+      font-size: 10pt;
       font-weight: 700;
       color: #92400e;
-      margin-bottom: 8px;
+      margin-bottom: 4pt;
     }
+    
     .protection-notice p {
-      font-size: 14px;
+      font-size: 8.5pt;
       color: #78350f;
-      margin-bottom: 12px;
+      margin-bottom: 6pt;
+      line-height: 1.4;
     }
+    
     .protection-contact {
       background: white;
-      padding: 12px;
-      border-radius: 8px;
-      border: 1px solid #fbbf24;
+      padding: 6pt;
+      border-radius: 4pt;
+      border: 1pt solid #fbbf24;
     }
+    
     .protection-contact p {
-      font-size: 13px;
+      font-size: 8pt;
       color: #374151;
-      margin: 4px 0;
+      margin: 2pt 0;
     }
+    
     .protection-contact strong {
       color: #111827;
+      font-weight: 600;
     }
     
-    /* Section Title */
+    /* Section Title - Professional */
     .section-title {
-      font-size: 24px;
+      font-size: 12pt;
       font-weight: 700;
-      color: #111827;
-      margin-bottom: 20px;
-      padding-bottom: 10px;
-      border-bottom: 3px solid #2563eb;
-      display: flex;
-      align-items: center;
-      gap: 10px;
+      color: #1f2937;
+      margin: 12pt 0 8pt 0;
+      padding-bottom: 4pt;
+      border-bottom: 2pt solid #2563eb;
+      page-break-after: avoid;
     }
     
-    /* Stats Cards */
+    /* Stats Cards - Side by Side, Compact */
     .stats-grid {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 16px;
-      margin-bottom: 30px;
+      grid-template-columns: 1fr 1fr;
+      gap: 8pt;
+      margin-bottom: 12pt;
+      page-break-inside: avoid;
     }
+    
     .stat-card {
-      padding: 20px;
-      border-radius: 12px;
-      border: 2px solid;
+      padding: 10pt;
+      border-radius: 6pt;
+      border: 1.5pt solid;
     }
-    .stat-card-blue { background: #eff6ff; border-color: #93c5fd; }
-    .stat-card-purple { background: #f5f3ff; border-color: #c4b5fd; }
+    
+    .stat-card-blue { 
+      background: #eff6ff; 
+      border-color: #93c5fd; 
+    }
+    
+    .stat-card-purple { 
+      background: #f5f3ff; 
+      border-color: #c4b5fd; 
+    }
+    
     .stat-card .label {
-      font-size: 14px;
+      font-size: 8.5pt;
       font-weight: 600;
-      color: #374151;
-      margin-bottom: 8px;
+      color: #6b7280;
+      margin-bottom: 4pt;
     }
+    
     .stat-card .value {
-      font-size: 32px;
+      font-size: 16pt;
       font-weight: 700;
     }
+    
     .stat-card-blue .value { color: #1e40af; }
     .stat-card-purple .value { color: #6b21a8; }
     
-    /* Content Box */
+    /* Content Box - Clean and Readable */
     .content-box {
       background: #f9fafb;
-      border-left: 4px solid #3b82f6;
-      padding: 20px;
-      border-radius: 8px;
-      margin-bottom: 30px;
-    }
-    .content-box p {
-      font-size: 15px;
-      color: #374151;
-      line-height: 1.7;
+      border-left: 3pt solid #3b82f6;
+      padding: 10pt;
+      border-radius: 4pt;
+      margin-bottom: 12pt;
+      page-break-inside: avoid;
     }
     
-    /* Skills Grid */
+    .content-box p {
+      font-size: 9.5pt;
+      color: #374151;
+      line-height: 1.5;
+      margin: 0;
+    }
+    
+    /* Skills Grid - Compact Tags */
     .skills-grid {
       display: flex;
       flex-wrap: wrap;
-      gap: 12px;
+      gap: 6pt;
+      page-break-inside: avoid;
     }
+    
     .skill-badge {
-      background: linear-gradient(135deg, #dbeafe 0%, #e0e7ff 100%);
+      background: #dbeafe;
       color: #1e40af;
-      padding: 10px 18px;
-      border-radius: 8px;
-      font-size: 14px;
+      padding: 5pt 10pt;
+      border-radius: 4pt;
+      font-size: 8.5pt;
       font-weight: 600;
-      border: 2px solid #93c5fd;
+      border: 1pt solid #93c5fd;
+      display: inline-block;
     }
     
-    /* Footer Notice */
+    /* Footer Notice - Professional */
     .footer-notice {
-      background: linear-gradient(135deg, #eff6ff 0%, #f5f3ff 100%);
-      border: 2px solid #93c5fd;
-      border-radius: 12px;
-      padding: 20px;
-      margin-top: 30px;
+      background: #eff6ff;
+      border: 1.5pt solid #93c5fd;
+      border-radius: 6pt;
+      padding: 10pt;
+      margin-top: 15pt;
       text-align: center;
-    }
-    .footer-notice h3 {
-      font-size: 16px;
-      font-weight: 700;
-      color: #111827;
-      margin-bottom: 8px;
-    }
-    .footer-notice p {
-      font-size: 13px;
-      color: #4b5563;
-      margin: 4px 0;
-    }
-    .footer-notice strong {
-      color: #1e40af;
+      page-break-inside: avoid;
     }
     
-    @media print {
-      body { padding: 0; background: white; }
-      .container { box-shadow: none; }
+    .footer-notice h3 {
+      font-size: 9.5pt;
+      font-weight: 700;
+      color: #1f2937;
+      margin-bottom: 4pt;
+    }
+    
+    .footer-notice p {
+      font-size: 8pt;
+      color: #6b7280;
+      margin: 2pt 0;
+      line-height: 1.4;
+    }
+    
+    .footer-notice strong {
+      color: #2563eb;
+      font-weight: 600;
+    }
+    
+    /* Page Break Control */
+    .page-break-avoid {
+      page-break-inside: avoid;
+    }
+    
+    /* Ensure proper spacing between sections */
+    h2 + .stats-grid,
+    h2 + .content-box,
+    h2 + .skills-grid {
+      margin-top: 8pt;
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <!-- Colorful Header -->
+    <!-- Professional Header -->
     <div class="cv-header">
-      <div class="avatar">${initial}</div>
       <h1>${candidate.name || 'Candidate'}</h1>
       <p class="position">${candidate.position || 'Professional'}</p>
       
       <!-- Info Badges -->
       <div class="info-badges">
-        ${candidate.nationality ? `<span class="badge badge-blue">🌍 ${candidate.nationality}</span>` : ''}
-        ${candidate.country_of_interest ? `<span class="badge badge-purple">📍 Seeking: ${candidate.country_of_interest}</span>` : ''}
-        ${candidate.experience_years ? `<span class="badge badge-green">📅 ${candidate.experience_years} Years Experience</span>` : ''}
+        ${candidate.nationality ? `<span class="badge">${candidate.nationality}</span>` : ''}
+        ${candidate.country_of_interest ? `<span class="badge">Seeking: ${candidate.country_of_interest}</span>` : ''}
+        ${candidate.experience_years ? `<span class="badge">${candidate.experience_years} Years Experience</span>` : ''}
       </div>
     </div>
     
@@ -400,33 +429,33 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
     <div class="content">
       <!-- Contact Protection Notice -->
       <div class="protection-notice">
-        <h3>🛡️ Contact Information Protected</h3>
+        <h3>Contact Information Protected</h3>
         <p>
           For privacy and security, direct contact details have been removed from this CV. 
           To connect with this candidate, please contact Falisha Manpower recruitment team.
         </p>
         <div class="protection-contact">
-          <p><strong>📧 Contact via Recruitment Agency:</strong></p>
+          <p><strong>Contact via Recruitment Agency:</strong></p>
           <p>Email: falishamanpower4035@gmail.com</p>
           <p>Phone: +92330 3333335</p>
         </div>
       </div>
       
       <!-- Professional Summary -->
-      <h2 class="section-title">💼 Professional Summary</h2>
+      <h2 class="section-title">PROFESSIONAL SUMMARY</h2>
       
       <!-- Stats Cards -->
       ${candidate.experience_years || candidate.ai_score ? `
       <div class="stats-grid">
         ${candidate.experience_years ? `
         <div class="stat-card stat-card-blue">
-          <div class="label">📅 Experience</div>
+          <div class="label">Experience</div>
           <div class="value">${candidate.experience_years} Years</div>
         </div>
         ` : ''}
         ${candidate.ai_score ? `
         <div class="stat-card stat-card-purple">
-          <div class="label">⭐ AI Match Score</div>
+          <div class="label">AI Match Score</div>
           <div class="value">${typeof candidate.ai_score === 'number' ? candidate.ai_score.toFixed(1) : candidate.ai_score}/10</div>
         </div>
         ` : ''}
@@ -446,16 +475,16 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
       
       <!-- Skills -->
       ${skills.length > 0 ? `
-      <h2 class="section-title">⭐ Core Skills & Competencies</h2>
+      <h2 class="section-title">CORE SKILLS & COMPETENCIES</h2>
       <div class="skills-grid">
         ${skills.map((skill: string) => `<span class="skill-badge">${skill}</span>`).join('')}
       </div>
-      <br><br>
+      <br>
       ` : ''}
       
       <!-- Work Experience -->
       ${candidate.previous_employment ? `
-      <h2 class="section-title">💼 Work Experience</h2>
+      <h2 class="section-title">WORK EXPERIENCE</h2>
       <div class="content-box">
         <p style="white-space: pre-line;">${candidate.previous_employment}</p>
       </div>
@@ -463,7 +492,7 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
       
       <!-- Education -->
       ${candidate.education ? `
-      <h2 class="section-title">🎓 Education</h2>
+      <h2 class="section-title">EDUCATION</h2>
       <div class="content-box">
         <p style="white-space: pre-line;">${candidate.education}</p>
       </div>
@@ -471,7 +500,7 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
       
       <!-- Certifications -->
       ${candidate.certifications ? `
-      <h2 class="section-title">✅ Certifications</h2>
+      <h2 class="section-title">CERTIFICATIONS</h2>
       <div class="content-box">
         <p style="white-space: pre-line;">${candidate.certifications}</p>
       </div>
@@ -479,7 +508,7 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
       
       <!-- Languages -->
       ${languages.length > 0 ? `
-      <h2 class="section-title">🌐 Languages</h2>
+      <h2 class="section-title">LANGUAGES</h2>
       <div class="content-box">
         <p>${languages.join(', ')}</p>
       </div>
@@ -487,7 +516,7 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
       
       <!-- Footer Notice -->
       <div class="footer-notice">
-        <h3>🛡️ Protected by Falisha Manpower</h3>
+        <h3>Protected by Falisha Manpower</h3>
         <p>This employer-safe CV protects candidate privacy. Contact information has been secured.</p>
         <p><strong>For interviews:</strong> falishamanpower4035@gmail.com | +92330 3333335</p>
         <p style="margin-top: 12px; font-size: 11px; color: #9ca3af;">Falisha Manpower AI Recruitment System | Candidate ID: ${candidate.id}</p>

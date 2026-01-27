@@ -24,8 +24,8 @@ export interface CVTemplateConfig {
  * This ensures all users get the updated design without manual cache clearing.
  */
 export const CV_TEMPLATE_CONFIG: CVTemplateConfig = {
-  version: 'v2.0.0',
-  description: 'Colorful infographic design with gradient avatars, stat cards, and emoji icons',
+  version: 'v2.1.0',
+  description: 'Professional PDF-optimized design with proper sizing, clean layout, and A4 formatting',
   lastUpdated: '2026-01-27',
 };
 

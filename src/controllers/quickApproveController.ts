@@ -44,7 +44,7 @@ export async function quickApproveCandidateDocument(req: Request, res: Response)
     // Prepare update data - only set overridden_by if we have a valid UUID
     const updateData: any = {
       verification_status: VERIFICATION_STATUS.VERIFIED,
-      verification_source: 'manual_approval',
+      verification_source: 'manual_review', // Allowed values: ai_verification, admin_override, manual_review
       override_reason: 'Quick approved by admin',
       overridden_at: now,
       verification_completed_at: now,

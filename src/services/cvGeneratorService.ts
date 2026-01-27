@@ -107,10 +107,12 @@ async function checkCache(options: CVGenerationOptions): Promise<{
   }
   
   // Update access stats
+  // Note: Supabase doesn't support raw SQL in updates, we'll increment on the server side
+  // For now, we'll fetch and increment manually, or use a database function
+  // Simplified approach: just update last_accessed_at
   await db
     .from('generated_cvs')
     .update({
-      access_count: db.raw('access_count + 1'),
       last_accessed_at: new Date().toISOString(),
     })
     .eq('candidate_id', options.candidateId)

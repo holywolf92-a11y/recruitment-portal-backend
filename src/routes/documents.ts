@@ -14,6 +14,7 @@ import {
   overrideCandidateDocumentController,
   splitUploadController,
 } from '../controllers/documentController';
+import { quickApproveCandidateDocument } from '../controllers/quickApproveController';
 
 const logger = createLogger('DocumentsRouter');
 
@@ -97,6 +98,9 @@ router.post('/candidate-documents/:id/reprocess', reprocessCandidateDocumentCont
 
 // Admin override document verification (requires admin role)
 router.post('/candidate-documents/:id/override', overrideCandidateDocumentController);
+
+// Quick approve pending document (no password required for pending_ai/needs_review)
+router.post('/candidate-documents/:id/approve', quickApproveCandidateDocument);
 
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', listCandidateDocumentsControllerNew);

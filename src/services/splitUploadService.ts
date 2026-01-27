@@ -55,6 +55,8 @@ export interface SplitDoc {
   pdf_base64: string;
   split_strategy: 'page' | 'region' | 'grouped';
   needs_review?: boolean;
+  is_image?: boolean;  // True if this is an image (e.g., JPEG photo), not a PDF
+  mime_type?: string;  // MIME type: 'image/jpeg' for photos, 'application/pdf' for others
 }
 
 export interface SplitAndCategorizeResponse {
@@ -188,14 +190,18 @@ async function uploadOneSplitDoc(
 ): Promise<void> {
   const db = supabaseAdminClient();
   const folder = docTypeToFolder(doc.doc_type);
-  const pdfBuffer = Buffer.from(doc.pdf_base64, 'base64');
-  const sha256 = calculateSHA256(pdfBuffer);
+  const fileBuffer = Buffer.from(doc.pdf_base64, 'base64');
+  const sha256 = calculateSHA256(fileBuffer);
   const ts = Date.now();
-  const ext = doc.pdf_base64 ? 'pdf' : 'bin';
+  
+  // PRODUCTION FIX: Handle images (photos) with correct extension and MIME type
+  const isImage = doc.is_image === true;
+  const mimeType = doc.mime_type || (isImage ? 'image/jpeg' : 'application/pdf');
+  const ext = isImage ? 'jpg' : 'pdf';
   const storagePath = `${candidateId}/${folder}/${ts}_${uploadId}_${(doc.pages || []).join('-')}.${ext}`;
 
-  const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(storagePath, pdfBuffer, {
-    contentType: 'application/pdf',
+  const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(storagePath, fileBuffer, {
+    contentType: mimeType,
     upsert: false,
   });
   if (upErr) throw new Error(`Failed to upload split doc: ${upErr.message}`);
@@ -237,7 +243,7 @@ async function uploadOneSplitDoc(
     storage_bucket: STORAGE_BUCKET,
     storage_path: storagePath,
     file_name: descriptiveFilename,
-    mime_type: 'application/pdf',
+    mime_type: mimeType,  // Use detected MIME type (image/jpeg for photos)
     sha256,
     is_primary: false,
     pages: doc.pages ?? [],

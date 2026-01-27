@@ -37,7 +37,7 @@
     "multer": "^2.0.2",
     "node-fetch": "^2.7.0",
     "postgres": "^3.4.8",
-    "puppeteer": "^21.11.0"
+    "puppeteer": "^24.36.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

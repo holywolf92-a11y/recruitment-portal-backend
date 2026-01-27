@@ -10,5 +10,10 @@ cmds = [
   "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium npm ci --production=false"
 ]
 
+[phases.build]
+cmds = [
+  "npm run build"
+]
+
 [start]
 cmd = "npm start"

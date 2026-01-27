@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 // import { authenticate } from '../middleware/auth';
 import {
   generateBulkCVsController,
@@ -10,6 +10,43 @@ const router = Router();
 
 // All routes require authentication
 // router.use(authenticate);
+
+// Health check for Puppeteer
+// GET /api/cv-generator/health
+router.get('/health', async (req: Request, res: Response) => {
+  try {
+    const puppeteer = await import('puppeteer');
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    
+    // Try to launch Puppeteer
+    const launchOptions: any = {
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    };
+    
+    if (executablePath) {
+      launchOptions.executablePath = executablePath;
+    }
+    
+    const browser = await puppeteer.launch(launchOptions);
+    await browser.close();
+    
+    res.json({
+      status: 'ok',
+      puppeteer: 'working',
+      executablePath: executablePath || 'bundled',
+      platform: process.platform,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      status: 'error',
+      puppeteer: 'failed',
+      error: error.message,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
+      platform: process.platform,
+    });
+  }
+});
 
 // Generate single CV
 // GET /api/cv-generator/:candidateId?format=employer-safe&force=true

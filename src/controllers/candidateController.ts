@@ -130,8 +130,34 @@ export async function listCandidatesController(req: Request, res: Response) {
       const ttlSeconds = 600;
       const enriched = await Promise.all((result.candidates || []).map(async (c: any) => {
         try {
-          let bucket: string = c.profile_photo_bucket || 'documents';
-          let storagePath: string | null = c.profile_photo_path || null;
+          let bucket: string = 'documents';
+          let storagePath: string | null = null;
+
+          // Strategy 1: Look for an approved "photos" document (real profile photo)
+          try {
+            const { data: photoDoc } = await db
+              .from('candidate_documents')
+              .select('storage_path')
+              .eq('candidate_id', c.id)
+              .eq('category', 'photos')
+              .eq('verification_status', 'verified')
+              .order('received_at', { ascending: false })
+              .limit(1)
+              .single();
+            
+            if (photoDoc?.storage_path) {
+              storagePath = photoDoc.storage_path;
+            }
+          } catch {
+            // No verified photo document found, fall through to strategy 2
+          }
+
+          // Strategy 2: Use profile_photo_path if available
+          if (!storagePath && c.profile_photo_path) {
+            storagePath = c.profile_photo_path;
+          }
+
+          // Strategy 3: Parse profile_photo_url if no direct path
           if (!storagePath && c.profile_photo_url) {
             const url: string = c.profile_photo_url;
             const publicMarker = '/storage/v1/object/public/';
@@ -148,10 +174,15 @@ export async function listCandidatesController(req: Request, res: Response) {
               storagePath = parts.join('/');
             }
           }
+
+          // Only generate signed URL if we have a valid storage path and it's not a PDF
           if (storagePath) {
-            const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
-            if (!urlError && signedData && (signedData as any).signedUrl) {
-              return { ...c, profile_photo_signed_url: (signedData as any).signedUrl };
+            // Reject PDF files - they can't be displayed as images
+            if (!storagePath.toLowerCase().endsWith('.pdf')) {
+              const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
+              if (!urlError && signedData && (signedData as any).signedUrl) {
+                return { ...c, profile_photo_signed_url: (signedData as any).signedUrl };
+              }
             }
           }
         } catch {

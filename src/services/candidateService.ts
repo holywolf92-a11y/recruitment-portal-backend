@@ -201,10 +201,20 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
     const url = data.profile_photo_url.toLowerCase();
     const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
-    if (extMatch && allowedExts.includes(extMatch[1])) {
+    
+    // Reject URLs that contain CV document UUIDs (these are extracted images from CVs, not real profile photos)
+    // Pattern: documents/candidate_photos/{UUID}/profile.jpeg where UUID matches inbox_attachments IDs
+    const isCVExtractedImage = url.includes('documents/candidate_photos/') && 
+                               /candidate_photos\/[a-f0-9\-]{36}\//.test(url);
+    
+    if (extMatch && allowedExts.includes(extMatch[1]) && !isCVExtractedImage) {
       validProfilePhotoUrl = data.profile_photo_url;
     } else {
-      console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
+      if (isCVExtractedImage) {
+        console.warn(`[ProfilePhotoValidation] Rejected CV-extracted image (not real profile photo): ${data.profile_photo_url}`);
+      } else {
+        console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
+      }
     }
   }
 
@@ -724,6 +734,27 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
   }
   if (data.phone) {
     updateData.phone = normalizePhoneE164(data.phone);
+  }
+
+  // Validate profile_photo_url if provided (only allow real profile photos, not CV-extracted images)
+  if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
+    const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
+    const url = data.profile_photo_url.toLowerCase();
+    const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
+    
+    // Reject URLs that contain CV document UUIDs (these are extracted images from CVs, not real profile photos)
+    const isCVExtractedImage = url.includes('documents/candidate_photos/') && 
+                               /candidate_photos\/[a-f0-9\-]{36}\//.test(url);
+    
+    if (!(extMatch && allowedExts.includes(extMatch[1]) && !isCVExtractedImage)) {
+      if (isCVExtractedImage) {
+        console.warn(`[ProfilePhotoValidation] Rejected CV-extracted image for update (not real profile photo): ${data.profile_photo_url}`);
+      } else {
+        console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url for update: ${data.profile_photo_url}`);
+      }
+      // Remove invalid profile_photo_url from update
+      delete updateData.profile_photo_url;
+    }
   }
 
   // Check for duplicates (excluding current candidate)

@@ -53,6 +53,7 @@ const queue_1 = require("../config/queue");
 const errorHandling_1 = require("../utils/errorHandling");
 const splitUploadService_1 = require("./splitUploadService");
 const crypto_2 = require("crypto");
+const documentNaming_1 = require("../utils/documentNaming");
 const STORAGE_BUCKET = 'documents';
 /**
  * Format document response with rejection details for API
@@ -283,6 +284,26 @@ async function uploadCandidateDocument(data) {
                             other_documents: 'other',
                         };
                         const dbDocumentType = docTypeMap[splitDoc.doc_type] || 'other';
+                        // Fetch candidate name for better filename
+                        let candidateName;
+                        try {
+                            const { data: candidate } = await db
+                                .from('candidates')
+                                .select('name')
+                                .eq('id', data.candidate_id)
+                                .single();
+                            candidateName = candidate?.name;
+                        }
+                        catch (e) {
+                            console.log('[UploadDocument] Could not fetch candidate name');
+                        }
+                        // Generate descriptive filename
+                        const descriptiveFilename = (0, documentNaming_1.generateDescriptiveFilename)({
+                            doc_type: splitDoc.doc_type,
+                            pages: splitDoc.pages,
+                            split_strategy: splitDoc.split_strategy,
+                            page_number: splitDoc.pages && splitDoc.pages.length === 1 ? splitDoc.pages[0] : undefined,
+                        }, candidateName, ts);
                         // Create candidate_documents record
                         const splitDocData = {
                             candidate_id: data.candidate_id,
@@ -292,7 +313,7 @@ async function uploadCandidateDocument(data) {
                             confidence: splitDoc.confidence || null,
                             storage_bucket: STORAGE_BUCKET,
                             storage_path: splitStoragePath,
-                            file_name: `split_${splitDoc.doc_type}_${ts}.pdf`,
+                            file_name: descriptiveFilename,
                             mime_type: 'application/pdf',
                             source: data.source || 'manual',
                             status: 'received',

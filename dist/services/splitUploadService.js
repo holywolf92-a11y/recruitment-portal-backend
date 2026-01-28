@@ -23,6 +23,7 @@ const database_1 = require("../config/database");
 const candidateService_1 = require("./candidateService");
 const timelineService_1 = require("./timelineService");
 const documentService_1 = require("./documentService");
+const documentNaming_1 = require("../utils/documentNaming");
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
 const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
@@ -148,17 +149,40 @@ async function ensureCandidateId(candidateId, identity, userId) {
 async function uploadOneSplitDoc(candidateId, doc, uploadId, userId, engineUsed) {
     const db = (0, database_1.supabaseAdminClient)();
     const folder = docTypeToFolder(doc.doc_type);
-    const pdfBuffer = Buffer.from(doc.pdf_base64, 'base64');
-    const sha256 = (0, documentService_1.calculateSHA256)(pdfBuffer);
+    const fileBuffer = Buffer.from(doc.pdf_base64, 'base64');
+    const sha256 = (0, documentService_1.calculateSHA256)(fileBuffer);
     const ts = Date.now();
-    const ext = doc.pdf_base64 ? 'pdf' : 'bin';
+    // PRODUCTION FIX: Handle images (photos) with correct extension and MIME type
+    const isImage = doc.is_image === true;
+    const mimeType = doc.mime_type || (isImage ? 'image/jpeg' : 'application/pdf');
+    const ext = isImage ? 'jpg' : 'pdf';
     const storagePath = `${candidateId}/${folder}/${ts}_${uploadId}_${(doc.pages || []).join('-')}.${ext}`;
-    const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(storagePath, pdfBuffer, {
-        contentType: 'application/pdf',
+    const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(storagePath, fileBuffer, {
+        contentType: mimeType,
         upsert: false,
     });
     if (upErr)
         throw new Error(`Failed to upload split doc: ${upErr.message}`);
+    // Fetch candidate name for better filename
+    let candidateName;
+    try {
+        const { data: candidate } = await db
+            .from('candidates')
+            .select('name')
+            .eq('id', candidateId)
+            .single();
+        candidateName = candidate?.name;
+    }
+    catch (e) {
+        console.log('[uploadOneSplitDoc] Could not fetch candidate name, using default');
+    }
+    // Generate descriptive filename
+    const descriptiveFilename = (0, documentNaming_1.generateDescriptiveFilename)({
+        doc_type: doc.doc_type,
+        pages: doc.pages,
+        split_strategy: doc.split_strategy,
+        page_number: doc.pages && doc.pages.length === 1 ? doc.pages[0] : undefined,
+    }, candidateName, ts);
     const metadata = {
         split_strategy: doc.split_strategy,
         engine_used: engineUsed,
@@ -169,8 +193,8 @@ async function uploadOneSplitDoc(candidateId, doc, uploadId, userId, engineUsed)
         doc_type: doc.doc_type,
         storage_bucket: STORAGE_BUCKET,
         storage_path: storagePath,
-        file_name: `split_${doc.doc_type}_${ts}.pdf`,
-        mime_type: 'application/pdf',
+        file_name: descriptiveFilename,
+        mime_type: mimeType, // Use detected MIME type (image/jpeg for photos)
         sha256,
         is_primary: false,
         pages: doc.pages ?? [],
@@ -246,7 +270,7 @@ async function uploadOneSplitDoc(candidateId, doc, uploadId, userId, engineUsed)
     try {
         await (0, timelineService_1.logDocumentUploaded)(candidateId, userId, {
             doc_type: doc.doc_type,
-            file_name: `split_${doc.doc_type}_${ts}.pdf`,
+            file_name: descriptiveFilename,
             mime_type: 'application/pdf',
             split_strategy: doc.split_strategy,
             needs_review: doc.needs_review,

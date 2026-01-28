@@ -10,6 +10,8 @@ const database_1 = require("../config/database");
 // import { authenticate } from '../middleware/auth';
 // Old document controllers removed - using unified candidate-documents system
 const documentController_1 = require("../controllers/documentController");
+const quickApproveController_1 = require("../controllers/quickApproveController");
+const fixApprovedPhotosController_1 = require("../controllers/fixApprovedPhotosController");
 const logger = (0, errorHandling_1.createLogger)('DocumentsRouter');
 const router = (0, express_1.Router)();
 // Configure multer for memory storage
@@ -75,6 +77,10 @@ router.delete('/candidate-documents/:id', documentController_1.deleteCandidateDo
 router.post('/candidate-documents/:id/reprocess', documentController_1.reprocessCandidateDocumentController);
 // Admin override document verification (requires admin role)
 router.post('/candidate-documents/:id/override', documentController_1.overrideCandidateDocumentController);
+// Quick approve pending document (no password required for pending_ai/needs_review)
+router.post('/candidate-documents/:id/approve', quickApproveController_1.quickApproveCandidateDocument);
+// Fix approved photos that are missing profile_photo_url (retroactive fix)
+router.post('/fix-approved-photos', fixApprovedPhotosController_1.fixApprovedPhotos);
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', documentController_1.listCandidateDocumentsControllerNew);
 // ============================================================================

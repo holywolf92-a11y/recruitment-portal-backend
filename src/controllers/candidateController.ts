@@ -175,14 +175,16 @@ export async function listCandidatesController(req: Request, res: Response) {
             }
           }
 
-          // Only generate signed URL if we have a valid storage path and it's not a PDF
+          // Generate signed URL if we have a valid storage path.
+          // Note: the profile photo may be a PDF (e.g., a split photo PDF). We still return a signed URL
+          // and let the frontend decide how to render it (thumbnail vs. click-to-open).
           if (storagePath) {
-            // Reject PDF files - they can't be displayed as images
-            if (!storagePath.toLowerCase().endsWith('.pdf')) {
-              const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
-              if (!urlError && signedData && (signedData as any).signedUrl) {
-                return { ...c, profile_photo_signed_url: (signedData as any).signedUrl };
-              }
+            const { data: signedData, error: urlError } = await db.storage
+              .from(bucket)
+              .createSignedUrl(storagePath, ttlSeconds);
+
+            if (!urlError && signedData && (signedData as any).signedUrl) {
+              return { ...c, profile_photo_signed_url: (signedData as any).signedUrl };
             }
           }
         } catch {

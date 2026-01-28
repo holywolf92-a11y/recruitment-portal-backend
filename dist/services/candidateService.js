@@ -143,6 +143,28 @@ async function createCandidate(data, userId) {
     }
     // Generate candidate code
     const candidateCode = await generateCandidateCode();
+    // Validate profile_photo_url (only allow image URLs)
+    let validProfilePhotoUrl = null;
+    if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
+        const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
+        const url = data.profile_photo_url.toLowerCase();
+        const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
+        // Reject URLs that contain CV document UUIDs (these are extracted images from CVs, not real profile photos)
+        // Pattern: documents/candidate_photos/{UUID}/profile.jpeg where UUID matches inbox_attachments IDs
+        const isCVExtractedImage = url.includes('documents/candidate_photos/') &&
+            /candidate_photos\/[a-f0-9\-]{36}\//.test(url);
+        if (extMatch && allowedExts.includes(extMatch[1]) && !isCVExtractedImage) {
+            validProfilePhotoUrl = data.profile_photo_url;
+        }
+        else {
+            if (isCVExtractedImage) {
+                console.warn(`[ProfilePhotoValidation] Rejected CV-extracted image (not real profile photo): ${data.profile_photo_url}`);
+            }
+            else {
+                console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
+            }
+        }
+    }
     // Create candidate record
     const candidateData = {
         candidate_code: candidateCode,
@@ -182,6 +204,8 @@ async function createCandidate(data, userId) {
         cv_received: data.cv_received,
         photo_received: data.photo_received,
         certificate_received: data.certificate_received,
+        // Profile photo URL (validated)
+        profile_photo_url: validProfilePhotoUrl,
     };
     const { data: candidate, error } = await db
         .from('candidates')
@@ -362,16 +386,21 @@ function exportToCSV(candidates) {
     if (candidates.length === 0) {
         return { buffer: Buffer.from(''), filename: `candidates_${new Date().toISOString().split('T')[0]}.csv` };
     }
-    // CSV headers
+    // Get frontend URL from environment
+    const frontendUrl = process.env.FRONTEND_URL || 'https://exquisite-surprise-production.up.railway.app';
+    // CSV headers - now includes Profile Link and Employer CV
     const headers = [
         'ID', 'Code', 'Name', 'Email', 'Phone', 'Position', 'Nationality', 'Country of Interest',
         'Status', 'Age', 'Experience (Years)', 'Date of Birth', 'Gender', 'Marital Status',
-        'Passport', 'CNIC', 'Passport Expiry', 'Address', 'Applied Date', 'Updated Date'
+        'Passport', 'CNIC', 'Passport Expiry', 'Address', 'Profile Link', 'Employer CV', 'Applied Date', 'Updated Date'
     ];
     // Build CSV rows
     const rows = [headers.join(',')];
     for (const c of candidates) {
         const age = c.date_of_birth ? calculateAgeFromDOB(c.date_of_birth) : '';
+        const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+        const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
+        const cvLink = `${frontendUrl}/profile/${c.id}/${slug}`;
         const row = [
             c.id || '',
             c.candidate_code || '',
@@ -391,6 +420,8 @@ function exportToCSV(candidates) {
             escapeCSV(c.cnic || ''),
             c.passport_expiry || '',
             escapeCSV(c.address || ''),
+            profileLink,
+            cvLink,
             c.created_at || '',
             c.updated_at || ''
         ];
@@ -402,15 +433,101 @@ function exportToCSV(candidates) {
     return { buffer, filename };
 }
 function exportToExcel(candidates) {
-    // For now, return CSV format (can be enhanced with xlsx library later)
-    // Install: npm install xlsx @types/xlsx
-    // Then use: const XLSX = require('xlsx'); const wb = XLSX.utils.book_new(); ...
-    // For MVP, return CSV with .xlsx extension - client can handle conversion
-    const csvResult = exportToCSV(candidates);
-    return {
-        buffer: csvResult.buffer,
-        filename: csvResult.filename.replace('.csv', '.xlsx')
-    };
+    const XLSX = require('xlsx');
+    if (candidates.length === 0) {
+        const wb = XLSX.utils.book_new();
+        const ws = XLSX.utils.aoa_to_sheet([['No candidates to export']]);
+        XLSX.utils.book_append_sheet(wb, ws, 'Candidates');
+        const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+        return { buffer, filename: `candidates_${new Date().toISOString().split('T')[0]}.xlsx` };
+    }
+    // Get frontend URL from environment
+    const frontendUrl = process.env.FRONTEND_URL || 'https://exquisite-surprise-production.up.railway.app';
+    // Build data array with headers
+    const data = [[
+            'ID', 'Code', 'Name', 'Email', 'Phone', 'Position', 'Nationality', 'Country of Interest',
+            'Status', 'Age', 'Experience (Years)', 'Date of Birth', 'Gender', 'Marital Status',
+            'Passport', 'CNIC', 'Passport Expiry', 'Address', 'Profile Link', 'Employer CV', 'Applied Date', 'Updated Date'
+        ]];
+    // Add candidate rows
+    for (const c of candidates) {
+        const age = c.date_of_birth ? calculateAgeFromDOB(c.date_of_birth) : '';
+        const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+        const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
+        const cvLink = profileLink; // Same link, but we'll label it differently
+        data.push([
+            c.id || '',
+            c.candidate_code || '',
+            c.name || '',
+            c.email || '',
+            c.phone || '',
+            c.position || '',
+            c.nationality || '',
+            c.country_of_interest || '',
+            c.status || '',
+            age,
+            c.experience_years || '',
+            c.date_of_birth || '',
+            c.gender || '',
+            c.marital_status || '',
+            c.passport || '',
+            c.cnic || '',
+            c.passport_expiry || '',
+            c.address || '',
+            profileLink, // Profile Link column (will be converted to hyperlink)
+            cvLink, // Employer CV column (will be converted to hyperlink)
+            c.created_at || '',
+            c.updated_at || ''
+        ]);
+    }
+    // Create worksheet from data
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    // Add hyperlinks to Profile Link (column S, index 18) and Employer CV (column T, index 19)
+    // Excel uses A1 notation (A=0, B=1, ..., S=18, T=19)
+    for (let row = 2; row <= candidates.length + 1; row++) { // Start from row 2 (skip header)
+        const profileCell = XLSX.utils.encode_cell({ r: row - 1, c: 18 }); // Column S (Profile Link)
+        const cvCell = XLSX.utils.encode_cell({ r: row - 1, c: 19 }); // Column T (Employer CV)
+        if (ws[profileCell]) {
+            ws[profileCell].l = { Target: ws[profileCell].v, Tooltip: 'Click to open profile' };
+            ws[profileCell].s = { font: { color: { rgb: '0563C1' }, underline: true } };
+        }
+        if (ws[cvCell]) {
+            ws[cvCell].l = { Target: ws[cvCell].v, Tooltip: 'Click to open employer CV' };
+            ws[cvCell].s = { font: { color: { rgb: '7030A0' }, underline: true } };
+        }
+    }
+    // Set column widths
+    ws['!cols'] = [
+        { wch: 36 }, // ID
+        { wch: 12 }, // Code
+        { wch: 20 }, // Name
+        { wch: 25 }, // Email
+        { wch: 15 }, // Phone
+        { wch: 20 }, // Position
+        { wch: 15 }, // Nationality
+        { wch: 15 }, // Country of Interest
+        { wch: 12 }, // Status
+        { wch: 5 }, // Age
+        { wch: 12 }, // Experience
+        { wch: 12 }, // DOB
+        { wch: 10 }, // Gender
+        { wch: 12 }, // Marital Status
+        { wch: 15 }, // Passport
+        { wch: 15 }, // CNIC
+        { wch: 12 }, // Passport Expiry
+        { wch: 30 }, // Address
+        { wch: 60 }, // Profile Link
+        { wch: 60 }, // Employer CV
+        { wch: 20 }, // Applied Date
+        { wch: 20 } // Updated Date
+    ];
+    // Create workbook and add worksheet
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Candidates');
+    // Write to buffer
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const filename = `candidates_${new Date().toISOString().split('T')[0]}.xlsx`;
+    return { buffer, filename };
 }
 function escapeCSV(value) {
     if (!value)
@@ -472,6 +589,25 @@ async function updateCandidate(id, data, userId) {
     }
     if (data.phone) {
         updateData.phone = normalizePhoneE164(data.phone);
+    }
+    // Validate profile_photo_url if provided (only allow real profile photos, not CV-extracted images)
+    if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
+        const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
+        const url = data.profile_photo_url.toLowerCase();
+        const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
+        // Reject URLs that contain CV document UUIDs (these are extracted images from CVs, not real profile photos)
+        const isCVExtractedImage = url.includes('documents/candidate_photos/') &&
+            /candidate_photos\/[a-f0-9\-]{36}\//.test(url);
+        if (!(extMatch && allowedExts.includes(extMatch[1]) && !isCVExtractedImage)) {
+            if (isCVExtractedImage) {
+                console.warn(`[ProfilePhotoValidation] Rejected CV-extracted image for update (not real profile photo): ${data.profile_photo_url}`);
+            }
+            else {
+                console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url for update: ${data.profile_photo_url}`);
+            }
+            // Remove invalid profile_photo_url from update
+            delete updateData.profile_photo_url;
+        }
     }
     // Check for duplicates (excluding current candidate)
     if (data.cnic || data.passport) {

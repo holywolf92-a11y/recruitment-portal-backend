@@ -85,6 +85,44 @@ async function getCandidateController(req, res) {
             ...candidate,
             passport: candidate.passport_normalized || candidate.passport || null,
         } : candidate;
+        // Generate short-lived signed URL for profile photo (best-effort)
+        try {
+            if (mappedCandidate) {
+                const db = (0, database_1.supabaseAdminClient)();
+                let bucket = mappedCandidate.profile_photo_bucket || 'documents';
+                let storagePath = mappedCandidate.profile_photo_path || null;
+                // If we don't have an explicit storage path, try to derive from profile_photo_url
+                if (!storagePath && mappedCandidate.profile_photo_url) {
+                    const url = mappedCandidate.profile_photo_url;
+                    const publicMarker = '/storage/v1/object/public/';
+                    const signMarker = '/storage/v1/object/sign/';
+                    if (url.includes(publicMarker)) {
+                        const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+                        const parts = rest.split('/');
+                        bucket = parts.shift() || bucket;
+                        storagePath = parts.join('/');
+                    }
+                    else if (url.includes(signMarker)) {
+                        // Signed URL form: .../object/sign/<bucket>/<path>?token=...
+                        const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+                        const parts = after.split('/');
+                        bucket = parts.shift() || bucket;
+                        storagePath = parts.join('/');
+                    }
+                }
+                if (storagePath) {
+                    const ttlSeconds = 600; // 10 minutes
+                    const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
+                    if (!urlError && signedData && signedData.signedUrl) {
+                        mappedCandidate.profile_photo_signed_url = signedData.signedUrl;
+                    }
+                }
+            }
+        }
+        catch (e) {
+            console.warn('Failed to generate profile photo signed URL:', e);
+            // Don't fail the request if URL generation fails
+        }
         res.json({ candidate: mappedCandidate });
     }
     catch (error) {
@@ -115,7 +153,80 @@ async function listCandidatesController(req, res) {
             offset: req.query.offset ? parseInt(req.query.offset) : undefined,
         };
         const result = await (0, candidateService_1.listCandidates)(filters, userId);
-        res.json(result);
+        // Best-effort: attach short-lived signed URLs for profile photos in list
+        try {
+            const db = (0, database_1.supabaseAdminClient)();
+            const ttlSeconds = 600;
+            const enriched = await Promise.all((result.candidates || []).map(async (c) => {
+                try {
+                    let bucket = 'documents';
+                    let storagePath = null;
+                    // Strategy 1: Look for an approved "photos" document (real profile photo)
+                    try {
+                        const { data: photoDoc } = await db
+                            .from('candidate_documents')
+                            .select('storage_path')
+                            .eq('candidate_id', c.id)
+                            .eq('category', 'photos')
+                            .eq('verification_status', 'verified')
+                            .order('received_at', { ascending: false })
+                            .limit(1)
+                            .single();
+                        if (photoDoc?.storage_path) {
+                            storagePath = photoDoc.storage_path;
+                        }
+                    }
+                    catch {
+                        // No verified photo document found, fall through to strategy 2
+                    }
+                    // Strategy 2: Use profile_photo_path if available
+                    if (!storagePath && c.profile_photo_path) {
+                        storagePath = c.profile_photo_path;
+                    }
+                    // Strategy 3: Parse profile_photo_url if no direct path
+                    if (!storagePath && c.profile_photo_url) {
+                        const url = c.profile_photo_url;
+                        const publicMarker = '/storage/v1/object/public/';
+                        const signMarker = '/storage/v1/object/sign/';
+                        if (url.includes(publicMarker)) {
+                            const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+                            const parts = rest.split('/');
+                            bucket = parts.shift() || bucket;
+                            storagePath = parts.join('/');
+                        }
+                        else if (url.includes(signMarker)) {
+                            const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+                            const parts = after.split('/');
+                            bucket = parts.shift() || bucket;
+                            storagePath = parts.join('/');
+                        }
+                    }
+                    // Generate signed URL if we have a valid storage path.
+                    // Note: the profile photo may be a PDF (e.g., a split photo PDF). We still return a signed URL
+                    // and let the frontend decide how to render it (thumbnail vs. click-to-open).
+                    if (storagePath) {
+                        const { data: signedData, error: urlError } = await db.storage
+                            .from(bucket)
+                            .createSignedUrl(storagePath, ttlSeconds);
+                        if (!urlError && signedData && signedData.signedUrl) {
+                            return { ...c, profile_photo_signed_url: signedData.signedUrl };
+                        }
+                    }
+                }
+                catch {
+                    // ignore and return original candidate
+                }
+                return c;
+            }));
+            res.json({ ...result, candidates: enriched });
+            return;
+        }
+        catch (e) {
+            console.warn('Failed to generate signed URLs for candidates list:', e);
+            // Fallback to original result without signed URLs
+            res.json(result);
+            return;
+        }
     }
     catch (error) {
         console.error('Error listing candidates:', error);

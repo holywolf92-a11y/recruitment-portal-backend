@@ -7,6 +7,7 @@ import { AppError, ErrorType } from '../utils/errorHandling';
 import { callSplitAndCategorize, preserveOriginalPdf, SplitDoc, docTypeToFolder } from './splitUploadService';
 import { randomUUID } from 'crypto';
 import { generateDescriptiveFilename } from '../utils/documentNaming';
+import { processSplitDocument } from '../utils/splitDocumentProcessor';
 
 const STORAGE_BUCKET = 'documents';
 
@@ -271,48 +272,16 @@ export async function uploadCandidateDocument(
           
           for (const splitDoc of splitResult.documents) {
             const pdfBuffer = Buffer.from(splitDoc.pdf_base64, 'base64');
-            const ts = Date.now();
-            
-            // Check if this is an extracted image (not a PDF)
-            const isImage = splitDoc.is_image === true;
-            const mimeType = isImage ? (splitDoc.mime_type || 'image/jpeg') : 'application/pdf';
-            const fileExt = isImage ? (mimeType === 'image/png' ? 'png' : 'jpg') : 'pdf';
-            
-            // Use folder mapping from splitUploadService (e.g., passport -> passport/, national_id -> national_id/)
             const folder = docTypeToFolder(splitDoc.doc_type);
-            const splitStoragePath = `candidates/${data.candidate_id}/${folder}/${ts}_${uploadId}_pages_${splitDoc.pages.join('-')}.${fileExt}`;
             
-            // If this is a photo image, also save it as the candidate's profile photo
-            if (isImage && (splitDoc.doc_type === 'photos' || splitDoc.doc_type === 'photo')) {
-              const profilePhotoPath = `candidates/${data.candidate_id}/profile_photos/${ts}_extracted.jpg`;
-              
-              const { error: photoUploadErr } = await db.storage.from(STORAGE_BUCKET).upload(profilePhotoPath, pdfBuffer, {
-                contentType: 'image/jpeg',
-                upsert: false,
-              });
-              
-              if (!photoUploadErr) {
-                // Update candidate's profile photo fields
-                await db
-                  .from('candidates')
-                  .update({
-                    profile_photo_bucket: STORAGE_BUCKET,
-                    profile_photo_path: profilePhotoPath,
-                    profile_photo_url: null,
-                    photo_received: true,
-                    photo_received_at: new Date().toISOString(),
-                  })
-                  .eq('id', data.candidate_id);
-                
-                console.log(`[UploadDocument] ✅ Saved profile photo for candidate ${data.candidate_id}: ${profilePhotoPath}`);
-              }
-            }
+            // Use shared utility to handle image detection, profile photo saving, and storage upload
+            const processed = await processSplitDocument(splitDoc, data.candidate_id, uploadId, folder);
             
             // Upload split document
             const { error: splitUploadErr } = await db.storage
               .from(STORAGE_BUCKET)
-              .upload(splitStoragePath, pdfBuffer, {
-                contentType: mimeType,
+              .upload(processed.storagePath, pdfBuffer, {
+                contentType: processed.mimeType,
                 upsert: false,
               });
             
@@ -373,7 +342,8 @@ export async function uploadCandidateDocument(
               console.log('[UploadDocument] Could not fetch candidate name');
             }
 
-            // Generate descriptive filename
+            // Generate descriptive filename (use timestamp from processed path)
+            const ts = Date.now();
             const descriptiveFilename = generateDescriptiveFilename(
               {
                 doc_type: splitDoc.doc_type,
@@ -387,7 +357,7 @@ export async function uploadCandidateDocument(
 
             // Create candidate_documents record
             // For extracted profile photos, set verification_status to 'verified' to skip approval workflow
-            const verificationStatus = isImage && (splitDoc.doc_type === 'photos' || splitDoc.doc_type === 'photo')
+            const verificationStatus = processed.shouldAutoVerify
               ? VERIFICATION_STATUS.VERIFIED
               : VERIFICATION_STATUS.PENDING_AI;
             
@@ -398,9 +368,9 @@ export async function uploadCandidateDocument(
               detected_category: category,
               confidence: splitDoc.confidence || null,
               storage_bucket: STORAGE_BUCKET,
-              storage_path: splitStoragePath,
+              storage_path: processed.storagePath,
               file_name: descriptiveFilename,
-              mime_type: mimeType,  // Use detected MIME type (image/jpeg for photos)
+              mime_type: processed.mimeType,  // Use detected MIME type (image/jpeg for photos)
               source: data.source || 'manual',
               status: 'received',
               verification_status: verificationStatus,  // Auto-verify extracted photos
@@ -415,7 +385,7 @@ export async function uploadCandidateDocument(
 
             if (splitDbErr) {
               console.error(`[UploadDocument] Failed to create candidate_document for ${splitDoc.doc_type}:`, splitDbErr);
-              await db.storage.from(STORAGE_BUCKET).remove([splitStoragePath]);
+              await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
               continue;
             }
 
@@ -431,9 +401,9 @@ export async function uploadCandidateDocument(
                   documentId: createdDoc.id,
                   candidateId: data.candidate_id,
                   storageBucket: STORAGE_BUCKET,
-                  storagePath: splitStoragePath,
+                  storagePath: processed.storagePath,
                   fileName: createdDoc.file_name,
-                  mimeType: mimeType,
+                  mimeType: processed.mimeType,
                 }, {
                   attempts: 3,
                   backoff: { type: 'exponential', delay: 2000 },

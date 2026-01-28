@@ -48,6 +48,7 @@ const documentCategories_1 = require("../config/documentCategories");
 const queue_1 = require("../config/queue");
 const documentVerificationLogService_1 = require("../services/documentVerificationLogService");
 const crypto_2 = require("crypto");
+const splitDocumentProcessor_1 = require("../utils/splitDocumentProcessor");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 const STORAGE_BUCKET = 'documents';
@@ -384,42 +385,16 @@ function startCvParserWorker() {
                     // Only create records when we have at least 1 doc (normally always true)
                     for (const d of docs) {
                         try {
-                            const ts = Date.now();
                             const folder = (0, splitUploadService_1.docTypeToFolder)(d.doc_type);
-                            // Check if this is an extracted image (not a PDF)
-                            const isImage = d.is_image === true;
-                            const mimeType = isImage ? (d.mime_type || 'image/jpeg') : 'application/pdf';
-                            const fileExt = isImage ? (mimeType === 'image/png' ? 'png' : 'jpg') : 'pdf';
-                            const splitStoragePath = `candidates/${newCandidate.id}/${folder}/${ts}_${uploadId}_pages_${(d.pages || []).join('-')}.${fileExt}`;
                             const pdfBuffer = Buffer.from(d.pdf_base64, 'base64');
-                            // If this is a photo image, also save it as the candidate's profile photo
-                            if (isImage && (d.doc_type === 'photos' || d.doc_type === 'photo')) {
-                                const profilePhotoPath = `candidates/${newCandidate.id}/profile_photos/${ts}_extracted.jpg`;
-                                const { error: photoUploadErr } = await db.storage.from(STORAGE_BUCKET).upload(profilePhotoPath, pdfBuffer, {
-                                    contentType: 'image/jpeg',
-                                    upsert: false,
-                                });
-                                if (!photoUploadErr) {
-                                    // Update candidate's profile photo fields
-                                    await db
-                                        .from('candidates')
-                                        .update({
-                                        profile_photo_bucket: STORAGE_BUCKET,
-                                        profile_photo_path: profilePhotoPath,
-                                        profile_photo_url: null,
-                                        photo_received: true,
-                                        photo_received_at: new Date().toISOString(),
-                                    })
-                                        .eq('id', newCandidate.id);
-                                    console.log(`[CVParser] ✅ Saved profile photo for candidate ${newCandidate.id}: ${profilePhotoPath}`);
-                                }
-                            }
-                            const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(splitStoragePath, pdfBuffer, {
-                                contentType: mimeType,
+                            // Use shared utility to handle image detection, profile photo saving, and storage upload
+                            const processed = await (0, splitDocumentProcessor_1.processSplitDocument)(d, newCandidate.id, uploadId, folder);
+                            const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(processed.storagePath, pdfBuffer, {
+                                contentType: processed.mimeType,
                                 upsert: false,
                             });
                             if (upErr) {
-                                console.error(`[CVParser] Failed to upload split doc ${d.doc_type} -> ${splitStoragePath}:`, upErr);
+                                console.error(`[CVParser] Failed to upload split doc ${d.doc_type} -> ${processed.storagePath}:`, upErr);
                                 continue;
                             }
                             // Map parser doc_type to candidate_documents category
@@ -457,7 +432,7 @@ function startCvParserWorker() {
                             };
                             const dbDocumentType = docTypeMap[d.doc_type] || 'other';
                             // For extracted profile photos, set verification_status to 'verified' to skip approval workflow
-                            const verificationStatus = isImage && (d.doc_type === 'photos' || d.doc_type === 'photo')
+                            const verificationStatus = processed.shouldAutoVerify
                                 ? documentCategories_1.VERIFICATION_STATUS.VERIFIED
                                 : documentCategories_1.VERIFICATION_STATUS.PENDING_AI;
                             const splitDocData = {
@@ -468,9 +443,9 @@ function startCvParserWorker() {
                                 detected_category: category,
                                 confidence: d.confidence ?? null,
                                 storage_bucket: STORAGE_BUCKET,
-                                storage_path: splitStoragePath,
-                                file_name: `split_${d.doc_type}_${ts}.${fileExt}`,
-                                mime_type: mimeType, // Use detected MIME type (image/jpeg for photos)
+                                storage_path: processed.storagePath,
+                                file_name: `split_${d.doc_type}_${Date.now()}.${processed.fileExtension}`,
+                                mime_type: processed.mimeType, // Use detected MIME type (image/jpeg for photos)
                                 source: 'web',
                                 status: 'received',
                                 verification_status: verificationStatus, // Auto-verify extracted photos
@@ -483,7 +458,7 @@ function startCvParserWorker() {
                                 .single();
                             if (insErr || !createdDoc) {
                                 console.error(`[CVParser] Failed to create candidate_document for ${d.doc_type}:`, insErr);
-                                await db.storage.from(STORAGE_BUCKET).remove([splitStoragePath]);
+                                await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
                                 continue;
                             }
                             // Enqueue verification job (skip for auto-verified photos)
@@ -495,9 +470,9 @@ function startCvParserWorker() {
                                         documentId: createdDoc.id,
                                         candidateId: newCandidate.id,
                                         storageBucket: STORAGE_BUCKET,
-                                        storagePath: splitStoragePath,
+                                        storagePath: processed.storagePath,
                                         fileName: createdDoc.file_name,
-                                        mimeType: mimeType,
+                                        mimeType: processed.mimeType,
                                     }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
                                 }
                                 catch (qErr) {

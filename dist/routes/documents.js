@@ -13,6 +13,8 @@ const documentController_1 = require("../controllers/documentController");
 const quickApproveController_1 = require("../controllers/quickApproveController");
 const fixApprovedPhotosController_1 = require("../controllers/fixApprovedPhotosController");
 const pdfPhotoExtractionController_1 = require("../controllers/pdfPhotoExtractionController");
+const aiPhotoExtractionController_1 = require("../controllers/aiPhotoExtractionController");
+const rateLimit_1 = require("../middleware/rateLimit");
 const logger = (0, errorHandling_1.createLogger)('DocumentsRouter');
 const router = (0, express_1.Router)();
 // Configure multer for memory storage
@@ -86,6 +88,8 @@ router.post('/fix-approved-photos', fixApprovedPhotosController_1.fixApprovedPho
 router.get('/candidates/:candidateId/documents', documentController_1.listCandidateDocumentsControllerNew);
 // Extract photo from PDF profile photo and save as image
 router.post('/candidates/:candidateId/extract-photo', (0, errorHandling_1.asyncHandler)(pdfPhotoExtractionController_1.extractPhotoFromPdfController));
+// AI-assisted: Extract profile headshot from a PDF document and save as image
+router.post('/candidates/:candidateId/extract-photo-ai', rateLimit_1.aiExtractionLimiter, (0, errorHandling_1.asyncHandler)(aiPhotoExtractionController_1.extractPhotoFromPdfAiController));
 // ============================================================================
 // LEGACY ROUTES - REMOVED
 // All old endpoints have been removed. Use /candidate-documents endpoints instead.

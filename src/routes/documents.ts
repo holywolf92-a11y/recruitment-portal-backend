@@ -17,6 +17,8 @@ import {
 import { quickApproveCandidateDocument } from '../controllers/quickApproveController';
 import { fixApprovedPhotos } from '../controllers/fixApprovedPhotosController';
 import { extractPhotoFromPdfController } from '../controllers/pdfPhotoExtractionController';
+import { extractPhotoFromPdfAiController } from '../controllers/aiPhotoExtractionController';
+import { aiExtractionLimiter } from '../middleware/rateLimit';
 
 const logger = createLogger('DocumentsRouter');
 
@@ -112,6 +114,9 @@ router.get('/candidates/:candidateId/documents', listCandidateDocumentsControlle
 
 // Extract photo from PDF profile photo and save as image
 router.post('/candidates/:candidateId/extract-photo', asyncHandler(extractPhotoFromPdfController));
+
+// AI-assisted: Extract profile headshot from a PDF document and save as image
+router.post('/candidates/:candidateId/extract-photo-ai', aiExtractionLimiter, asyncHandler(extractPhotoFromPdfAiController));
 
 // ============================================================================
 // LEGACY ROUTES - REMOVED

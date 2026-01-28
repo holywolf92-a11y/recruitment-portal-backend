@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.gmailLimiter = exports.whatsappLimiter = void 0;
+exports.aiExtractionLimiter = exports.gmailLimiter = exports.whatsappLimiter = void 0;
 exports.createWebhookRateLimiter = createWebhookRateLimiter;
 const express_rate_limit_1 = require("express-rate-limit");
 const errorHandling_1 = require("../utils/errorHandling");
@@ -37,3 +37,23 @@ function createWebhookRateLimiter(name, windowMinutes, maxRequests) {
 }
 exports.whatsappLimiter = createWebhookRateLimiter('whatsapp', 1, 120); // 120 req/min
 exports.gmailLimiter = createWebhookRateLimiter('gmail', 1, 50); // 50 req/min
+exports.aiExtractionLimiter = (0, express_rate_limit_1.rateLimit)({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 10, // 10 requests / 5 min per IP
+    message: 'Too many AI photo extraction requests, please try again later',
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (req, res) => {
+        logger.warn('AI extraction rate limit exceeded', {
+            path: req.path,
+            ip: req.ip,
+            method: req.method,
+        });
+        const rateLimitReq = req;
+        res.status(429).json({
+            error: 'Too many requests',
+            retryAfter: rateLimitReq.rateLimit?.resetTime,
+        });
+    },
+    keyGenerator: (req) => req.ip || 'unknown',
+});

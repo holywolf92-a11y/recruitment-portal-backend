@@ -25,6 +25,14 @@ router.post('/:id/extract-photo', async (req, res) => {
         if (docError || !doc) {
             return res.status(404).json({ error: 'Document not found' });
         }
+        const isPdf = (doc.mime_type || '').toLowerCase() === 'application/pdf' ||
+            (doc.file_name || '').toLowerCase().endsWith('.pdf') ||
+            (doc.storage_path || '').toLowerCase().endsWith('.pdf');
+        if (isPdf) {
+            return res.status(400).json({
+                error: 'Selected document is a PDF. Use /api/documents/candidates/:candidateId/extract-photo-ai to extract a real image from the PDF.',
+            });
+        }
         // Update document category to 'photos' and set as profile photo
         const { error: updateDocError } = await db
             .from('candidate_documents')
@@ -42,7 +50,8 @@ router.post('/:id/extract-photo', async (req, res) => {
             .from('candidates')
             .update({
             profile_photo_path: doc.storage_path,
-            profile_photo_url: doc.storage_url,
+            // Prefer stable storage refs; signed URLs expire.
+            profile_photo_url: doc.storage_url || null,
             profile_photo_bucket: doc.storage_bucket || 'documents',
             photo_received: true,
             photo_received_at: new Date().toISOString()
@@ -54,7 +63,7 @@ router.post('/:id/extract-photo', async (req, res) => {
         }
         res.json({
             success: true,
-            message: 'Profile photo extracted successfully',
+            message: 'Profile photo set from document successfully',
             document: doc
         });
     }

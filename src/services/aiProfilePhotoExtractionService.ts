@@ -7,6 +7,31 @@ import { createLogger } from '../utils/errorHandling';
 
 const logger = createLogger('AIProfilePhotoExtraction');
 
+function isPdfDoc(d: any): boolean {
+  return (d?.mime_type || '').toLowerCase() === 'application/pdf' || (d?.file_name || '').toLowerCase().endsWith('.pdf');
+}
+
+function isSplitPdfDoc(d: any): boolean {
+  const name = String(d?.file_name || '').toLowerCase();
+  return name.startsWith('split_') || name.includes('_pages_');
+}
+
+function parseUploadIdFromSplitStoragePath(storagePath: string | undefined): string | null {
+  if (!storagePath) return null;
+  // Example: candidates/<candidateId>/<folder>/<ts>_<uploadId>_pages_1-2.pdf
+  const m = storagePath.match(/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_pages_/i);
+  return m?.[1] ?? null;
+}
+
+async function signStoragePath(bucket: string, storagePath: string, expiresSec: number): Promise<string> {
+  const db = supabaseAdminClient();
+  const { data, error } = await db.storage.from(bucket).createSignedUrl(storagePath, expiresSec);
+  if (error || !data?.signedUrl) {
+    throw new Error(`Failed to generate signed URL for ${bucket}/${storagePath}: ${error?.message || 'unknown'}`);
+  }
+  return data.signedUrl;
+}
+
 type BBoxNorm = {
   x: number | null;
   y: number | null;
@@ -171,13 +196,42 @@ async function choosePdfSource(args: {
     if (!doc) throw new Error('Document not found');
     if (doc.candidate_id !== args.candidateId) throw new Error('Document does not belong to candidate');
 
+    // If user clicked a split PDF (e.g., split_passport_*.pdf), prefer the preserved original upload
+    // (original_uploads/upload_<uploadId>.pdf) because the profile photo may be on any page.
+    if (isPdfDoc(doc) && isSplitPdfDoc(doc)) {
+      const uploadId = parseUploadIdFromSplitStoragePath(doc.storage_path);
+      if (uploadId) {
+        const originalPath = `original_uploads/upload_${uploadId}.pdf`;
+        try {
+          const url = await signStoragePath('documents', originalPath, 60 * 10);
+          logger.info('Using preserved original PDF for extraction', {
+            candidateId: args.candidateId,
+            clickedDocumentId: args.documentId,
+            originalPath,
+          });
+          // Keep documentId as the clicked doc id for traceability.
+          return { pdfSignedUrl: url, documentId: args.documentId };
+        } catch (e: any) {
+          logger.warn('Preserved original PDF not found/signed, falling back to clicked document', {
+            candidateId: args.candidateId,
+            clickedDocumentId: args.documentId,
+            error: e?.message || String(e),
+          });
+        }
+      }
+    }
+
     const url = await getCandidateDocumentSignedUrl(args.documentId, 60 * 10);
     return { pdfSignedUrl: url, documentId: args.documentId };
   }
 
-  // Fallback: pick the newest PDF for this candidate.
+  // Fallback: prefer a preserved original upload (if present as a candidate_document),
+  // otherwise pick a non-split PDF, otherwise newest PDF.
   const docs = await listCandidateDocumentsByCandidate(args.candidateId);
-  const pdf = docs.find((d: any) => (d.mime_type || '').toLowerCase() === 'application/pdf' || (d.file_name || '').toLowerCase().endsWith('.pdf'));
+  const preferredOriginal = docs.find((d: any) => isPdfDoc(d) && String(d.storage_path || '').startsWith('original_uploads/'));
+  const nonSplitPdf = docs.find((d: any) => isPdfDoc(d) && !isSplitPdfDoc(d));
+  const anyPdf = docs.find((d: any) => isPdfDoc(d));
+  const pdf = preferredOriginal || nonSplitPdf || anyPdf;
   if (!pdf) {
     throw new Error('No PDF document found for candidate (provide documentId)');
   }

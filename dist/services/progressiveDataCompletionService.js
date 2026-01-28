@@ -468,6 +468,24 @@ async function logEnrichmentEvent(candidateId, updatedFields, skippedFields, sou
     }
 }
 /**
+ * Check if email is a government/organizational email that should not be used for matching
+ */
+function isGovernmentEmail(email) {
+    if (!email || typeof email !== 'string')
+        return false;
+    const normalized = email.toLowerCase().trim();
+    const patterns = [
+        'police@', '@police.', 'police.gov',
+        'govt@', '@gov.', 'government@',
+        'department@', 'admin@', 'info@',
+        'contact@', 'support@', 'noinformation@',
+        'noinformation.', '@noinformation',
+        '@pk', 'gov.pk', 'police.pk', 'jhelum',
+        'gjtpolice', 'lahore.police', 'islamabad.police',
+    ];
+    return patterns.some(pattern => normalized.includes(pattern));
+}
+/**
  * Find existing candidate by identity matching
  * Priority: CNIC > Passport > Email/Phone > Name + Father Name + DOB
  */
@@ -500,8 +518,8 @@ async function findExistingCandidate(extractedData) {
                 return data.id;
         }
     }
-    // Priority 3: Email
-    if (extractedData.email) {
+    // Priority 3: Email (but SKIP government emails to prevent false matches)
+    if (extractedData.email && !isGovernmentEmail(extractedData.email)) {
         const { data } = await db
             .from('candidates')
             .select('id')

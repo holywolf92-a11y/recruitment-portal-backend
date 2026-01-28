@@ -13,6 +13,7 @@ import { createCandidate, checkForDuplicates, CreateCandidateData } from './cand
 import { logDocumentUploaded } from './timelineService';
 import { calculateSHA256 } from './documentService';
 import { generateDescriptiveFilename } from '../utils/documentNaming';
+import { processSplitDocument } from '../utils/splitDocumentProcessor';
 
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
@@ -189,50 +190,13 @@ async function uploadOneSplitDoc(
   engineUsed: string
 ): Promise<void> {
   const db = supabaseAdminClient();
-  const fileBuffer = Buffer.from(doc.pdf_base64, 'base64');
-  const ts = Date.now();
-  
-  // CRITICAL FIX: If this is a photo (extracted image), ALSO save it as profile photo
-  const isImage = doc.is_image === true;
-  const mimeType = doc.mime_type || (isImage ? 'image/jpeg' : 'application/pdf');
-  const ext = isImage ? 'jpg' : 'pdf';
   const folder = docTypeToFolder(doc.doc_type);
-  const sha256 = calculateSHA256(fileBuffer);
-  const storagePath = `${candidateId}/${folder}/${ts}_${uploadId}_${(doc.pages || []).join('-')}.${ext}`;
   
-  // If this is a photo, also save it as the candidate's profile photo
-  if (isImage && (doc.doc_type === 'photos' || doc.doc_type === 'photo')) {
-    const profilePhotoPath = `candidates/${candidateId}/profile_photos/${ts}_extracted.jpg`;
-    
-    const { error: photoUploadErr } = await db.storage.from(STORAGE_BUCKET).upload(profilePhotoPath, fileBuffer, {
-      contentType: 'image/jpeg',
-      upsert: false,
-    });
-    
-    if (!photoUploadErr) {
-      // Update candidate's profile photo fields
-      const { error: updateErr } = await db
-        .from('candidates')
-        .update({
-          profile_photo_bucket: STORAGE_BUCKET,
-          profile_photo_path: profilePhotoPath,
-          profile_photo_url: null,
-          photo_received: true,
-          photo_received_at: new Date().toISOString(),
-        })
-        .eq('id', candidateId);
-      
-      if (!updateErr) {
-        console.log(`[SplitUpload] ✅ Saved profile photo for candidate ${candidateId}: ${profilePhotoPath}`);
-      }
-    }
-  }
-
-  const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(storagePath, fileBuffer, {
-    contentType: mimeType,
-    upsert: false,
-  });
-  if (upErr) throw new Error(`Failed to upload split doc: ${upErr.message}`);
+  // Use shared utility to process the split document (handles images, profile photos, etc.)
+  const processed = await processSplitDocument(doc, candidateId, uploadId, folder);
+  
+  const fileBuffer = Buffer.from(doc.pdf_base64, 'base64');
+  const sha256 = calculateSHA256(fileBuffer);
 
   // Fetch candidate name for better filename
   let candidateName: string | undefined;
@@ -248,6 +212,7 @@ async function uploadOneSplitDoc(
   }
 
   // Generate descriptive filename
+  const ts = Date.now();
   const descriptiveFilename = generateDescriptiveFilename(
     {
       doc_type: doc.doc_type,
@@ -267,17 +232,15 @@ async function uploadOneSplitDoc(
 
   // For profile photos that were extracted as images, set verification_status to 'verified'
   // to skip the approval workflow since we've already saved them as the candidate's profile photo
-  const verificationStatus = isImage && (doc.doc_type === 'photos' || doc.doc_type === 'photo') 
-    ? 'verified' 
-    : undefined;
+  const verificationStatus = processed.shouldAutoVerify ? 'verified' : undefined;
 
   const { error: insErr } = await db.from('documents').insert({
     candidate_id: candidateId,
     doc_type: doc.doc_type,
     storage_bucket: STORAGE_BUCKET,
-    storage_path: storagePath,
+    storage_path: processed.storagePath,
     file_name: descriptiveFilename,
-    mime_type: mimeType,  // Use detected MIME type (image/jpeg for photos)
+    mime_type: processed.mimeType,
     sha256,
     is_primary: false,
     pages: doc.pages ?? [],
@@ -288,7 +251,7 @@ async function uploadOneSplitDoc(
   });
 
   if (insErr) {
-    await db.storage.from(STORAGE_BUCKET).remove([storagePath]);
+    await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
     throw new Error(`Failed to create document record: ${insErr.message}`);
   }
 

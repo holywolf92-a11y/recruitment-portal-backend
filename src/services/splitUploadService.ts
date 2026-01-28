@@ -189,14 +189,53 @@ async function uploadOneSplitDoc(
   engineUsed: string
 ): Promise<void> {
   const db = supabaseAdminClient();
-  const folder = docTypeToFolder(doc.doc_type);
   const fileBuffer = Buffer.from(doc.pdf_base64, 'base64');
-  const sha256 = calculateSHA256(fileBuffer);
   const ts = Date.now();
   
-  // PRODUCTION FIX: Handle images (photos) with correct extension and MIME type
+  // CRITICAL FIX: If this is a photo (extracted image), save it as profile photo immediately
   const isImage = doc.is_image === true;
   const mimeType = doc.mime_type || (isImage ? 'image/jpeg' : 'application/pdf');
+  
+  if (isImage && (doc.doc_type === 'photos' || doc.doc_type === 'photo')) {
+    // This is an extracted profile photo - save it directly as candidate's profile photo
+    const ext = 'jpg';
+    const profilePhotoPath = `candidates/${candidateId}/profile_photos/${ts}_extracted.${ext}`;
+    
+    const { error: photoUploadErr } = await db.storage.from(STORAGE_BUCKET).upload(profilePhotoPath, fileBuffer, {
+      contentType: 'image/jpeg',
+      upsert: false,
+    });
+    
+    if (photoUploadErr) {
+      console.error(`[SplitUpload] Failed to upload profile photo: ${photoUploadErr.message}`);
+      return; // Skip this doc, don't create candidate_documents entry
+    }
+    
+    // Update candidate's profile photo fields
+    const { error: updateErr } = await db
+      .from('candidates')
+      .update({
+        profile_photo_bucket: STORAGE_BUCKET,
+        profile_photo_path: profilePhotoPath,
+        profile_photo_url: null, // Clear any old signed URL
+        photo_received: true,
+        photo_received_at: new Date().toISOString(),
+      })
+      .eq('id', candidateId);
+    
+    if (updateErr) {
+      console.error(`[SplitUpload] Failed to update candidate profile photo: ${updateErr.message}`);
+    } else {
+      console.log(`[SplitUpload] ✅ Saved profile photo for candidate ${candidateId}: ${profilePhotoPath}`);
+    }
+    
+    // Don't create a candidate_documents entry for profile photos - they're stored on the candidate directly
+    return;
+  }
+  
+  // Regular document flow (non-photo or non-image)
+  const folder = docTypeToFolder(doc.doc_type);
+  const sha256 = calculateSHA256(fileBuffer);
   const ext = isImage ? 'jpg' : 'pdf';
   const storagePath = `${candidateId}/${folder}/${ts}_${uploadId}_${(doc.pages || []).join('-')}.${ext}`;
 

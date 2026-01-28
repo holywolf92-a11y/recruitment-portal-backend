@@ -128,70 +128,89 @@ export async function listCandidatesController(req: Request, res: Response) {
     try {
       const db = supabaseAdminClient();
       const ttlSeconds = 600;
-      const enriched = await Promise.all((result.candidates || []).map(async (c: any) => {
-        try {
-          let bucket: string = 'documents';
-          let storagePath: string | null = null;
+      const candidates = result.candidates || [];
 
-          // Strategy 1: Look for an approved "photos" document (real profile photo)
+      // Prefetch latest verified photo docs for these candidates (avoids N+1 queries)
+      const candidateIds = candidates.map((c: any) => c?.id).filter(Boolean);
+      const verifiedPhotoPathByCandidateId = new Map<string, string>();
+      try {
+        if (candidateIds.length) {
+          const { data: photoDocs } = await db
+            .from('candidate_documents')
+            .select('candidate_id,storage_path,received_at')
+            .in('candidate_id', candidateIds)
+            .eq('category', 'photos')
+            .eq('verification_status', 'verified')
+            .order('candidate_id', { ascending: true })
+            .order('received_at', { ascending: false });
+
+          for (const doc of (photoDocs || []) as any[]) {
+            const cid = doc?.candidate_id as string | undefined;
+            const path = doc?.storage_path as string | undefined;
+            if (cid && path && !verifiedPhotoPathByCandidateId.has(cid)) {
+              verifiedPhotoPathByCandidateId.set(cid, path);
+            }
+          }
+        }
+      } catch {
+        // ignore prefetch errors
+      }
+
+      // Limit concurrency to keep response time stable under load
+      const enriched: any[] = [];
+      const concurrency = 15;
+      for (let i = 0; i < candidates.length; i += concurrency) {
+        const chunk = candidates.slice(i, i + concurrency);
+        const chunkEnriched = await Promise.all(chunk.map(async (c: any) => {
           try {
-            const { data: photoDoc } = await db
-              .from('candidate_documents')
-              .select('storage_path')
-              .eq('candidate_id', c.id)
-              .eq('category', 'photos')
-              .eq('verification_status', 'verified')
-              .order('received_at', { ascending: false })
-              .limit(1)
-              .single();
-            
-            if (photoDoc?.storage_path) {
-              storagePath = photoDoc.storage_path;
+            let bucket: string = 'documents';
+            let storagePath: string | null = null;
+
+            // Strategy 1: Use pre-fetched latest verified photo doc
+            const prefetched = c?.id ? verifiedPhotoPathByCandidateId.get(c.id) : null;
+            if (prefetched) storagePath = prefetched;
+
+            // Strategy 2: Use profile_photo_path if available
+            if (!storagePath && c.profile_photo_path) {
+              storagePath = c.profile_photo_path;
+            }
+
+            // Strategy 3: Parse profile_photo_url if no direct path
+            if (!storagePath && c.profile_photo_url) {
+              const url: string = c.profile_photo_url;
+              const publicMarker = '/storage/v1/object/public/';
+              const signMarker = '/storage/v1/object/sign/';
+              if (url.includes(publicMarker)) {
+                const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+                const parts = rest.split('/');
+                bucket = parts.shift() || bucket;
+                storagePath = parts.join('/');
+              } else if (url.includes(signMarker)) {
+                const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+                const parts = after.split('/');
+                bucket = parts.shift() || bucket;
+                storagePath = parts.join('/');
+              }
+            }
+
+            // Generate signed URL if we have a valid storage path.
+            // Note: profile photo may be a PDF; frontend decides how to render.
+            if (storagePath) {
+              const { data: signedData, error: urlError } = await db.storage
+                .from(bucket)
+                .createSignedUrl(storagePath, ttlSeconds);
+
+              if (!urlError && signedData && (signedData as any).signedUrl) {
+                return { ...c, profile_photo_signed_url: (signedData as any).signedUrl };
+              }
             }
           } catch {
-            // No verified photo document found, fall through to strategy 2
+            // ignore and return original candidate
           }
-
-          // Strategy 2: Use profile_photo_path if available
-          if (!storagePath && c.profile_photo_path) {
-            storagePath = c.profile_photo_path;
-          }
-
-          // Strategy 3: Parse profile_photo_url if no direct path
-          if (!storagePath && c.profile_photo_url) {
-            const url: string = c.profile_photo_url;
-            const publicMarker = '/storage/v1/object/public/';
-            const signMarker = '/storage/v1/object/sign/';
-            if (url.includes(publicMarker)) {
-              const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
-              const parts = rest.split('/');
-              bucket = parts.shift() || bucket;
-              storagePath = parts.join('/');
-            } else if (url.includes(signMarker)) {
-              const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
-              const parts = after.split('/');
-              bucket = parts.shift() || bucket;
-              storagePath = parts.join('/');
-            }
-          }
-
-          // Generate signed URL if we have a valid storage path.
-          // Note: the profile photo may be a PDF (e.g., a split photo PDF). We still return a signed URL
-          // and let the frontend decide how to render it (thumbnail vs. click-to-open).
-          if (storagePath) {
-            const { data: signedData, error: urlError } = await db.storage
-              .from(bucket)
-              .createSignedUrl(storagePath, ttlSeconds);
-
-            if (!urlError && signedData && (signedData as any).signedUrl) {
-              return { ...c, profile_photo_signed_url: (signedData as any).signedUrl };
-            }
-          }
-        } catch {
-          // ignore and return original candidate
-        }
-        return c;
-      }));
+          return c;
+        }));
+        enriched.push(...chunkEnriched);
+      }
 
       res.json({ ...result, candidates: enriched });
       return;

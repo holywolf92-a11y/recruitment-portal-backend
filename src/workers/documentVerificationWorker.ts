@@ -170,12 +170,22 @@ async function callAICategorizationService(
       // Python parser already returns extracted_identity format - use it directly
       // Ensure all fields are present
       const identity = result.extracted_identity;
+      
+      // Filter out government/police emails that shouldn't be used for candidate matching
+      const emailToUse = identity.email && !CandidateMatcher.isGovernmentEmail(identity.email) 
+        ? identity.email 
+        : null;
+      
+      if (identity.email && !emailToUse) {
+        console.log(`[DocumentVerification] Filtered out government email: ${identity.email}`);
+      }
+      
       result.extracted_identity = {
         name: identity.name || null,
         father_name: identity.father_name || null,
         cnic: identity.cnic || null,
         passport_no: identity.passport_no || null,
-        email: identity.email || null,
+        email: emailToUse,
         phone: identity.phone || null,
         date_of_birth: identity.date_of_birth || identity.dob || null,
         document_number: identity.document_number || null,

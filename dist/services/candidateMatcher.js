@@ -46,8 +46,8 @@ class CandidateMatcher {
                 }
             }
         }
-        // Priority 2: Email
-        if (criteria.email) {
+        // Priority 2: Email (skip government/police department emails)
+        if (criteria.email && !this.isGovernmentEmail(criteria.email)) {
             const normalized = criteria.email.toLowerCase().trim();
             const { data, error } = await db
                 .from('candidates')
@@ -78,6 +78,9 @@ class CandidateMatcher {
                     };
                 }
             }
+        }
+        else if (criteria.email && this.isGovernmentEmail(criteria.email)) {
+            logger.info(`Skipped email matching for government email: ${criteria.email}`);
         }
         // Priority 3: Phone
         if (criteria.phone) {
@@ -288,6 +291,35 @@ class CandidateMatcher {
             }
         }
         return matrix[str2.length][str1.length];
+    }
+    /**
+     * Check if email is from a government/police department (should not be used for matching)
+     */
+    static isGovernmentEmail(email) {
+        if (!email)
+            return false;
+        const normalized = email.toLowerCase().trim();
+        // List of government/police email patterns that should not be used for candidate matching
+        const governmentPatterns = [
+            'police@',
+            'police.gov',
+            '@police.',
+            'govt@',
+            '@gov.',
+            '@government.',
+            'department@',
+            'ministry@',
+            'municipal@',
+            'city@',
+            'district@',
+            'admin@',
+            'info@',
+            'contact@',
+            'support@',
+            'noreply@',
+            'donotreply@'
+        ];
+        return governmentPatterns.some(pattern => normalized.includes(pattern));
     }
 }
 exports.CandidateMatcher = CandidateMatcher;

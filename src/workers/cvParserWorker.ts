@@ -408,14 +408,11 @@ export function startCvParserWorker() {
                 const pdfBuffer = Buffer.from(d.pdf_base64, 'base64');
                 
                 // Use shared utility to handle image detection, profile photo saving, and storage upload
-                const processed = await processSplitDocument(d, newCandidate.id, uploadId, folder);
-
-                const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(processed.storagePath, pdfBuffer, {
-                  contentType: processed.mimeType,
-                  upsert: false,
-                });
-                if (upErr) {
-                  console.error(`[CVParser] Failed to upload split doc ${d.doc_type} -> ${processed.storagePath}:`, upErr);
+                let processed: any;
+                try {
+                  processed = await processSplitDocument(d, newCandidate.id, uploadId, folder);
+                } catch (processErr: any) {
+                  console.error(`[CVParser] Failed to process split doc ${d.doc_type}:`, processErr.message);
                   continue;
                 }
 

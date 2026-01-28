@@ -235,16 +235,12 @@ async function uploadCandidateDocument(data) {
                         const pdfBuffer = Buffer.from(splitDoc.pdf_base64, 'base64');
                         const folder = (0, splitUploadService_1.docTypeToFolder)(splitDoc.doc_type);
                         // Use shared utility to handle image detection, profile photo saving, and storage upload
-                        const processed = await (0, splitDocumentProcessor_1.processSplitDocument)(splitDoc, data.candidate_id, uploadId, folder);
-                        // Upload split document
-                        const { error: splitUploadErr } = await db.storage
-                            .from(STORAGE_BUCKET)
-                            .upload(processed.storagePath, pdfBuffer, {
-                            contentType: processed.mimeType,
-                            upsert: false,
-                        });
-                        if (splitUploadErr) {
-                            console.error(`[UploadDocument] Failed to upload split doc ${splitDoc.doc_type}:`, splitUploadErr);
+                        let processed;
+                        try {
+                            processed = await (0, splitDocumentProcessor_1.processSplitDocument)(splitDoc, data.candidate_id, uploadId, folder);
+                        }
+                        catch (processErr) {
+                            console.error(`[UploadDocument] Failed to process split doc ${splitDoc.doc_type}:`, processErr.message);
                             continue;
                         }
                         // Map parser doc_type to candidate_documents category

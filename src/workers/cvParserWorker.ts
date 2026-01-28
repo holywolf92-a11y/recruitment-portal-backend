@@ -405,11 +405,43 @@ export function startCvParserWorker() {
               try {
                 const ts = Date.now();
                 const folder = docTypeToFolder(d.doc_type);
-                const splitStoragePath = `candidates/${newCandidate.id}/${folder}/${ts}_${uploadId}_pages_${(d.pages || []).join('-')}.pdf`;
+                
+                // Check if this is an extracted image (not a PDF)
+                const isImage = d.is_image === true;
+                const mimeType = isImage ? (d.mime_type || 'image/jpeg') : 'application/pdf';
+                const fileExt = isImage ? (mimeType === 'image/png' ? 'png' : 'jpg') : 'pdf';
+                
+                const splitStoragePath = `candidates/${newCandidate.id}/${folder}/${ts}_${uploadId}_pages_${(d.pages || []).join('-')}.${fileExt}`;
                 const pdfBuffer = Buffer.from(d.pdf_base64, 'base64');
 
+                // If this is a photo image, also save it as the candidate's profile photo
+                if (isImage && (d.doc_type === 'photos' || d.doc_type === 'photo')) {
+                  const profilePhotoPath = `candidates/${newCandidate.id}/profile_photos/${ts}_extracted.jpg`;
+                  
+                  const { error: photoUploadErr } = await db.storage.from(STORAGE_BUCKET).upload(profilePhotoPath, pdfBuffer, {
+                    contentType: 'image/jpeg',
+                    upsert: false,
+                  });
+                  
+                  if (!photoUploadErr) {
+                    // Update candidate's profile photo fields
+                    await db
+                      .from('candidates')
+                      .update({
+                        profile_photo_bucket: STORAGE_BUCKET,
+                        profile_photo_path: profilePhotoPath,
+                        profile_photo_url: null,
+                        photo_received: true,
+                        photo_received_at: new Date().toISOString(),
+                      })
+                      .eq('id', newCandidate.id);
+                    
+                    console.log(`[CVParser] ✅ Saved profile photo for candidate ${newCandidate.id}: ${profilePhotoPath}`);
+                  }
+                }
+
                 const { error: upErr } = await db.storage.from(STORAGE_BUCKET).upload(splitStoragePath, pdfBuffer, {
-                  contentType: 'application/pdf',
+                  contentType: mimeType,
                   upsert: false,
                 });
                 if (upErr) {
@@ -453,6 +485,11 @@ export function startCvParserWorker() {
                 };
                 const dbDocumentType = docTypeMap[d.doc_type] || 'other';
 
+                // For extracted profile photos, set verification_status to 'verified' to skip approval workflow
+                const verificationStatus = isImage && (d.doc_type === 'photos' || d.doc_type === 'photo')
+                  ? VERIFICATION_STATUS.VERIFIED
+                  : VERIFICATION_STATUS.PENDING_AI;
+
                 const splitDocData: any = {
                   candidate_id: newCandidate.id,
                   inbox_attachment_id: attachmentId,
@@ -462,11 +499,11 @@ export function startCvParserWorker() {
                   confidence: d.confidence ?? null,
                   storage_bucket: STORAGE_BUCKET,
                   storage_path: splitStoragePath,
-                  file_name: `split_${d.doc_type}_${ts}.pdf`,
-                  mime_type: 'application/pdf',
+                  file_name: `split_${d.doc_type}_${ts}.${fileExt}`,
+                  mime_type: mimeType,  // Use detected MIME type (image/jpeg for photos)
                   source: 'web',
                   status: 'received',
-                  verification_status: VERIFICATION_STATUS.PENDING_AI,
+                  verification_status: verificationStatus,  // Auto-verify extracted photos
                   received_at: new Date().toISOString(),
                 };
 
@@ -481,24 +518,28 @@ export function startCvParserWorker() {
                   continue;
                 }
 
-                // Enqueue verification job
-                const splitRequestId = generateRequestId();
-                try {
-                  await documentVerificationQueue.add(
-                    'verify-document',
-                    {
-                      requestId: splitRequestId,
-                      documentId: createdDoc.id,
-                      candidateId: newCandidate.id,
-                      storageBucket: STORAGE_BUCKET,
-                      storagePath: splitStoragePath,
-                      fileName: createdDoc.file_name,
-                      mimeType: 'application/pdf',
-                    },
-                    { attempts: 3, backoff: { type: 'exponential', delay: 2000 } }
-                  );
-                } catch (qErr: any) {
-                  console.error(`[CVParser] Failed to enqueue verification for split doc ${createdDoc.id}:`, qErr?.message || qErr);
+                // Enqueue verification job (skip for auto-verified photos)
+                if (verificationStatus !== VERIFICATION_STATUS.VERIFIED) {
+                  const splitRequestId = generateRequestId();
+                  try {
+                    await documentVerificationQueue.add(
+                      'verify-document',
+                      {
+                        requestId: splitRequestId,
+                        documentId: createdDoc.id,
+                        candidateId: newCandidate.id,
+                        storageBucket: STORAGE_BUCKET,
+                        storagePath: splitStoragePath,
+                        fileName: createdDoc.file_name,
+                        mimeType: mimeType,
+                      },
+                      { attempts: 3, backoff: { type: 'exponential', delay: 2000 } }
+                    );
+                  } catch (qErr: any) {
+                    console.error(`[CVParser] Failed to enqueue verification for split doc ${createdDoc.id}:`, qErr?.message || qErr);
+                  }
+                } else {
+                  console.log(`[CVParser] ⏭️  Skipped AI verification for auto-verified photo ${createdDoc.id}`);
                 }
               } catch (oneErr: any) {
                 console.error(`[CVParser] Error processing split doc:`, oneErr?.message || oneErr);

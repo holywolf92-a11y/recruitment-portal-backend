@@ -16,6 +16,7 @@ import {
 } from '../controllers/documentController';
 import { quickApproveCandidateDocument } from '../controllers/quickApproveController';
 import { fixApprovedPhotos } from '../controllers/fixApprovedPhotosController';
+import { extractPhotoFromPdfController } from '../controllers/pdfPhotoExtractionController';
 
 const logger = createLogger('DocumentsRouter');
 
@@ -108,6 +109,9 @@ router.post('/fix-approved-photos', fixApprovedPhotos);
 
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', listCandidateDocumentsControllerNew);
+
+// Extract photo from PDF profile photo and save as image
+router.post('/candidates/:candidateId/extract-photo', asyncHandler(extractPhotoFromPdfController));
 
 // ============================================================================
 // LEGACY ROUTES - REMOVED

@@ -12,6 +12,7 @@ const database_1 = require("../config/database");
 const documentController_1 = require("../controllers/documentController");
 const quickApproveController_1 = require("../controllers/quickApproveController");
 const fixApprovedPhotosController_1 = require("../controllers/fixApprovedPhotosController");
+const pdfPhotoExtractionController_1 = require("../controllers/pdfPhotoExtractionController");
 const logger = (0, errorHandling_1.createLogger)('DocumentsRouter');
 const router = (0, express_1.Router)();
 // Configure multer for memory storage
@@ -83,6 +84,8 @@ router.post('/candidate-documents/:id/approve', quickApproveController_1.quickAp
 router.post('/fix-approved-photos', fixApprovedPhotosController_1.fixApprovedPhotos);
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', documentController_1.listCandidateDocumentsControllerNew);
+// Extract photo from PDF profile photo and save as image
+router.post('/candidates/:candidateId/extract-photo', (0, errorHandling_1.asyncHandler)(pdfPhotoExtractionController_1.extractPhotoFromPdfController));
 // ============================================================================
 // LEGACY ROUTES - REMOVED
 // All old endpoints have been removed. Use /candidate-documents endpoints instead.

@@ -123,7 +123,51 @@ export async function listCandidatesController(req: Request, res: Response) {
     };
 
     const result = await listCandidates(filters, userId);
-    res.json(result);
+
+    // Best-effort: attach short-lived signed URLs for profile photos in list
+    try {
+      const db = supabaseAdminClient();
+      const ttlSeconds = 600;
+      const enriched = await Promise.all((result.candidates || []).map(async (c: any) => {
+        try {
+          let bucket: string = c.profile_photo_bucket || 'documents';
+          let storagePath: string | null = c.profile_photo_path || null;
+          if (!storagePath && c.profile_photo_url) {
+            const url: string = c.profile_photo_url;
+            const publicMarker = '/storage/v1/object/public/';
+            const signMarker = '/storage/v1/object/sign/';
+            if (url.includes(publicMarker)) {
+              const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+              const parts = rest.split('/');
+              bucket = parts.shift() || bucket;
+              storagePath = parts.join('/');
+            } else if (url.includes(signMarker)) {
+              const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+              const parts = after.split('/');
+              bucket = parts.shift() || bucket;
+              storagePath = parts.join('/');
+            }
+          }
+          if (storagePath) {
+            const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
+            if (!urlError && signedData && (signedData as any).signedUrl) {
+              return { ...c, profile_photo_signed_url: (signedData as any).signedUrl };
+            }
+          }
+        } catch {
+          // ignore and return original candidate
+        }
+        return c;
+      }));
+
+      res.json({ ...result, candidates: enriched });
+      return;
+    } catch (e) {
+      console.warn('Failed to generate signed URLs for candidates list:', e);
+      // Fallback to original result without signed URLs
+      res.json(result);
+      return;
+    }
   } catch (error: any) {
     console.error('Error listing candidates:', error);
     res.status(500).json({ error: 'Failed to fetch candidates' });

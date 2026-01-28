@@ -22,7 +22,7 @@ async function testCandidateUpdate(candidateId) {
   // Get candidate record
   const { data: candidate, error } = await supabase
     .from('candidates')
-    .select('id, name, nationality, passport, passport_normalized, passport_expiry, date_of_birth, created_at, updated_at')
+    .select('id, name, nationality, profile_photo_url, profile_photo_bucket, profile_photo_path, passport_expiry, date_of_birth, created_at, updated_at')
     .eq('id', candidateId)
     .single();
   
@@ -40,8 +40,9 @@ async function testCandidateUpdate(candidateId) {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`Name:              ${candidate.name || '❌ MISSING'}`);
   console.log(`Nationality:       ${candidate.nationality || '❌ MISSING'}`);
-  console.log(`Passport:          ${candidate.passport || '❌ MISSING'}`);
-  console.log(`Passport (norm):   ${candidate.passport_normalized || '❌ MISSING'}`);
+  console.log(`Profile Photo URL: ${candidate.profile_photo_url || '❌ MISSING'}`);
+  console.log(`Photo Bucket:      ${candidate.profile_photo_bucket || '❌ MISSING'}`);
+  console.log(`Photo Path:        ${candidate.profile_photo_path || '❌ MISSING'}`);
   console.log(`Passport Expiry:   ${candidate.passport_expiry || '❌ MISSING'}`);
   console.log(`Date of Birth:     ${candidate.date_of_birth || '❌ MISSING'}`);
   console.log(`Created:           ${candidate.created_at}`);
@@ -89,20 +90,24 @@ async function testCandidateUpdate(candidateId) {
   console.log('📊 Summary:');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   const hasNationality = !!candidate.nationality;
-  const hasPassport = !!candidate.passport;
+  const hasPhotoUrl = !!candidate.profile_photo_url;
+  const hasPhotoBucket = !!candidate.profile_photo_bucket;
+  const hasPhotoPath = !!candidate.profile_photo_path;
   const hasExpiry = !!candidate.passport_expiry;
   const hasDOB = !!candidate.date_of_birth;
-  
-  console.log(`Nationality:       ${hasNationality ? '✅' : '❌'}`);
-  console.log(`Passport Number:   ${hasPassport ? '✅' : '❌'}`);
-  console.log(`Passport Expiry:   ${hasExpiry ? '✅' : '❌'}`);
-  console.log(`Date of Birth:     ${hasDOB ? '✅' : '❌'}`);
+
+  console.log(`Nationality:         ${hasNationality ? '✅' : '❌'}`);
+  console.log(`Profile Photo URL:   ${hasPhotoUrl ? '✅' : '❌'}`);
+  console.log(`Photo Bucket:        ${hasPhotoBucket ? '✅' : '❌'}`);
+  console.log(`Photo Path:          ${hasPhotoPath ? '✅' : '❌'}`);
+  console.log(`Passport Expiry:     ${hasExpiry ? '✅' : '❌'}`);
+  console.log(`Date of Birth:       ${hasDOB ? '✅' : '❌'}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-  
-  if (hasNationality && hasPassport && hasExpiry) {
-    console.log('✅ SUCCESS: Candidate record has been updated with passport data!');
+
+  if (hasPhotoUrl && hasPhotoBucket && hasPhotoPath) {
+    console.log('✅ SUCCESS: Candidate record has profile photo fields set!');
   } else {
-    console.log('⚠️  WARNING: Some fields are still missing. Check logs for update process.');
+    console.log('⚠️  WARNING: Profile photo fields are missing. Check extraction and backend logic.');
   }
 }
 

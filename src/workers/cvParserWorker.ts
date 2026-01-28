@@ -117,6 +117,8 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
       ),
       passport_expiry: passportExpiry,
       professional_summary: candidate.professional_summary || candidate.summary || undefined,
+      // Pass through profile_photo_url from parser response if present
+      profile_photo_url: parsed?.candidate?.profile_photo_url || parsed?.profile_photo_url || undefined,
     };
 
     // Create candidate (system-created, no specific userId)

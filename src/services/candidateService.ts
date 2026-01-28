@@ -173,6 +173,9 @@ export interface CreateCandidateData {
   cv_received?: boolean;
   photo_received?: boolean;
   certificate_received?: boolean;
+
+  // Profile photo URL from parser
+  profile_photo_url?: string;
 }
 
 export async function createCandidate(data: CreateCandidateData, userId?: string) {
@@ -191,6 +194,19 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
 
   // Generate candidate code
   const candidateCode = await generateCandidateCode();
+
+  // Validate profile_photo_url (only allow image URLs)
+  let validProfilePhotoUrl = null;
+  if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
+    const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
+    const url = data.profile_photo_url.toLowerCase();
+    const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
+    if (extMatch && allowedExts.includes(extMatch[1])) {
+      validProfilePhotoUrl = data.profile_photo_url;
+    } else {
+      console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
+    }
+  }
 
   // Create candidate record
   const candidateData = {
@@ -234,6 +250,9 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     cv_received: data.cv_received,
     photo_received: data.photo_received,
     certificate_received: data.certificate_received,
+
+    // Profile photo URL (validated)
+    profile_photo_url: validProfilePhotoUrl,
   };
 
   const { data: candidate, error } = await db

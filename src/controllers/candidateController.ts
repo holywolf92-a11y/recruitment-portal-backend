@@ -53,6 +53,45 @@ export async function getCandidateController(req: Request, res: Response) {
       ...candidate,
       passport: candidate.passport_normalized || (candidate as any).passport || null,
     } : candidate;
+    // Generate short-lived signed URL for profile photo (best-effort)
+    try {
+      if (mappedCandidate) {
+        const db = supabaseAdminClient();
+        let bucket: string = (mappedCandidate as any).profile_photo_bucket || 'documents';
+        let storagePath: string | null = (mappedCandidate as any).profile_photo_path || null;
+
+        // If we don't have an explicit storage path, try to derive from profile_photo_url
+        if (!storagePath && (mappedCandidate as any).profile_photo_url) {
+          const url: string = (mappedCandidate as any).profile_photo_url;
+          const publicMarker = '/storage/v1/object/public/';
+          const signMarker = '/storage/v1/object/sign/';
+          if (url.includes(publicMarker)) {
+            const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+            const parts = rest.split('/');
+            bucket = parts.shift() || bucket;
+            storagePath = parts.join('/');
+          } else if (url.includes(signMarker)) {
+            // Signed URL form: .../object/sign/<bucket>/<path>?token=...
+            const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+            const parts = after.split('/');
+            bucket = parts.shift() || bucket;
+            storagePath = parts.join('/');
+          }
+        }
+
+        if (storagePath) {
+          const ttlSeconds = 600; // 10 minutes
+          const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
+          if (!urlError && signedData && (signedData as any).signedUrl) {
+            (mappedCandidate as any).profile_photo_signed_url = (signedData as any).signedUrl;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to generate profile photo signed URL:', e);
+      // Don't fail the request if URL generation fails
+    }
+
     res.json({ candidate: mappedCandidate });
   } catch (error: any) {
     console.error('Error fetching candidate:', error);

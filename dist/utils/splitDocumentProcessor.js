@@ -34,8 +34,11 @@ async function processSplitDocument(splitDoc, candidateId, uploadId, folderPath)
     if (uploadErr) {
         throw new Error(`Failed to upload split document: ${uploadErr.message}`);
     }
-    // Photos should be auto-verified since they're already saved as profile photos
-    const shouldAutoVerify = isImage && (splitDoc.doc_type === 'photos' || splitDoc.doc_type === 'photo');
+    // Photos should be auto-verified ONLY if they're actually image files (JPG/PNG)
+    // Never auto-verify PDFs, even if marked as is_image
+    const shouldAutoVerify = isImage &&
+        (splitDoc.doc_type === 'photos' || splitDoc.doc_type === 'photo') &&
+        (mimeType === 'image/jpeg' || mimeType === 'image/png');
     return {
         storagePath,
         mimeType,

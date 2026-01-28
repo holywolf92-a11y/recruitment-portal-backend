@@ -17,12 +17,14 @@ import parsingJobsRoutes from './parsingJobs';
 import queueHealthRoutes from './queueHealth';
 import storageHealthRoutes from './storageHealth';
 import verificationLogsRoutes from './verificationLogs';
+import extractPhotoRoutes from './extractPhoto';
 import { getWorkerStatus } from '../controllers/workerStatusController';
 
 const router = Router();
 
 router.use('/auth', authRoutes);
 router.use('/candidates', candidateRoutes);
+router.use('/candidates', extractPhotoRoutes);
 router.use('/documents', documentRoutes);
 router.use('/timeline', timelineRoutes);
 router.use('/employers', employerRoutes);

@@ -265,6 +265,12 @@ async function uploadOneSplitDoc(
     needs_review: !!doc.needs_review,
   };
 
+  // For profile photos that were extracted as images, set verification_status to 'verified'
+  // to skip the approval workflow since we've already saved them as the candidate's profile photo
+  const verificationStatus = isImage && (doc.doc_type === 'photos' || doc.doc_type === 'photo') 
+    ? 'verified' 
+    : undefined;
+
   const { error: insErr } = await db.from('documents').insert({
     candidate_id: candidateId,
     doc_type: doc.doc_type,
@@ -276,7 +282,8 @@ async function uploadOneSplitDoc(
     is_primary: false,
     pages: doc.pages ?? [],
     confidence: doc.confidence ?? null,
-    needs_review: !!doc.needs_review,
+    needs_review: false,  // Photos are auto-verified, no review needed
+    verification_status: verificationStatus,  // Set to 'verified' for extracted photos
     metadata,
   });
 

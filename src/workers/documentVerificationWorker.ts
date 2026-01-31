@@ -77,6 +77,47 @@ function parseDateToISO(dateStr: string | null | undefined): string | null {
   return null;
 }
 
+/**
+ * Infer profession/position from certificate filename or category
+ * Helps populate missing profession data when certificate is uploaded
+ */
+function inferProfessionFromCertificate(category: DocumentCategory, fileName: string): string | null {
+  const fileNameLower = (fileName || '').toLowerCase();
+  
+  // Common profession patterns in certificate names
+  const professionPatterns: Record<string, string> = {
+    'construction': 'Construction Worker',
+    'electrician': 'Electrician',
+    'plumber': 'Plumber',
+    'carpenter': 'Carpenter',
+    'mechanic': 'Mechanic',
+    'welder': 'Welder',
+    'mason': 'Mason',
+    'painter': 'Painter',
+    'foreman': 'Foreman',
+    'supervisor': 'Supervisor',
+    'engineer': 'Engineer',
+    'technician': 'Technician',
+    'driver': 'Driver',
+    'chef': 'Chef',
+    'cook': 'Cook',
+    'nurse': 'Nurse',
+    'teacher': 'Teacher',
+    'trainer': 'Trainer',
+  };
+  
+  // Check filename for profession keywords
+  for (const [keyword, profession] of Object.entries(professionPatterns)) {
+    if (fileNameLower.includes(keyword)) {
+      return profession;
+    }
+  }
+  
+  // If no profession found in filename, return null
+  return null;
+}
+
+
 interface DocumentVerificationJobData {
   requestId: string;
   documentId: string;
@@ -945,13 +986,23 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     try {
       const updateFlags: any = {};
       const category = finalCategory?.toLowerCase() || '';
-      const fileName = (doc.file_name || '').toLowerCase();
+      const fileNameLower = (fileName || '').toLowerCase();
       const now = new Date().toISOString();
 
-      // Only mark CV as received if it's actually a CV (not a certificate with CV-like name)
-      if ((category === 'cv_resume' || category === 'cv') && 
-          !fileName.includes('certificate') && 
-          !fileName.includes('cert')) {
+      // STRICT CERTIFICATE DETECTION: Check filename for certificate keywords FIRST
+      // This prevents AI misclassification from marking certificates as CVs
+      const certificateKeywords = ['certificate', 'cert', 'qualification', 'training', 'credential', 'achievement'];
+      const isCertificate = certificateKeywords.some(keyword => fileNameLower.includes(keyword));
+      
+      // STRICT CV DETECTION: Filename should contain cv, resume, or cv_resume pattern
+      const cvKeywords = ['cv', 'resume', 'curriculum'];
+      const isCV = cvKeywords.some(keyword => fileNameLower.includes(keyword)) && !isCertificate;
+
+      // Priority: Use filename as override if clear category indicators exist
+      if (isCertificate) {
+        updateFlags.certificate_received = true;
+        updateFlags.certificate_received_at = now;
+      } else if (isCV && (category === 'cv_resume' || category === 'cv')) {
         updateFlags.cv_received = true;
         updateFlags.cv_received_at = now;
       } else if (category === 'passport') {
@@ -998,6 +1049,17 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         // Import progressive completion service
         const { enrichCandidateData, updateMissingFields } = await import('../services/progressiveDataCompletionService');
         
+        // Fetch current candidate to check for missing fields
+        const { data: currentCandidate, error: candidateError } = await db
+          .from('candidates')
+          .select('position')
+          .eq('id', candidateId)
+          .single();
+        
+        if (candidateError) {
+          console.warn(`[DocumentVerification] Could not fetch current candidate for profession inference:`, candidateError);
+        }
+        
         // Determine document source type from category
         let documentSource: 'cv' | 'passport' | 'driving_license' | 'medical' | 'certificate' | 'other' = 'other';
         if (aiResult.category === 'cv_resume' || aiResult.category === 'cv') {
@@ -1022,7 +1084,16 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         if (identity.father_name) enrichmentData.father_name = identity.father_name;
         if (identity.cnic) enrichmentData.cnic = identity.cnic;
         if (identity.passport_no) enrichmentData.passport_no = identity.passport_no; // Will be mapped to passport_normalized
-        if (identity.email) enrichmentData.email = identity.email;
+        
+        // STRICT EMAIL FILTERING: NEVER include government emails
+        // Only accept email from ACTUAL CV documents, never from other document types
+        // Government emails (police, lahore, islamabad, etc.) should be completely ignored
+        if (identity.email && documentSource === 'cv' && !CandidateMatcher.isGovernmentEmail(identity.email)) {
+          enrichmentData.email = identity.email;
+        } else if (identity.email && CandidateMatcher.isGovernmentEmail(identity.email)) {
+          console.log(`[DocumentVerification] ⚠️ FILTERING OUT government email from ${documentSource}: ${identity.email}`);
+        }
+        
         if (identity.phone) enrichmentData.phone = identity.phone;
         if (identity.date_of_birth) enrichmentData.date_of_birth = identity.date_of_birth;
         if (identity.nationality) enrichmentData.nationality = identity.nationality;
@@ -1044,6 +1115,25 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           skipped: enrichmentResult.skipped,
           source: documentSource,
         });
+        
+        // Special handling for certificates: Infer profession from certificate name/title if CV profession is missing
+        if (documentSource === 'certificate' && currentCandidate && !currentCandidate.position) {
+          const professionInferred = inferProfessionFromCertificate(aiResult.category as DocumentCategory, fileName);
+          if (professionInferred) {
+            console.log(`[DocumentVerification] ✅ Inferred profession from certificate: ${professionInferred}`);
+            try {
+              await db
+                .from('candidates')
+                .update({
+                  position: professionInferred,
+                })
+                .eq('id', candidateId);
+            } catch (profError: any) {
+              console.error('[DocumentVerification] Failed to update inferred profession:', profError);
+              // Don't fail - profession inference is optional
+            }
+          }
+        }
         
         // Recalculate missing fields
         await updateMissingFields(candidateId);

@@ -130,6 +130,39 @@ async function checkCache(options: CVGenerationOptions): Promise<{
 }
 
 /**
+ * Generate a signed URL for the profile photo if it exists
+ */
+async function generateProfilePhotoSignedUrl(candidate: any): Promise<string | null> {
+  try {
+    // Check if we have bucket and path
+    const bucket = candidate.profile_photo_bucket;
+    const storagePath = candidate.profile_photo_path;
+    
+    if (!bucket || !storagePath) {
+      console.log('[CVGenerator] No profile photo bucket/path found, skipping signed URL generation');
+      return null;
+    }
+    
+    // Generate a long-lived signed URL (7 days)
+    const db = supabaseAdminClient();
+    const { data: signedData, error } = await db.storage
+      .from(bucket)
+      .createSignedUrl(storagePath, 7 * 24 * 60 * 60); // 7 days
+    
+    if (error || !signedData?.signedUrl) {
+      console.warn(`[CVGenerator] Failed to generate signed URL for profile photo: ${error?.message}`);
+      return null;
+    }
+    
+    console.log('[CVGenerator] Generated signed URL for profile photo');
+    return signedData.signedUrl;
+  } catch (err: any) {
+    console.warn(`[CVGenerator] Error generating profile photo signed URL: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Generate HTML template for employer-safe CV
  */
 function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
@@ -431,7 +464,7 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
     <!-- Left Sidebar - Contact & Skills -->
     <div class="sidebar">
       <!-- Profile Photo -->
-      ${candidate.profile_photo_url ? `<img src="${candidate.profile_photo_url}" alt="Profile" class="profile-photo">` : ''}
+      ${candidate.profile_photo_signed_url ? `<img src="${candidate.profile_photo_signed_url}" alt="Profile" class="profile-photo">` : ''}
       
       <!-- Contact Information (Protected) -->
       <div class="sidebar-section">
@@ -715,6 +748,14 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
     console.log(`[CVGenerator] Step 4/9: Calculating version hash...`);
     const versionHash = await calculateCandidateVersionHash(options.candidateId);
     console.log(`[CVGenerator] Version hash: ${versionHash}`);
+    
+    // 4b. Generate signed URL for profile photo if it exists
+    console.log(`[CVGenerator] Step 4b/9: Generating profile photo signed URL...`);
+    const profilePhotoSignedUrl = await generateProfilePhotoSignedUrl(candidate);
+    if (profilePhotoSignedUrl) {
+      candidate.profile_photo_signed_url = profilePhotoSignedUrl;
+      console.log(`[CVGenerator] Profile photo signed URL generated`);
+    }
     
     // 5. Generate HTML based on format
     console.log(`[CVGenerator] Step 5/9: Generating HTML template...`);

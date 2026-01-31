@@ -36,6 +36,34 @@ export const generateSingleCVController = asyncHandler(async (req: Request, res:
 });
 
 /**
+ * Download CV for a candidate (redirects to signed URL)
+ * GET /api/cv-generator/:candidateId/download?format=employer-safe&force=true
+ */
+export const downloadCVController = asyncHandler(async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id || 'system';
+  const { candidateId } = req.params;
+  const format = (req.query.format as 'standard' | 'employer-safe' | 'internal') || 'employer-safe';
+  const forceRegenerate = req.query.force === 'true';
+
+  if (!candidateId) {
+    return res.status(400).json({ error: 'Candidate ID is required' });
+  }
+
+  if (!['standard', 'employer-safe', 'internal'].includes(format)) {
+    return res.status(400).json({ error: 'Invalid format. Must be "standard", "employer-safe", or "internal"' });
+  }
+
+  const result = await generateCV({
+    candidateId,
+    format: format as 'employer-safe' | 'internal' | 'standard',
+    forceRegenerate,
+    userId,
+  });
+
+  return res.redirect(302, result.cv_url);
+});
+
+/**
  * Generate CVs for multiple candidates (bulk operation)
  * POST /api/cv-generator/bulk
  */

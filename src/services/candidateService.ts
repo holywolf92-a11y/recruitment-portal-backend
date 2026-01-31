@@ -505,6 +505,11 @@ function exportToCSV(candidates: any[]): { buffer: Buffer; filename: string } {
 
   // Get frontend URL from environment
   const frontendUrl = process.env.FRONTEND_URL || 'https://exquisite-surprise-production.up.railway.app';
+  // Get backend URL for CV download links
+  const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
+  const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
+    ? backendBaseUrl.replace(/\/$/, '')
+    : `${backendBaseUrl.replace(/\/$/, '')}/api`;
 
   // CSV headers - now includes Profile Link and Employer CV
   const headers = [
@@ -519,7 +524,7 @@ function exportToCSV(candidates: any[]): { buffer: Buffer; filename: string } {
     const age = c.date_of_birth ? calculateAgeFromDOB(c.date_of_birth) : '';
     const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
-    const cvLink = `${frontendUrl}/profile/${c.id}/${slug}`;
+    const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe&force=true`;
     
     const row = [
       c.id || '',
@@ -567,6 +572,11 @@ function exportToExcel(candidates: any[]): { buffer: Buffer; filename: string } 
 
   // Get frontend URL from environment
   const frontendUrl = process.env.FRONTEND_URL || 'https://exquisite-surprise-production.up.railway.app';
+  // Get backend URL for CV download links
+  const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
+  const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
+    ? backendBaseUrl.replace(/\/$/, '')
+    : `${backendBaseUrl.replace(/\/$/, '')}/api`;
 
   // Build data array with headers
   const data: any[][] = [[
@@ -580,7 +590,7 @@ function exportToExcel(candidates: any[]): { buffer: Buffer; filename: string } 
     const age = c.date_of_birth ? calculateAgeFromDOB(c.date_of_birth) : '';
     const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
-    const cvLink = profileLink; // Same link, but we'll label it differently
+    const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe&force=true`;
     
     data.push([
       c.id || '',

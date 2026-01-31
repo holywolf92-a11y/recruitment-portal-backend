@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 // import { authenticate } from '../middleware/auth';
 import {
+  downloadCVController,
   generateBulkCVsController,
   generateSingleCVController,
   getCVStatusController,
@@ -48,7 +49,11 @@ router.get('/health', async (req: Request, res: Response) => {
   }
 });
 
-// Generate single CV
+// Download CV (redirect to signed URL)
+// GET /api/cv-generator/:candidateId/download?format=employer-safe&force=true
+router.get('/:candidateId/download', downloadCVController);
+
+// Generate single CV (returns JSON)
 // GET /api/cv-generator/:candidateId?format=employer-safe&force=true
 router.get('/:candidateId', generateSingleCVController);
 

@@ -636,6 +636,7 @@ export async function uploadCandidatePhotoController(req: Request, res: Response
       .from('candidates')
       .select('id, name')
       .eq('id', id)
+      .neq('status', 'Deleted') // Exclude deleted candidates
       .single();
 
     if (candidateError || !candidate) {

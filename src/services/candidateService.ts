@@ -303,6 +303,7 @@ export async function getCandidateById(id: string, userId: string) {
     .from('candidates')
     .select('*')
     .eq('id', id)
+    .neq('status', 'Deleted') // Exclude soft-deleted candidates
     .single();
 
   if (error) throw error;
@@ -329,6 +330,11 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
   const db = supabaseAdminClient();
   let query = db.from('candidates').select('*', { count: 'exact' });
 
+  // By default, exclude deleted candidates (unless explicitly filtering for them)
+  if (!filters.status || filters.status !== 'Deleted') {
+    query = query.neq('status', 'Deleted');
+  }
+
   // Global search: partial, case-insensitive, across name, passport, CNIC, email, phone (server-side)
   if (filters.search && filters.search.trim()) {
     const q = filters.search.trim();
@@ -338,8 +344,11 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
   }
 
   // Apply status filter
-  if (filters.status && filters.status !== 'all') {
+  if (filters.status && filters.status !== 'all' && filters.status !== 'Deleted') {
     query = query.eq('status', filters.status);
+  } else if (filters.status === 'Deleted') {
+    // Only show deleted if explicitly requested
+    query = query.eq('status', 'Deleted');
   }
 
   // Apply profession (position) filter

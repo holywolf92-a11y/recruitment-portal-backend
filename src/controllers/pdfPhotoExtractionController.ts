@@ -22,6 +22,7 @@ export async function extractPhotoFromPdfController(req: Request, res: Response)
       .from('candidates')
       .select('profile_photo_url, profile_photo_path')
       .eq('id', candidateId)
+      .neq('status', 'Deleted') // Exclude deleted candidates
       .single();
     
     if (candidateError || !candidate) {

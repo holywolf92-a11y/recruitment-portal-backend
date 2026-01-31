@@ -98,7 +98,34 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
     const candidateEmail = extractedEmail && !isGovernmentEmail(extractedEmail) ? extractedEmail : undefined;
     
     if (extractedEmail && !candidateEmail) {
-      console.log(`[CVParser] Filtered out government email during extraction: ${extractedEmail}`);
+      console.log(`[CVParser] Filtered out official/government email during extraction: ${extractedEmail}`);
+    }
+    
+    // Extract profession from certificates if not explicitly mentioned
+    let extractedPosition = candidate.position || undefined;
+    if (!extractedPosition && (candidate.certifications || []).length > 0) {
+      // Try to infer position from certificate names
+      const certNames = Array.isArray(candidate.certifications) ? candidate.certifications : [];
+      const certString = certNames.join(' ').toLowerCase();
+      
+      // Common patterns to extract profession
+      if (certString.includes('construction') || certString.includes('builder')) {
+        extractedPosition = 'Construction Worker';
+      } else if (certString.includes('electrician')) {
+        extractedPosition = 'Electrician';
+      } else if (certString.includes('plumber')) {
+        extractedPosition = 'Plumber';
+      } else if (certString.includes('carpenter')) {
+        extractedPosition = 'Carpenter';
+      } else if (certString.includes('mechanic')) {
+        extractedPosition = 'Mechanic';
+      } else if (certString.includes('welding') || certString.includes('welder')) {
+        extractedPosition = 'Welder';
+      }
+      
+      if (extractedPosition) {
+        console.log(`[CVParser] Inferred position from certificates: ${extractedPosition}`);
+      }
     }
     
     const candidateData: CreateCandidateData = {
@@ -112,7 +139,7 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
       cnic: identityFields?.cnic || candidate.cnic || undefined,
       passport: identityFields?.passport_no || candidate.passport || undefined,
       nationality: candidate.nationality || identityFields?.nationality || undefined,
-      position: candidate.position || undefined,
+      position: extractedPosition,
       experience_years: candidate.experience_years || undefined,
       country_of_interest: candidate.country_of_interest || undefined,
       skills: Array.isArray(candidate.skills) ? candidate.skills.join(', ') : undefined,

@@ -945,9 +945,13 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     try {
       const updateFlags: any = {};
       const category = finalCategory?.toLowerCase() || '';
+      const fileName = (doc.file_name || '').toLowerCase();
       const now = new Date().toISOString();
 
-      if (category === 'cv_resume' || category === 'cv') {
+      // Only mark CV as received if it's actually a CV (not a certificate with CV-like name)
+      if ((category === 'cv_resume' || category === 'cv') && 
+          !fileName.includes('certificate') && 
+          !fileName.includes('cert')) {
         updateFlags.cv_received = true;
         updateFlags.cv_received_at = now;
       } else if (category === 'passport') {

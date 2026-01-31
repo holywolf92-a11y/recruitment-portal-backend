@@ -577,13 +577,13 @@ export function isGovernmentEmail(email: string): boolean {
   
   const normalized = email.toLowerCase().trim();
   const patterns = [
-    'police@', '@police.', 'police.gov',
-    'govt@', '@gov.', 'government@',
-    'department@', 'admin@', 'info@',
-    'contact@', 'support@', 'noinformation@',
-    'noinformation.', '@noinformation',
-    '@pk', 'gov.pk', 'police.pk', 'jhelum',
-    'gjtpolice', 'lahore.police', 'islamabad.police',
+    // Police/law enforcement patterns
+    'police', 'jhelum', 'lahore', 'islamabad', 'karachi', 'faisalabad',
+    'rawalpindi', 'multan', 'peshawar', 'quetta', 'gjtpolice',
+    // Government/official patterns  
+    'govt', 'gov.', '@gov', 'government', 'department', 'ministry',
+    // Generic organizational emails that shouldn't be personal
+    'admin@', 'info@', 'contact@', 'support@', 'noinformation',
   ];
   
   return patterns.some(pattern => normalized.includes(pattern));

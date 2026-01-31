@@ -142,6 +142,7 @@ export class IdentityMatchingService {
           .select('id, name')
           .eq('cnic_normalized', extractedCnic)
             .neq('id', candidateId)
+            .neq('status', 'Deleted') // Exclude deleted candidates
             .maybeSingle();
 
           if (otherCandidate) {
@@ -250,6 +251,7 @@ export class IdentityMatchingService {
             .select('id, name')
             .eq('passport_normalized', extractedPassport)
             .neq('id', candidateId)
+            .neq('status', 'Deleted') // Exclude deleted candidates
             .maybeSingle();
 
           if (otherCandidate) {
@@ -648,7 +650,8 @@ export class IdentityMatchingService {
         let query = db
           .from('candidates')
           .select('id, name')
-          .eq('cnic_normalized', normalizedCnic);
+          .eq('cnic_normalized', normalizedCnic)
+          .neq('status', 'Deleted'); // Exclude deleted candidates
 
         if (excludeCandidateId) {
           query = query.neq('id', excludeCandidateId);
@@ -674,7 +677,8 @@ export class IdentityMatchingService {
         let query = db
           .from('candidates')
           .select('id, name')
-          .eq('passport_normalized', normalizedPassport);
+          .eq('passport_normalized', normalizedPassport)
+          .neq('status', 'Deleted'); // Exclude deleted candidates
 
         if (excludeCandidateId) {
           query = query.neq('id', excludeCandidateId);

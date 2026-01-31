@@ -1085,13 +1085,15 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         if (identity.cnic) enrichmentData.cnic = identity.cnic;
         if (identity.passport_no) enrichmentData.passport_no = identity.passport_no; // Will be mapped to passport_normalized
         
-        // STRICT EMAIL FILTERING: NEVER include government emails
-        // Only accept email from ACTUAL CV documents, never from other document types
-        // Government emails (police, lahore, islamabad, etc.) should be completely ignored
-        if (identity.email && documentSource === 'cv' && !CandidateMatcher.isGovernmentEmail(identity.email)) {
+        // ABSOLUTE EMAIL FILTERING: NEVER include government/police emails from ANY document
+        // This protects against police certificates, government IDs, etc. that extract government emails
+        if (identity.email && !CandidateMatcher.isGovernmentEmail(identity.email)) {
+          // Only use email from CV documents for primary email (most trusted source)
+          // For other documents, store email but it won't be used for matching
           enrichmentData.email = identity.email;
         } else if (identity.email && CandidateMatcher.isGovernmentEmail(identity.email)) {
-          console.log(`[DocumentVerification] ⚠️ FILTERING OUT government email from ${documentSource}: ${identity.email}`);
+          console.log(`[DocumentVerification] ⚠️ FILTERING OUT government/police email from ${documentSource}: ${identity.email}`);
+          // Do NOT add to enrichmentData - email is completely rejected
         }
         
         if (identity.phone) enrichmentData.phone = identity.phone;

@@ -13,6 +13,7 @@ import {
   CandidateFilters,
   DailyStatsFilters
 } from '../services/candidateService';
+import { isGovernmentEmail } from '../services/progressiveDataCompletionService';
 import { linkExistingCVFromInbox } from '../services/linkCVService';
 import { supabaseAdminClient } from '../config/database';
 
@@ -26,6 +27,12 @@ export async function createCandidateController(req: Request, res: Response) {
     // Basic validation
     if (!candidateData.name || candidateData.name.trim().length === 0) {
       return res.status(400).json({ error: 'Candidate name is required' });
+    }
+
+    // Filter out government emails
+    if (candidateData.email && isGovernmentEmail(candidateData.email)) {
+      console.log(`🚫 Filtered government email in manual candidate creation: ${candidateData.email}`);
+      candidateData.email = undefined;
     }
 
     const candidate = await createCandidate(candidateData, userId);

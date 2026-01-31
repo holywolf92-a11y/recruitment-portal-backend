@@ -14,6 +14,7 @@ import { logDocumentUploaded } from './timelineService';
 import { calculateSHA256 } from './documentService';
 import { generateDescriptiveFilename } from '../utils/documentNaming';
 import { processSplitDocument } from '../utils/splitDocumentProcessor';
+import { isGovernmentEmail } from './progressiveDataCompletionService';
 
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
@@ -149,9 +150,17 @@ export async function createCandidateFromIdentity(
     return { id: duplicates[0].id };
   }
   const name = (identity?.name as string) || (identity?.father_name as string) || 'Unknown';
+  
+  // Filter government emails
+  let email = (identity?.email as string) || undefined;
+  if (email && isGovernmentEmail(email)) {
+    console.log(`🚫 Filtered government email in split upload: ${email}`);
+    email = undefined;
+  }
+  
   const data: CreateCandidateData = {
     name: String(name).trim() || 'Unknown',
-    email: (identity?.email as string) || undefined,
+    email,
     phone: (identity?.phone as string) || undefined,
     date_of_birth: (identity?.date_of_birth as string) || undefined,
     cnic,

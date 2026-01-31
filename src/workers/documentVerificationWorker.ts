@@ -524,6 +524,22 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     // =============================================================================
     let matchResult = null;
     let finalCategory = aiResult.category;
+    
+    // Secondary classification validation: Detect certificate misclassified as CV
+    if ((finalCategory === 'cv' || finalCategory === 'cv_resume') && fileName) {
+      const certKeywords = ['certificate', 'diploma', 'training', 'course', 'qualification', 
+                            'police', 'construction', 'electrician', 'plumber', 'mechanic',
+                            'welder', 'carpenter', 'mason', 'painter', 'supervisor', 'engineer',
+                            'technician', 'driver', 'chef', 'cook', 'nurse', 'teacher'];
+      const filenameLower = fileName.toLowerCase();
+      
+      if (certKeywords.some(keyword => filenameLower.includes(keyword))) {
+        console.log(`⚠️ [DocumentVerification] AI classified as CV but filename suggests certificate: "${fileName}"`);
+        console.log(`   Correcting classification: cv → certificate`);
+        finalCategory = 'certificate';
+      }
+    }
+    
     let finalStatus: string = VERIFICATION_STATUS.VERIFIED;
     let reasonCode: string = ''; // Empty string for verified (no rejection code needed)
     let mismatchFields: string[] = [];
@@ -1119,10 +1135,11 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         });
         
         // Special handling for certificates: Infer profession from certificate name/title if CV profession is missing
-        if (documentSource === 'certificate' && currentCandidate && !currentCandidate.position) {
+        // Also handle misclassified certificates that were originally marked as CV
+        if ((documentSource === 'certificate' || documentSource === 'cv') && currentCandidate && !currentCandidate.position) {
           const professionInferred = inferProfessionFromCertificate(aiResult.category as DocumentCategory, fileName);
           if (professionInferred) {
-            console.log(`[DocumentVerification] ✅ Inferred profession from certificate: ${professionInferred}`);
+            console.log(`[DocumentVerification] ✅ Inferred profession from ${documentSource === 'certificate' ? 'certificate' : 'filename'}: ${professionInferred}`);
             try {
               await db
                 .from('candidates')

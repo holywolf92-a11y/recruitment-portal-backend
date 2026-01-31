@@ -10,6 +10,7 @@ import { documentVerificationQueue } from '../config/queue';
 import { generateRequestId } from '../services/documentVerificationLogService';
 import { randomUUID } from 'crypto';
 import { processSplitDocument } from '../utils/splitDocumentProcessor';
+import { isGovernmentEmail } from '../services/progressiveDataCompletionService';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
@@ -91,10 +92,19 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
     
     // Build candidate data from parsed CV - map all fields from Python parser
     // Include identity fields extracted from CV (father_name, cnic, passport, date_of_birth, etc.)
+    
+    // Filter out government/police emails - don't use them as candidate email
+    const extractedEmail = candidate.email || identityFields?.email;
+    const candidateEmail = extractedEmail && !isGovernmentEmail(extractedEmail) ? extractedEmail : undefined;
+    
+    if (extractedEmail && !candidateEmail) {
+      console.log(`[CVParser] Filtered out government email during extraction: ${extractedEmail}`);
+    }
+    
     const candidateData: CreateCandidateData = {
       name: candidate.full_name || identityFields?.name || 'Unknown',
       father_name: identityFields?.father_name || candidate.father_name || undefined,
-      email: candidate.email || identityFields?.email || undefined,
+      email: candidateEmail,
       phone: candidate.phone || identityFields?.phone || undefined,
       address: candidate.location || undefined,
       date_of_birth: dateOfBirth,

@@ -572,7 +572,7 @@ async function logEnrichmentEvent(
 /**
  * Check if email is a government/organizational email that should not be used for matching
  */
-function isGovernmentEmail(email: string): boolean {
+export function isGovernmentEmail(email: string): boolean {
   if (!email || typeof email !== 'string') return false;
   
   const normalized = email.toLowerCase().trim();

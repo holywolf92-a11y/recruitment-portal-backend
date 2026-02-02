@@ -158,6 +158,7 @@ export interface CreateCandidateData {
   languages?: string;
   education?: string;
   certifications?: string;
+  internships?: string;
   previous_employment?: string;
   passport_expiry?: string;
   professional_summary?: string;
@@ -245,6 +246,7 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     languages: data.languages,
     education: data.education,
     certifications: data.certifications,
+    internships: data.internships,
     previous_employment: data.previous_employment,
     passport_expiry: data.passport_expiry,
     professional_summary: data.professional_summary,

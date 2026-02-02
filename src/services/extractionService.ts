@@ -10,6 +10,7 @@ interface ExtractionData {
   languages?: string[];
   education?: string;
   certifications?: string[];
+  internships?: string[];
   previous_employment?: string;
   passport_expiry?: string;
   professional_summary?: string;
@@ -35,12 +36,23 @@ export async function extractCandidateData(
 
     const extractedData: ExtractionData = extractionResult.data;
 
+    // Normalize list fields for storage
+    const normalizedData = {
+      ...extractedData,
+      certifications: Array.isArray(extractedData.certifications)
+        ? extractedData.certifications.join(', ')
+        : extractedData.certifications,
+      internships: Array.isArray(extractedData.internships)
+        ? extractedData.internships.join(', ')
+        : extractedData.internships,
+    };
+
     // Update candidate with extracted data
     const db = supabaseAdminClient();
     const { data, error } = await db
       .from('candidates')
       .update({
-        ...extractedData,
+        ...normalizedData,
         extraction_source: extractedData.extraction_source || 'python-parser-v1',
         extracted_at: new Date().toISOString()
       })
@@ -136,6 +148,7 @@ async function callPythonParser(cvUrl: string): Promise<{ success: boolean; data
       languages: candidateData.languages || [],
       education: candidateData.education,
       certifications: candidateData.certifications || [],
+      internships: candidateData.internships || [],
       previous_employment: candidateData.previous_employment,
       passport_expiry: candidateData.passport_expiry,
       professional_summary: candidateData.professional_summary || candidateData.summary,

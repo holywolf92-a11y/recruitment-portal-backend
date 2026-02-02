@@ -43,6 +43,14 @@ export const EXCEL_BROWSER_FIELDS = {
   father_name: 'Father Name',
   cnic: 'CNIC',
   date_of_birth: 'Date of Birth', // Required for Age calculation
+  
+  // CV Extraction fields
+  education: 'Education',
+  certifications: 'Certifications',
+  internships: 'Internships',
+  previous_employment: 'Previous Employment',
+  skills: 'Skills',
+  professional_summary: 'Professional Summary',
 } as const;
 
 // Required fields for candidate creation (minimum identity)

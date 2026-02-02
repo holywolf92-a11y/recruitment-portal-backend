@@ -148,6 +148,7 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
         ? candidate.education.map((e: any) => `${e.degree} from ${e.institution}`).join('; ')
         : undefined,
       certifications: Array.isArray(candidate.certifications) ? candidate.certifications.join(', ') : undefined,
+      internships: Array.isArray((candidate as any).internships) ? (candidate as any).internships.join(', ') : undefined,
       previous_employment: candidate.previous_employment || (
         Array.isArray(candidate.experience) && candidate.experience.length > 0
           ? candidate.experience.map((e: any) => `${e.title} at ${e.company}`).join('; ')
@@ -323,6 +324,7 @@ export function startCvParserWorker() {
           languages: parsedCandidate.languages,
           education: parsedCandidate.education,
           certifications: parsedCandidate.certifications,
+          internships: parsedCandidate.internships,
           previous_employment: parsedCandidate.previous_employment,
           passport_expiry: parsedCandidate.passport_expiry,
           professional_summary: parsedCandidate.professional_summary || parsedCandidate.summary,

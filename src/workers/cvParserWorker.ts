@@ -21,6 +21,22 @@ function signHmac(body: string) {
   return crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
 }
 
+function isPlaceholderName(name?: string | null): boolean {
+  if (!name) return false;
+  return /^(john|jane)\s+doe$/i.test(name.trim());
+}
+
+function isPlaceholderEmail(email?: string | null): boolean {
+  if (!email) return false;
+  return /@example\.com$/i.test(email.trim()) || /^test@/i.test(email.trim());
+}
+
+function isPlaceholderPhone(phone?: string | null): boolean {
+  if (!phone) return false;
+  const digits = phone.replace(/\D/g, '');
+  return digits === '1234567890';
+}
+
 function hasProfilePhoto(candidate: any): boolean {
   return !!(
     candidate?.photo_received ||
@@ -106,6 +122,18 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
     // Filter out government/police emails - don't use them as candidate email
     const extractedEmail = candidate.email || identityFields?.email;
     const candidateEmail = extractedEmail && !isGovernmentEmail(extractedEmail) ? extractedEmail : undefined;
+    const resolvedEmail =
+      identityFields?.email && isPlaceholderEmail(candidateEmail)
+        ? identityFields.email
+        : candidateEmail;
+    const resolvedPhone =
+      identityFields?.phone && isPlaceholderPhone(candidate.phone)
+        ? identityFields.phone
+        : (candidate.phone || identityFields?.phone || undefined);
+    const resolvedName =
+      identityFields?.name && isPlaceholderName(candidate.full_name)
+        ? identityFields.name
+        : (candidate.full_name || identityFields?.name || 'Unknown');
     
     if (extractedEmail && !candidateEmail) {
       console.log(`[CVParser] Filtered out official/government email during extraction: ${extractedEmail}`);
@@ -139,10 +167,10 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
     }
     
     const candidateData: CreateCandidateData = {
-      name: candidate.full_name || identityFields?.name || 'Unknown',
+      name: resolvedName,
       father_name: identityFields?.father_name || candidate.father_name || undefined,
-      email: candidateEmail,
-      phone: candidate.phone || identityFields?.phone || undefined,
+      email: resolvedEmail,
+      phone: resolvedPhone,
       address: candidate.location || undefined,
       date_of_birth: dateOfBirth,
       marital_status: candidate.marital_status || undefined,

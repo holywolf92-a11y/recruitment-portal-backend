@@ -84,7 +84,6 @@ function parseDateToISO(dateStr: string | null | undefined): string | null {
 function inferProfessionFromCertificate(category: DocumentCategory, fileName: string): string | null {
   const fileNameLower = (fileName || '').toLowerCase();
   
-  // Common profession patterns in certificate names
   const professionPatterns: Record<string, string> = {
     'construction': 'Construction Worker',
     'electrician': 'Electrician',
@@ -106,6 +105,8 @@ function inferProfessionFromCertificate(category: DocumentCategory, fileName: st
     'trainer': 'Trainer',
   };
   
+  // Common profession patterns in certificate names
+  
   // Check filename for profession keywords
   for (const [keyword, profession] of Object.entries(professionPatterns)) {
     if (fileNameLower.includes(keyword)) {
@@ -116,6 +117,44 @@ function inferProfessionFromCertificate(category: DocumentCategory, fileName: st
   // If no profession found in filename, return null
   return null;
 }
+
+const CERTIFICATE_CORE_KEYWORDS = [
+  'certificate',
+  'cert',
+  'qualification',
+  'training',
+  'credential',
+  'achievement',
+  'diploma',
+  'course',
+];
+
+const CERTIFICATE_PROFESSION_KEYWORDS = [
+  'police',
+  'construction',
+  'electrician',
+  'plumber',
+  'mechanic',
+  'welder',
+  'carpenter',
+  'mason',
+  'painter',
+  'foreman',
+  'supervisor',
+  'engineer',
+  'technician',
+  'driver',
+  'chef',
+  'cook',
+  'nurse',
+  'teacher',
+  'trainer',
+];
+
+const CERTIFICATE_KEYWORDS = [
+  ...CERTIFICATE_CORE_KEYWORDS,
+  ...CERTIFICATE_PROFESSION_KEYWORDS,
+];
 
 
 interface DocumentVerificationJobData {
@@ -527,13 +566,9 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     
     // Secondary classification validation: Detect certificate misclassified as CV
     if ((finalCategory === 'cv' || finalCategory === 'cv_resume') && fileName) {
-      const certKeywords = ['certificate', 'diploma', 'training', 'course', 'qualification', 
-                            'police', 'construction', 'electrician', 'plumber', 'mechanic',
-                            'welder', 'carpenter', 'mason', 'painter', 'supervisor', 'engineer',
-                            'technician', 'driver', 'chef', 'cook', 'nurse', 'teacher'];
       const filenameLower = fileName.toLowerCase();
       
-      if (certKeywords.some(keyword => filenameLower.includes(keyword))) {
+      if (CERTIFICATE_KEYWORDS.some(keyword => filenameLower.includes(keyword))) {
         console.log(`⚠️ [DocumentVerification] AI classified as CV but filename suggests certificate: "${fileName}"`);
         console.log(`   Correcting classification: cv → certificate`);
         finalCategory = 'certificate';
@@ -894,12 +929,42 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       }
     }
 
+    // Fallback: If no identity fields were extracted, still infer profession from certificate filename
+    if (!aiResult.extracted_identity || Object.keys(aiResult.extracted_identity).length === 0) {
+      if (candidateId && fileName) {
+        const fileNameLower = fileName.toLowerCase();
+        const looksLikeCertificate = CERTIFICATE_KEYWORDS.some(keyword => fileNameLower.includes(keyword));
+        if (looksLikeCertificate) {
+          try {
+            const { data: currentCandidate, error: candidateError } = await db
+              .from('candidates')
+              .select('position')
+              .eq('id', candidateId)
+              .single();
+
+            if (!candidateError && currentCandidate && !currentCandidate.position) {
+              const professionInferred = inferProfessionFromCertificate(finalCategory as DocumentCategory, fileName);
+              if (professionInferred) {
+                console.log(`[DocumentVerification] ✅ Inferred profession from certificate filename (no identity): ${professionInferred}`);
+                await db
+                  .from('candidates')
+                  .update({ position: professionInferred })
+                  .eq('id', candidateId);
+              }
+            }
+          } catch (profError: any) {
+            console.error('[DocumentVerification] Failed fallback profession inference (no identity):', profError);
+          }
+        }
+      }
+    }
+
     // =============================================================================
     // STEP 6: Category assignment decision
     // =============================================================================
     // Auto-assign category if confidence >= threshold, otherwise set to 'other_documents'
     if (aiResult.confidence && aiResult.confidence >= AI_CONFIDENCE_THRESHOLD) {
-      finalCategory = aiResult.category;
+      // Keep corrected finalCategory (do not overwrite with raw AI category)
     } else {
       finalCategory = DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
       if (finalStatus === VERIFICATION_STATUS.VERIFIED) {
@@ -1007,8 +1072,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
 
       // STRICT CERTIFICATE DETECTION: Check filename for certificate keywords FIRST
       // This prevents AI misclassification from marking certificates as CVs
-      const certificateKeywords = ['certificate', 'cert', 'qualification', 'training', 'credential', 'achievement'];
-      const isCertificate = certificateKeywords.some(keyword => fileNameLower.includes(keyword));
+      const isCertificate = CERTIFICATE_CORE_KEYWORDS.some(keyword => fileNameLower.includes(keyword));
       
       // STRICT CV DETECTION: Filename should contain cv, resume, or cv_resume pattern
       const cvKeywords = ['cv', 'resume', 'curriculum'];
@@ -1078,17 +1142,17 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         
         // Determine document source type from category
         let documentSource: 'cv' | 'passport' | 'driving_license' | 'medical' | 'certificate' | 'other' = 'other';
-        if (aiResult.category === 'cv_resume' || aiResult.category === 'cv') {
+        if (finalCategory === 'cv_resume' || finalCategory === 'cv') {
           documentSource = 'cv';
-        } else if (aiResult.category === 'passport') {
+        } else if (finalCategory === 'passport') {
           documentSource = 'passport';
-        } else if (aiResult.category === 'cnic') {
+        } else if (finalCategory === 'cnic') {
           documentSource = 'passport'; // Use 'passport' source type for CNIC to ensure nationality precedence
-        } else if (aiResult.category === 'driving_license') {
+        } else if (finalCategory === 'driving_license') {
           documentSource = 'driving_license';
-        } else if (aiResult.category === 'medical_report' || aiResult.category === 'medical') {
+        } else if (finalCategory === 'medical_report' || finalCategory === 'medical') {
           documentSource = 'medical';
-        } else if (aiResult.category === 'certificate' || aiResult.category === 'certificates') {
+        } else if (finalCategory === 'certificate' || finalCategory === 'certificates') {
           documentSource = 'certificate';
         }
         

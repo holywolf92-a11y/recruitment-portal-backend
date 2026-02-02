@@ -11,6 +11,7 @@ import { generateRequestId } from '../services/documentVerificationLogService';
 import { randomUUID } from 'crypto';
 import { processSplitDocument } from '../utils/splitDocumentProcessor';
 import { isGovernmentEmail } from '../services/progressiveDataCompletionService';
+import { extractProfilePhotoFromPdfUsingAI } from '../services/aiProfilePhotoExtractionService';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
@@ -18,6 +19,15 @@ const STORAGE_BUCKET = 'documents';
 
 function signHmac(body: string) {
   return crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
+}
+
+function hasProfilePhoto(candidate: any): boolean {
+  return !!(
+    candidate?.photo_received ||
+    candidate?.profile_photo_bucket ||
+    candidate?.profile_photo_path ||
+    candidate?.profile_photo_url
+  );
 }
 
 // Helper to parse and validate dates from various formats
@@ -554,6 +564,33 @@ export function startCvParserWorker() {
           } catch (splitErr: any) {
             console.error(`[CVParser] Split-and-categorize failed for attachment ${attachmentId}:`, splitErr?.message || splitErr);
             // Non-blocking: CV parsing should still succeed even if splitting fails
+          }
+        }
+
+        // If no profile photo exists yet, try extracting it directly from the CV PDF.
+        if (newCandidate?.id && mimeType === 'application/pdf') {
+          try {
+            const { data: freshCandidate } = await db
+              .from('candidates')
+              .select('profile_photo_bucket, profile_photo_path, profile_photo_url, photo_received')
+              .eq('id', newCandidate.id)
+              .maybeSingle();
+
+            if (!hasProfilePhoto(freshCandidate)) {
+              console.log(`[CVParser] No profile photo found for candidate ${newCandidate.id}. Extracting from CV PDF...`);
+              const extraction = await extractProfilePhotoFromPdfUsingAI({
+                candidateId: newCandidate.id,
+              });
+              console.log(`[CVParser] ✅ Extracted profile photo from CV PDF`, {
+                candidateId: newCandidate.id,
+                pageUsed: extraction.pageUsed,
+                confidence: extraction.confidence,
+              });
+            } else {
+              console.log(`[CVParser] Profile photo already present for candidate ${newCandidate.id}. Skipping CV photo extraction.`);
+            }
+          } catch (photoErr: any) {
+            console.warn(`[CVParser] CV photo extraction failed for candidate ${newCandidate?.id}:`, photoErr?.message || photoErr);
           }
         }
 

@@ -23,7 +23,7 @@ export const EXCEL_BROWSER_FIELDS = {
   experience_years: 'Experience',
   status: 'Status',
   ai_score: 'AI Score',
-  
+
   // Detailed View
   religion: 'Religion',
   marital_status: 'Marital',
@@ -38,12 +38,12 @@ export const EXCEL_BROWSER_FIELDS = {
   languages: 'Languages', // English/Arabic extracted from this
   address: 'Location',
   created_at: 'Applied',
-  
+
   // Additional identity fields
   father_name: 'Father Name',
   cnic: 'CNIC',
   date_of_birth: 'Date of Birth', // Required for Age calculation
-  
+
   // CV Extraction fields
   education: 'Education',
   certifications: 'Certifications',
@@ -92,68 +92,68 @@ export async function enrichCandidateData(
   sourceTracking: FieldSource[];
 }> {
   const db = supabaseAdminClient();
-  
+
   // Get current candidate record
   const { data: currentCandidate, error: fetchError } = await db
     .from('candidates')
     .select('*')
     .eq('id', candidateId)
     .maybeSingle();
-  
+
   if (fetchError || !currentCandidate) {
     throw new Error(`Candidate not found: ${candidateId}`);
   }
-  
+
   // Get current field sources (if tracking exists)
-  const currentFieldSources: Record<string, FieldSource> = 
+  const currentFieldSources: Record<string, FieldSource> =
     (currentCandidate.field_sources as any) || {};
-  
+
   const updates: Record<string, any> = {};
   const updated: string[] = [];
   const skipped: string[] = [];
   const sourceTracking: FieldSource[] = [];
-  
+
   // Process each extracted field
   for (const [field, extractedValue] of Object.entries(extractedData)) {
     // Skip null/undefined/empty extracted values
     if (extractedValue === null || extractedValue === undefined || extractedValue === '') {
       continue;
     }
-    
+
     // Get current value
     const currentValue = currentCandidate[field as keyof typeof currentCandidate];
-    
+
     // Check if field is missing (NULL, empty string, or undefined)
-    const isMissing = currentValue === null || 
-                     currentValue === undefined || 
-                     currentValue === '' ||
-                     (typeof currentValue === 'string' && currentValue.trim() === '');
-    
+    const isMissing = currentValue === null ||
+      currentValue === undefined ||
+      currentValue === '' ||
+      (typeof currentValue === 'string' && currentValue.trim() === '');
+
     // Get current field source
     const currentSource = currentFieldSources[field];
-    
+
     // Priority check: Manual updates are never overwritten
     if (currentSource?.source === 'manual') {
       skipped.push(field);
       continue;
     }
-    
+
     // Special precedence for nationality: CNIC/Passport should override CV
     // CNIC and Passport are authoritative identity documents, CV may have incorrect nationality
     if (field === 'nationality' && currentValue && typeof currentValue === 'string') {
       const currentNationality = currentValue.trim().toLowerCase();
       const extractedNationality = typeof extractedValue === 'string' ? extractedValue.trim().toLowerCase() : '';
-      
+
       // Check if current nationality is from CV (less authoritative)
       const isFromCV = currentSource?.source === 'cv';
-      
+
       // Check if new source is authoritative (CNIC, Passport, Driving License)
-      const isAuthoritativeSource = source === 'passport' || 
-                                    source === 'driving_license' ||
-                                    documentType === 'cnic' || 
-                                    documentType === 'passport' ||
-                                    documentType === 'driving_license';
-      
+      const isAuthoritativeSource = source === 'passport' ||
+        source === 'driving_license' ||
+        documentType === 'cnic' ||
+        documentType === 'passport' ||
+        documentType === 'driving_license';
+
       // If current nationality is from CV and new source is authoritative, override
       if (isFromCV && isAuthoritativeSource) {
         console.log(`[ProgressiveCompletion] Overriding nationality from CV (${currentNationality}) with authoritative source ${source}/${documentType} nationality (${extractedNationality})`);
@@ -164,23 +164,23 @@ export async function enrichCandidateData(
         continue;
       }
     }
-    
+
     // Only update if field is missing OR nationality override case above
-    const shouldUpdate = isMissing || 
-                        (field === 'nationality' && 
-                         currentSource?.source === 'cv' && 
-                         (source === 'passport' || source === 'driving_license' || documentType === 'cnic' || documentType === 'passport' || documentType === 'driving_license'));
-    
+    const shouldUpdate = isMissing ||
+      (field === 'nationality' &&
+        currentSource?.source === 'cv' &&
+        (source === 'passport' || source === 'driving_license' || documentType === 'cnic' || documentType === 'passport' || documentType === 'driving_license'));
+
     if (shouldUpdate) {
       // Normalize special fields
       let normalizedValue = extractedValue;
-      
+
       if (field === 'cnic' && typeof extractedValue === 'string') {
         // Map cnic to cnic_normalized (database column name)
         normalizedValue = normalizeCNIC(extractedValue);
         updates.cnic_normalized = normalizedValue;
         updated.push('cnic_normalized');
-        
+
         // Track source
         sourceTracking.push({
           field: 'cnic_normalized',
@@ -195,7 +195,7 @@ export async function enrichCandidateData(
         normalizedValue = normalizePassport(extractedValue);
         updates.passport_normalized = normalizedValue;
         updated.push('passport_normalized');
-        
+
         // Track source
         sourceTracking.push({
           field: 'passport_normalized',
@@ -210,7 +210,7 @@ export async function enrichCandidateData(
         normalizedValue = normalizePassport(extractedValue);
         updates.passport_normalized = normalizedValue;
         updated.push('passport_normalized');
-        
+
         // Track source
         sourceTracking.push({
           field: 'passport_normalized',
@@ -227,11 +227,11 @@ export async function enrichCandidateData(
         // Parse expiry date
         normalizedValue = parseDate(extractedValue);
       }
-      
+
       // Apply update
       updates[field] = normalizedValue;
       updated.push(field);
-      
+
       // Track source
       sourceTracking.push({
         field,
@@ -244,16 +244,16 @@ export async function enrichCandidateData(
       skipped.push(field);
     }
   }
-  
+
   // Merge with existing field sources
   const mergedFieldSources: Record<string, FieldSource> = {
     ...currentFieldSources,
   };
-  
+
   sourceTracking.forEach(tracking => {
     mergedFieldSources[tracking.field] = tracking;
   });
-  
+
   // Update candidate if there are changes
   if (Object.keys(updates).length > 0) {
     // Get old values before update for audit logging
@@ -261,19 +261,19 @@ export async function enrichCandidateData(
     for (const field of updated) {
       oldValues[field] = currentCandidate[field] || null;
     }
-    
+
     updates.field_sources = mergedFieldSources;
     updates.updated_at = new Date().toISOString();
-    
+
     const { error: updateError } = await db
       .from('candidates')
       .update(updates)
       .eq('id', candidateId);
-    
+
     if (updateError) {
       throw new Error(`Failed to update candidate: ${updateError.message}`);
     }
-    
+
     // Log enrichment event with old and new values
     for (const field of updated) {
       await logEnrichmentEvent(
@@ -287,7 +287,7 @@ export async function enrichCandidateData(
       );
     }
   }
-  
+
   return {
     updated,
     skipped,
@@ -301,11 +301,11 @@ export async function enrichCandidateData(
  */
 export function calculateMissingFields(candidate: any): string[] {
   const missing: string[] = [];
-  
+
   // Check each Excel Browser field
   for (const [field, label] of Object.entries(EXCEL_BROWSER_FIELDS)) {
     const value = candidate[field];
-    
+
     // Special handling for calculated fields
     if (field === 'age') {
       // Age is calculated from date_of_birth
@@ -314,21 +314,21 @@ export function calculateMissingFields(candidate: any): string[] {
       }
       continue;
     }
-    
+
     if (field === 'languages') {
       // Languages field might be used for English/Arabic extraction
       // But it's not a required field itself
       continue;
     }
-    
+
     // Check if field is missing
     // Also check for the string "missing" (which might be stored as a default value)
-    if (value === null || value === undefined || value === '' || 
-        (typeof value === 'string' && (value.trim() === '' || value.toLowerCase() === 'missing'))) {
+    if (value === null || value === undefined || value === '' ||
+      (typeof value === 'string' && (value.trim() === '' || value.toLowerCase() === 'missing'))) {
       missing.push(field);
     }
   }
-  
+
   return missing;
 }
 
@@ -337,19 +337,19 @@ export function calculateMissingFields(candidate: any): string[] {
  */
 export async function updateMissingFields(candidateId: string): Promise<string[]> {
   const db = supabaseAdminClient();
-  
+
   const { data: candidate, error } = await db
     .from('candidates')
     .select('*')
     .eq('id', candidateId)
     .maybeSingle();
-  
+
   if (error || !candidate) {
     throw new Error(`Candidate not found: ${candidateId}`);
   }
-  
+
   const missingFields = calculateMissingFields(candidate);
-  
+
   // Update missing_fields column
   await db
     .from('candidates')
@@ -358,7 +358,7 @@ export async function updateMissingFields(candidateId: string): Promise<string[]
       updated_at: new Date().toISOString(),
     })
     .eq('id', candidateId);
-  
+
   return missingFields;
 }
 
@@ -372,21 +372,21 @@ export async function updateFieldManually(
   userId?: string
 ): Promise<void> {
   const db = supabaseAdminClient();
-  
+
   // Get current candidate data (including field_sources and the field we're updating)
   const { data: candidate } = await db
     .from('candidates')
     .select('*')
     .eq('id', candidateId)
     .maybeSingle();
-  
+
   if (!candidate) {
     throw new Error(`Candidate not found: ${candidateId}`);
   }
-  
-  const currentFieldSources: Record<string, FieldSource> = 
+
+  const currentFieldSources: Record<string, FieldSource> =
     (candidate.field_sources as Record<string, FieldSource>) || {};
-  
+
   // Determine database field name for CNIC/passport
   let dbFieldName = field;
   if (field === 'cnic') {
@@ -394,13 +394,13 @@ export async function updateFieldManually(
   } else if (field === 'passport') {
     dbFieldName = 'passport_normalized';
   }
-  
+
   // Get old value for audit logging (before update) - use dbFieldName
   const oldValue = (candidate as any)[dbFieldName] || null;
-  
+
   // Normalize special fields
   let normalizedValue = value;
-  
+
   if (field === 'cnic' && typeof value === 'string') {
     // Map cnic to cnic_normalized (database column name)
     normalizedValue = normalizeCNIC(value);
@@ -411,7 +411,7 @@ export async function updateFieldManually(
   } else if (field === 'date_of_birth' && typeof value === 'string') {
     normalizedValue = parseDate(value);
   }
-  
+
   // Update field with manual source (use dbFieldName for database update)
   const newFieldSources: Record<string, FieldSource> = {
     ...currentFieldSources,
@@ -422,25 +422,25 @@ export async function updateFieldManually(
       updated_by: userId,
     },
   };
-  
+
   const updates: any = {
     [dbFieldName]: normalizedValue,
     field_sources: newFieldSources,
     updated_at: new Date().toISOString(),
   };
-  
+
   const { error } = await db
     .from('candidates')
     .update(updates)
     .eq('id', candidateId);
-  
+
   if (error) {
     throw new Error(`Failed to update field: ${error.message}`);
   }
-  
+
   // Recalculate missing fields
   await updateMissingFields(candidateId);
-  
+
   // Log enrichment event (use dbFieldName for logging)
   await logEnrichmentEvent(candidateId, [dbFieldName], [], 'manual', undefined, oldValue, normalizedValue);
 }
@@ -450,10 +450,10 @@ export async function updateFieldManually(
  */
 function parseDate(dateStr: any): string | null {
   if (!dateStr) return null;
-  
+
   try {
     const str = String(dateStr);
-    
+
     // Format: "13 October 1983"
     if (str.includes(' ')) {
       const date = new Date(str);
@@ -461,7 +461,7 @@ function parseDate(dateStr: any): string | null {
         return date.toISOString().split('T')[0];
       }
     }
-    
+
     // Format: DD-MM-YYYY or YYYY-MM-DD
     if (str.includes('-')) {
       const parts = str.split('-');
@@ -473,7 +473,7 @@ function parseDate(dateStr: any): string | null {
         return `${parts[2]}-${parts[1]}-${parts[0]}`;
       }
     }
-    
+
     // Try direct parse
     const date = new Date(str);
     if (!isNaN(date.getTime())) {
@@ -482,7 +482,7 @@ function parseDate(dateStr: any): string | null {
   } catch (e) {
     console.warn(`Failed to parse date: ${dateStr}`, e);
   }
-  
+
   return null;
 }
 
@@ -499,7 +499,7 @@ async function logEnrichmentEvent(
   newValue?: any
 ): Promise<void> {
   const db = supabaseAdminClient();
-  
+
   try {
     // Get current candidate values for old_value tracking
     const { data: candidate } = await db
@@ -507,7 +507,7 @@ async function logEnrichmentEvent(
       .select('*')
       .eq('id', candidateId)
       .maybeSingle();
-    
+
     // Get document type if documentId is provided
     let documentType: string | undefined;
     if (documentId) {
@@ -518,13 +518,13 @@ async function logEnrichmentEvent(
         .maybeSingle();
       documentType = document?.document_type || document?.category || undefined;
     }
-    
+
     // Log each updated field individually
     for (const field of updatedFields) {
       // Use provided old/new values if available, otherwise get from candidate
       const fieldOldValue = oldValue !== undefined ? oldValue : (candidate?.[field] || null);
       const fieldNewValue = newValue !== undefined ? newValue : (candidate?.[field] || null);
-      
+
       const { error } = await db
         .from('enrichment_logs')
         .insert({
@@ -537,12 +537,12 @@ async function logEnrichmentEvent(
           document_type: documentType || null,
           updated_by: null, // TODO: Get from auth context
         });
-      
+
       if (error) {
         console.error(`[Enrichment] Failed to log field ${field}:`, error);
       }
     }
-    
+
     // Also log skipped fields for audit (with reason)
     for (const field of skippedFields) {
       const { error } = await db
@@ -557,12 +557,12 @@ async function logEnrichmentEvent(
           document_type: documentType || null,
           updated_by: null,
         });
-      
+
       if (error) {
         console.error(`[Enrichment] Failed to log skipped field ${field}:`, error);
       }
     }
-    
+
     // Also log to console for debugging
     console.log(`[Enrichment] Candidate ${candidateId}:`, {
       updated: updatedFields,
@@ -582,18 +582,24 @@ async function logEnrichmentEvent(
  */
 export function isGovernmentEmail(email: string): boolean {
   if (!email || typeof email !== 'string') return false;
-  
+
   const normalized = email.toLowerCase().trim();
   const patterns = [
-    // Police/law enforcement patterns
+    // Police/law enforcement patterns (Pakistan specific)
     'police', 'jhelum', 'lahore', 'islamabad', 'karachi', 'faisalabad',
     'rawalpindi', 'multan', 'peshawar', 'quetta', 'gjtpolice',
+    'sindhpolice', 'punjabpolice', 'kppolice', 'balochistanpolice',
+    'dpo', 'cpo', 'igp', 'dig', 'ssp', 'sho',
+
     // Government/official patterns  
     'govt', 'gov.', '@gov', 'government', 'department', 'ministry',
+    'official', 'contact', 'info', 'admin', 'support', 'help', 'career',
+
     // Generic organizational emails that shouldn't be personal
     'admin@', 'info@', 'contact@', 'support@', 'noinformation',
+    'noreply', 'do-not-reply', 'automail',
   ];
-  
+
   return patterns.some(pattern => normalized.includes(pattern));
 }
 
@@ -605,7 +611,7 @@ export async function findExistingCandidate(
   extractedData: Record<string, any>
 ): Promise<string | null> {
   const db = supabaseAdminClient();
-  
+
   // Priority 1: CNIC
   if (extractedData.cnic) {
     const normalizedCNIC = normalizeCNIC(extractedData.cnic);
@@ -618,7 +624,7 @@ export async function findExistingCandidate(
       if (data) return data.id;
     }
   }
-  
+
   // Priority 2: Passport
   if (extractedData.passport || extractedData.passport_no) {
     const passport = extractedData.passport || extractedData.passport_no;
@@ -632,7 +638,7 @@ export async function findExistingCandidate(
       if (data) return data.id;
     }
   }
-  
+
   // Priority 3: Email (but SKIP government emails to prevent false matches)
   if (extractedData.email && !isGovernmentEmail(extractedData.email)) {
     const { data } = await db
@@ -642,7 +648,7 @@ export async function findExistingCandidate(
       .maybeSingle();
     if (data) return data.id;
   }
-  
+
   // Priority 4: Phone
   if (extractedData.phone) {
     const { data } = await db
@@ -652,7 +658,7 @@ export async function findExistingCandidate(
       .maybeSingle();
     if (data) return data.id;
   }
-  
+
   // Priority 5: Name + Father Name + DOB (fuzzy match)
   if (extractedData.name && extractedData.father_name) {
     const { data: candidates } = await db
@@ -660,26 +666,26 @@ export async function findExistingCandidate(
       .select('id, name, father_name, date_of_birth')
       .ilike('name', `%${extractedData.name.split(' ')[0]}%`)
       .limit(10);
-    
+
     if (candidates && candidates.length > 0) {
       const firstName = extractedData.name.split(' ')[0].toLowerCase();
       const match = candidates.find((c: any) => {
         const cFirstName = c.name?.toLowerCase().split(' ')[0];
-        const nameMatch = cFirstName === firstName || 
-                        c.name?.toLowerCase().includes(firstName) ||
-                        firstName.includes(cFirstName);
-        
+        const nameMatch = cFirstName === firstName ||
+          c.name?.toLowerCase().includes(firstName) ||
+          firstName.includes(cFirstName);
+
         const fatherMatch = c.father_name?.toLowerCase() === extractedData.father_name.toLowerCase();
-        
+
         const dobMatch = extractedData.date_of_birth && c.date_of_birth &&
-                        c.date_of_birth === parseDate(extractedData.date_of_birth);
-        
+          c.date_of_birth === parseDate(extractedData.date_of_birth);
+
         return nameMatch && (fatherMatch || dobMatch);
       });
-      
+
       if (match) return match.id;
     }
   }
-  
+
   return null;
 }

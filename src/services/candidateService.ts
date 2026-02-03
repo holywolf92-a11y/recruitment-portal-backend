@@ -196,16 +196,18 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
   // Generate candidate code
   const candidateCode = await generateCandidateCode();
 
-  // Validate profile_photo_url (only allow image URLs)
+  // Validate profile_photo_url (only allow image URLs or Supabase signed URLs)
   let validProfilePhotoUrl = null;
   if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
-    const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
     const url = data.profile_photo_url.toLowerCase();
+    const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
     const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
 
+    // Check for Supabase signed URLs which might not match extension regex easily
+    const isSupabaseUrl = url.includes('supabase.co') && url.includes('/storage/v1/object/sign/');
+
     // Accept all valid image URLs including CV-extracted photos
-    // CV-extracted photos from the Python parser are legitimate profile photos
-    if (extMatch && allowedExts.includes(extMatch[1])) {
+    if (isSupabaseUrl || (extMatch && allowedExts.includes(extMatch[1]))) {
       validProfilePhotoUrl = data.profile_photo_url;
       console.log(`[ProfilePhotoValidation] Accepted profile photo URL: ${data.profile_photo_url}`);
     } else {

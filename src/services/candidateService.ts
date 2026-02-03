@@ -50,7 +50,7 @@ export async function generateCandidateCode(): Promise<string> {
       .limit(1);
 
     let sequenceNumber = 1;
-    
+
     if (existingCandidates && existingCandidates.length > 0) {
       const lastCode = existingCandidates[0].candidate_code;
       const match = lastCode.match(/FL-\d{4}-(\d{3})/);
@@ -202,20 +202,14 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
     const url = data.profile_photo_url.toLowerCase();
     const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
-    
-    // Reject URLs that contain CV document UUIDs (these are extracted images from CVs, not real profile photos)
-    // Pattern: documents/candidate_photos/{UUID}/profile.jpeg where UUID matches inbox_attachments IDs
-    const isCVExtractedImage = url.includes('documents/candidate_photos/') && 
-                               /candidate_photos\/[a-f0-9\-]{36}\//.test(url);
-    
-    if (extMatch && allowedExts.includes(extMatch[1]) && !isCVExtractedImage) {
+
+    // Accept all valid image URLs including CV-extracted photos
+    // CV-extracted photos from the Python parser are legitimate profile photos
+    if (extMatch && allowedExts.includes(extMatch[1])) {
       validProfilePhotoUrl = data.profile_photo_url;
+      console.log(`[ProfilePhotoValidation] Accepted profile photo URL: ${data.profile_photo_url}`);
     } else {
-      if (isCVExtractedImage) {
-        console.warn(`[ProfilePhotoValidation] Rejected CV-extracted image (not real profile photo): ${data.profile_photo_url}`);
-      } else {
-        console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
-      }
+      console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
     }
   }
 
@@ -536,7 +530,7 @@ function exportToCSV(candidates: any[]): { buffer: Buffer; filename: string } {
     const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
     const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe&force=true`;
-    
+
     const row = [
       c.id || '',
       c.candidate_code || '',
@@ -572,7 +566,7 @@ function exportToCSV(candidates: any[]): { buffer: Buffer; filename: string } {
 
 function exportToExcel(candidates: any[]): { buffer: Buffer; filename: string } {
   const XLSX = require('xlsx');
-  
+
   if (candidates.length === 0) {
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([['No candidates to export']]);
@@ -602,7 +596,7 @@ function exportToExcel(candidates: any[]): { buffer: Buffer; filename: string } 
     const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
     const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe&force=true`;
-    
+
     data.push([
       c.id || '',
       c.candidate_code || '',
@@ -637,12 +631,12 @@ function exportToExcel(candidates: any[]): { buffer: Buffer; filename: string } 
   for (let row = 2; row <= candidates.length + 1; row++) { // Start from row 2 (skip header)
     const profileCell = XLSX.utils.encode_cell({ r: row - 1, c: 18 }); // Column S (Profile Link)
     const cvCell = XLSX.utils.encode_cell({ r: row - 1, c: 19 }); // Column T (Employer CV)
-    
+
     if (ws[profileCell]) {
       ws[profileCell].l = { Target: ws[profileCell].v, Tooltip: 'Click to open profile' };
       ws[profileCell].s = { font: { color: { rgb: '0563C1' }, underline: true } };
     }
-    
+
     if (ws[cvCell]) {
       ws[cvCell].l = { Target: ws[cvCell].v, Tooltip: 'Click to open employer CV' };
       ws[cvCell].s = { font: { color: { rgb: '7030A0' }, underline: true } };
@@ -682,7 +676,7 @@ function exportToExcel(candidates: any[]): { buffer: Buffer; filename: string } 
   // Write to buffer
   const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
   const filename = `candidates_${new Date().toISOString().split('T')[0]}.xlsx`;
-  
+
   return { buffer, filename };
 }
 
@@ -757,24 +751,19 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
     updateData.phone = normalizePhoneE164(data.phone);
   }
 
-  // Validate profile_photo_url if provided (only allow real profile photos, not CV-extracted images)
+  // Validate profile_photo_url if provided (accept all valid image URLs including CV-extracted photos)
   if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
     const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
     const url = data.profile_photo_url.toLowerCase();
     const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
-    
-    // Reject URLs that contain CV document UUIDs (these are extracted images from CVs, not real profile photos)
-    const isCVExtractedImage = url.includes('documents/candidate_photos/') && 
-                               /candidate_photos\/[a-f0-9\-]{36}\//.test(url);
-    
-    if (!(extMatch && allowedExts.includes(extMatch[1]) && !isCVExtractedImage)) {
-      if (isCVExtractedImage) {
-        console.warn(`[ProfilePhotoValidation] Rejected CV-extracted image for update (not real profile photo): ${data.profile_photo_url}`);
-      } else {
-        console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url for update: ${data.profile_photo_url}`);
-      }
+
+    // Accept all valid image URLs including CV-extracted photos
+    if (!(extMatch && allowedExts.includes(extMatch[1]))) {
+      console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url for update: ${data.profile_photo_url}`);
       // Remove invalid profile_photo_url from update
       delete updateData.profile_photo_url;
+    } else {
+      console.log(`[ProfilePhotoValidation] Accepted profile photo URL for update: ${data.profile_photo_url}`);
     }
   }
 

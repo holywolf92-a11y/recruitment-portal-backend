@@ -133,7 +133,7 @@ export async function listCandidatesController(req: Request, res: Response) {
 
     // Generate signed URLs for all candidates in the list
     // This is necessary because the stored profile_photo_url might be expired
-    const candidatesWithSignedUrls = await Promise.all(result.data.map(async (candidate) => {
+    const candidatesWithSignedUrls = await Promise.all(result.candidates.map(async (candidate: any) => {
       try {
         const db = supabaseAdminClient();
         let bucket: string = (candidate as any).profile_photo_bucket || 'documents';
@@ -176,7 +176,7 @@ export async function listCandidatesController(req: Request, res: Response) {
       }
     }));
 
-    res.json({ ...result, data: candidatesWithSignedUrls });
+    res.json({ ...result, candidates: candidatesWithSignedUrls });
     return;
   } catch (error: any) {
     console.error('Error listing candidates:', error);

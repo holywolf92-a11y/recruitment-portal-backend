@@ -328,8 +328,8 @@ export async function extractProfilePhotoFromPdfUsingAI(args: {
     .update({
       profile_photo_bucket: uploaded.bucket,
       profile_photo_path: uploaded.storagePath,
-      // profile_photo_url intentionally left unset (signed URLs expire). The API will generate profile_photo_signed_url.
-      profile_photo_url: null,
+      // Save signed URL for immediate display (API can regenerate if expired)
+      profile_photo_url: uploaded.signedUrl,
       photo_received: true,
       photo_received_at: new Date().toISOString(),
     })

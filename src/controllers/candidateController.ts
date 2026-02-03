@@ -87,7 +87,7 @@ export async function getCandidateController(req: Request, res: Response) {
         }
 
         if (storagePath) {
-          const ttlSeconds = 600; // 10 minutes
+          const ttlSeconds = 31536000; // 1 year (effectively permanent)
           const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
           if (!urlError && signedData && (signedData as any).signedUrl) {
             (mappedCandidate as any).profile_photo_signed_url = (signedData as any).signedUrl;
@@ -159,7 +159,7 @@ export async function listCandidatesController(req: Request, res: Response) {
         }
 
         if (storagePath) {
-          const ttlSeconds = 3600; // 1 hour for list views
+          const ttlSeconds = 31536000; // 1 year (effectively permanent)
           const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
           if (!urlError && signedData && (signedData as any).signedUrl) {
             // Assign to profile_photo_url directly so frontend uses the fresh one
@@ -727,7 +727,7 @@ export async function uploadCandidatePhotoController(req: Request, res: Response
     // Generate signed URL for display
     const { data: signedUrlData, error: urlError } = await db.storage
       .from(bucket)
-      .createSignedUrl(storagePath, 3600); // 1 hour expiry
+      .createSignedUrl(storagePath, 31536000); // 1 year expiry
 
     if (urlError) {
       console.error('Signed URL error:', urlError);

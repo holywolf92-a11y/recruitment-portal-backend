@@ -131,16 +131,53 @@ export async function listCandidatesController(req: Request, res: Response) {
 
     const result = await listCandidates(filters, userId);
 
-    // Best-effort: attach short-lived signed URLs for profile photos in list
-    // Skip for list endpoint to avoid slow DB/storage queries; let frontend fetch per-candidate
-    try {
-      res.json(result);
-      return;
-    } catch (e) {
-      console.warn('Failed to return candidates list:', e);
-      res.status(500).json({ error: 'Failed to return candidates' });
-      return;
-    }
+    // Generate signed URLs for all candidates in the list
+    // This is necessary because the stored profile_photo_url might be expired
+    const candidatesWithSignedUrls = await Promise.all(result.data.map(async (candidate) => {
+      try {
+        const db = supabaseAdminClient();
+        let bucket: string = (candidate as any).profile_photo_bucket || 'documents';
+        let storagePath: string | null = (candidate as any).profile_photo_path || null;
+
+        // Try to derive path from URL if explicit path is missing
+        if (!storagePath && (candidate as any).profile_photo_url) {
+          const url: string = (candidate as any).profile_photo_url;
+          const publicMarker = '/storage/v1/object/public/';
+          const signMarker = '/storage/v1/object/sign/';
+
+          if (url.includes(publicMarker)) {
+            const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+            const parts = rest.split('/');
+            bucket = parts.shift() || bucket;
+            storagePath = parts.join('/');
+          } else if (url.includes(signMarker)) {
+            const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+            const parts = after.split('/');
+            bucket = parts.shift() || bucket;
+            storagePath = parts.join('/');
+          }
+        }
+
+        if (storagePath) {
+          const ttlSeconds = 3600; // 1 hour for list views
+          const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
+          if (!urlError && signedData && (signedData as any).signedUrl) {
+            // Assign to profile_photo_url directly so frontend uses the fresh one
+            return {
+              ...candidate,
+              profile_photo_url: (signedData as any).signedUrl,
+              profile_photo_signed_url: (signedData as any).signedUrl
+            };
+          }
+        }
+        return candidate;
+      } catch (e) {
+        return candidate;
+      }
+    }));
+
+    res.json({ ...result, data: candidatesWithSignedUrls });
+    return;
   } catch (error: any) {
     console.error('Error listing candidates:', error);
     res.status(500).json({ error: 'Failed to fetch candidates' });
@@ -170,7 +207,7 @@ export async function exportCandidatesController(req: Request, res: Response) {
   try {
     const userId = 'test-user-id';
     const format = (req.query.format as 'csv' | 'xlsx') || 'csv';
-    
+
     if (format !== 'csv' && format !== 'xlsx') {
       return res.status(400).json({ error: 'Format must be csv or xlsx' });
     }
@@ -188,7 +225,7 @@ export async function exportCandidatesController(req: Request, res: Response) {
     };
 
     const { buffer, filename } = await exportCandidates(filters, format, userId);
-    
+
     res.setHeader('Content-Type', format === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
@@ -329,12 +366,12 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
 
     // Log inbox attachments found for debugging
     if (inboxAttachments && inboxAttachments.length > 0) {
-      console.log(`[UpdateDocumentFlags] Found ${inboxAttachments.length} inbox attachments for candidate ${id}:`, 
-        inboxAttachments.map(a => ({ 
-          type: a.attachment_type, 
-          kind: a.attachment_kind, 
+      console.log(`[UpdateDocumentFlags] Found ${inboxAttachments.length} inbox attachments for candidate ${id}:`,
+        inboxAttachments.map(a => ({
+          type: a.attachment_type,
+          kind: a.attachment_kind,
           doc_type: a.document_type,
-          file: a.file_name 
+          file: a.file_name
         })));
     }
 
@@ -344,7 +381,7 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
       .from('documents')
       .select('doc_type, file_name')
       .eq('candidate_id', id);
-    
+
     // Log error but don't fail - old documents table might not exist in all deployments
     if (oldDocsError) {
       console.warn(`[UpdateDocumentFlags] Could not fetch old documents for candidate ${id} (this is OK if using new system only):`, oldDocsError.message);
@@ -352,29 +389,29 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
 
     // Combine all document sources
     const allDocs = [
-      ...(documents || []).map(d => ({ 
-        category: d.category, 
-        type: null, 
+      ...(documents || []).map(d => ({
+        category: d.category,
+        type: null,
         attachment_kind: null,
         document_type: null,
-        file_name: d.file_name, 
-        source: 'candidate_documents' 
+        file_name: d.file_name,
+        source: 'candidate_documents'
       })),
-      ...(inboxAttachments || []).map(d => ({ 
-        category: null, 
-        type: d.attachment_type, 
+      ...(inboxAttachments || []).map(d => ({
+        category: null,
+        type: d.attachment_type,
         attachment_kind: d.attachment_kind,
         document_type: d.document_type,
         file_name: d.file_name,
         source: 'inbox_attachments'
       })),
-      ...(oldDocuments || []).map(d => ({ 
-        category: null, 
-        type: d.doc_type, 
+      ...(oldDocuments || []).map(d => ({
+        category: null,
+        type: d.doc_type,
         attachment_kind: null,
         document_type: null,
-        file_name: d.file_name, 
-        source: 'documents' 
+        file_name: d.file_name,
+        source: 'documents'
       }))
     ];
 
@@ -397,7 +434,7 @@ export async function updateDocumentFlagsController(req: Request, res: Response)
         updateFlags.cv_received = true;
         updateFlags.cv_received_at = now;
         foundCategories.push('CV (from candidate_documents category)');
-      } 
+      }
       // Check attachment_kind from inbox_attachments (CVs from inbox) - this is the key field!
       else if (attachmentKind === 'cv') {
         updateFlags.cv_received = true;
@@ -523,8 +560,8 @@ export async function linkCandidatesCVController(req: Request, res: Response) {
     });
   } catch (error: any) {
     console.error('Error linking CV:', error);
-    res.status(error.statusCode || 500).json({ 
-      error: error.message || 'Failed to link CV' 
+    res.status(error.statusCode || 500).json({
+      error: error.message || 'Failed to link CV'
     });
   }
 }
@@ -753,16 +790,16 @@ export async function updateCandidateFieldManuallyController(req: Request, res: 
 
     // Import progressive completion service
     const { updateFieldManually, updateMissingFields } = await import('../services/progressiveDataCompletionService');
-    
+
     // Update field manually (highest priority)
     await updateFieldManually(id, field, value, userId);
-    
+
     // Recalculate missing fields
     await updateMissingFields(id);
 
     // Get updated candidate
     const updatedCandidate = await getCandidateById(id, userId);
-    
+
     // Map passport_normalized to passport for frontend compatibility
     const mappedCandidate = updatedCandidate ? {
       ...updatedCandidate,
@@ -813,11 +850,11 @@ export async function getMissingFieldsController(req: Request, res: Response) {
       label: (EXCEL_BROWSER_FIELDS as any)[field] || field,
       source: fieldSources[field]?.source || null,
       canBeManuallyUpdated: true,
-      hint: fieldSources[field]?.source === 'manual' 
+      hint: fieldSources[field]?.source === 'manual'
         ? 'Manually updated - will not be overwritten'
-        : fieldSources[field]?.source 
-        ? `Awaiting document (source: ${fieldSources[field].source})`
-        : 'Can be manually updated',
+        : fieldSources[field]?.source
+          ? `Awaiting document (source: ${fieldSources[field].source})`
+          : 'Can be manually updated',
     }));
 
     res.json({

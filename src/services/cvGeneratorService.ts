@@ -41,17 +41,17 @@ export interface CVGenerationResponse {
  */
 async function calculateCandidateVersionHash(candidateId: string): Promise<string> {
   const db = supabaseAdminClient();
-  
+
   const { data: candidate, error } = await db
     .from('candidates')
     .select('name, position, nationality, experience_years, skills, languages, education, certifications, previous_employment, professional_summary, country_of_interest, profile_photo_url, ai_score, updated_at')
     .eq('id', candidateId)
     .single();
-  
+
   if (error || !candidate) {
     throw new Error(`Candidate not found: ${candidateId}`);
   }
-  
+
   const dataString = [
     getTemplateVersion(), // Include template version to bust cache when design changes
     candidate.name || '',
@@ -67,7 +67,7 @@ async function calculateCandidateVersionHash(candidateId: string): Promise<strin
     candidate.country_of_interest || '',
     candidate.updated_at || '',
   ].join('|');
-  
+
   return crypto.createHash('sha256').update(dataString).digest('hex');
 }
 
@@ -81,10 +81,10 @@ async function checkCache(options: CVGenerationOptions): Promise<{
   storage_path?: string;
 }> {
   const db = supabaseAdminClient();
-  
+
   // Calculate current version hash
   const currentVersionHash = await calculateCandidateVersionHash(options.candidateId);
-  
+
   // Check if cached CV exists with matching version hash
   const { data: cached, error } = await db
     .from('generated_cvs')
@@ -93,21 +93,21 @@ async function checkCache(options: CVGenerationOptions): Promise<{
     .eq('format', options.format)
     .eq('version_hash', currentVersionHash)
     .maybeSingle();
-  
+
   if (error || !cached) {
     return { exists: false };
   }
-  
+
   // Generate signed URL for cached PDF
   const { data: signedUrlData, error: urlError } = await db.storage
     .from(cached.storage_bucket || STORAGE_BUCKET)
     .createSignedUrl(cached.storage_path, 7 * 24 * 60 * 60); // 7 days
-  
+
   if (urlError || !signedUrlData) {
     console.warn(`Failed to generate signed URL for cached CV: ${urlError?.message}`);
     return { exists: false };
   }
-  
+
   // Update access stats
   // Note: Supabase doesn't support raw SQL in updates, we'll increment on the server side
   // For now, we'll fetch and increment manually, or use a database function
@@ -120,7 +120,7 @@ async function checkCache(options: CVGenerationOptions): Promise<{
     .eq('candidate_id', options.candidateId)
     .eq('format', options.format)
     .eq('version_hash', currentVersionHash);
-  
+
   return {
     exists: true,
     signed_url: signedUrlData.signedUrl,
@@ -135,25 +135,44 @@ async function checkCache(options: CVGenerationOptions): Promise<{
 async function generateProfilePhotoSignedUrl(candidate: any): Promise<string | null> {
   try {
     // Check if we have bucket and path
-    const bucket = candidate.profile_photo_bucket;
-    const storagePath = candidate.profile_photo_path;
-    
+    let bucket = candidate.profile_photo_bucket;
+    let storagePath = candidate.profile_photo_path;
+
+    // If not, try to derive from URL
+    if ((!bucket || !storagePath) && candidate.profile_photo_url) {
+      const url: string = candidate.profile_photo_url;
+      const publicMarker = '/storage/v1/object/public/';
+      const signMarker = '/storage/v1/object/sign/';
+
+      if (url.includes(publicMarker)) {
+        const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+        const parts = rest.split('/');
+        bucket = parts.shift() || 'documents';
+        storagePath = parts.join('/');
+      } else if (url.includes(signMarker)) {
+        const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+        const parts = after.split('/');
+        bucket = parts.shift() || 'documents';
+        storagePath = parts.join('/');
+      }
+    }
+
     if (!bucket || !storagePath) {
       console.log('[CVGenerator] No profile photo bucket/path found, skipping signed URL generation');
       return null;
     }
-    
-    // Generate a long-lived signed URL (7 days)
+
+    // Generate a long-lived signed URL (1 year)
     const db = supabaseAdminClient();
     const { data: signedData, error } = await db.storage
       .from(bucket)
-      .createSignedUrl(storagePath, 7 * 24 * 60 * 60); // 7 days
-    
+      .createSignedUrl(storagePath, 31536000); // 1 year (permanent)
+
     if (error || !signedData?.signedUrl) {
       console.warn(`[CVGenerator] Failed to generate signed URL for profile photo: ${error?.message}`);
       return null;
     }
-    
+
     console.log('[CVGenerator] Generated signed URL for profile photo');
     return signedData.signedUrl;
   } catch (err: any) {
@@ -180,10 +199,10 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
       skills = candidate.skills.split(',').map((s: string) => s.trim());
     }
   }
-  
+
   const languages = candidate.languages ? candidate.languages.split(',').map((l: string) => l.trim()) : [];
   const initial = (candidate.name || '?').charAt(0).toUpperCase();
-  
+
   return `
 <!DOCTYPE html>
 <html lang="en">
@@ -580,20 +599,20 @@ async function generatePDFFromHTML(html: string): Promise<Buffer> {
     // Use system Chromium if available (for Railway/production)
     // Otherwise fall back to bundled Chromium (for local dev)
     let executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    
+
     console.log(`[CVGenerator] Puppeteer launch config:`, {
       executablePath: executablePath || 'bundled',
       platform: process.platform,
       env_skip: process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD,
     });
-    
+
     // Try to find system Chromium if not explicitly set
     if (!executablePath && process.platform === 'linux') {
       // Common paths for Chromium in Linux containers
       executablePath = '/usr/bin/chromium';
       console.log(`[CVGenerator] Using default Linux Chromium path: ${executablePath}`);
     }
-    
+
     const launchOptions: any = {
       headless: true,
       args: [
@@ -605,20 +624,20 @@ async function generatePDFFromHTML(html: string): Promise<Buffer> {
         '--disable-extensions',
       ],
     };
-    
+
     // Only set executablePath if we have one (let Puppeteer use bundled Chromium otherwise)
     if (executablePath) {
       launchOptions.executablePath = executablePath;
     }
-    
+
     console.log(`[CVGenerator] Launching Puppeteer with options:`, JSON.stringify(launchOptions, null, 2));
     const browser = await puppeteer.launch(launchOptions);
     console.log(`[CVGenerator] Puppeteer launched successfully`);
-    
+
     try {
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: 'networkidle0' });
-      
+
       const pdfBuffer = await page.pdf({
         format: 'A4',
         printBackground: true,
@@ -630,7 +649,7 @@ async function generatePDFFromHTML(html: string): Promise<Buffer> {
         },
         preferCSSPageSize: true,
       });
-      
+
       console.log(`[CVGenerator] PDF generated, size: ${pdfBuffer.length} bytes`);
       return Buffer.from(pdfBuffer);
     } finally {
@@ -654,14 +673,14 @@ async function uploadPDFToStorage(
   pdfBuffer: Buffer
 ): Promise<void> {
   const db = supabaseAdminClient();
-  
+
   const { error } = await db.storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, pdfBuffer, {
       contentType: 'application/pdf',
       upsert: true,
     });
-  
+
   if (error) {
     throw new Error(`Failed to upload PDF to storage: ${error.message}`);
   }
@@ -679,14 +698,14 @@ async function saveCVMetadata(
   userId?: string
 ): Promise<void> {
   const db = supabaseAdminClient();
-  
+
   const fileName = storagePath.split('/').pop() || 'cv.pdf';
   const sha256 = crypto.createHash('sha256').update(versionHash).digest('hex').substring(0, 64);
-  
+
   // Validate userId is a valid UUID, otherwise set to null
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const validUserId = userId && uuidRegex.test(userId) ? userId : null;
-  
+
   const { error } = await db
     .from('generated_cvs')
     .upsert({
@@ -702,7 +721,7 @@ async function saveCVMetadata(
     }, {
       onConflict: 'candidate_id,format,version_hash',
     });
-  
+
   if (error) {
     throw new Error(`Failed to save CV metadata: ${error.message}`);
   }
@@ -713,10 +732,10 @@ async function saveCVMetadata(
  */
 export async function generateCV(options: CVGenerationOptions): Promise<CVGenerationResponse> {
   const startTime = Date.now();
-  
+
   try {
     console.log(`[CVGenerator] Starting CV generation for candidate ${options.candidateId}, format: ${options.format}`);
-    
+
     // 1. Check cache
     if (!options.forceRegenerate) {
       console.log(`[CVGenerator] Checking cache...`);
@@ -731,24 +750,24 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
       }
       console.log(`[CVGenerator] Cache miss, proceeding with generation`);
     }
-    
+
     console.log(`[CVGenerator] Generating new CV for candidate ${options.candidateId}, format: ${options.format}`);
-    
+
     // 2. Fetch candidate data
     console.log(`[CVGenerator] Step 2/9: Fetching candidate data...`);
     const candidate = await getCandidateById(options.candidateId, options.userId || 'system');
     console.log(`[CVGenerator] Candidate data fetched: ${candidate.name}`);
-    
+
     // 3. Fetch candidate documents (for future use - currently not displayed in employer-safe CV)
     console.log(`[CVGenerator] Step 3/9: Fetching candidate documents...`);
     const documents = await listCandidateDocumentsByCandidate(options.candidateId);
     console.log(`[CVGenerator] Documents fetched: ${documents.length} documents`);
-    
+
     // 4. Calculate version hash
     console.log(`[CVGenerator] Step 4/9: Calculating version hash...`);
     const versionHash = await calculateCandidateVersionHash(options.candidateId);
     console.log(`[CVGenerator] Version hash: ${versionHash}`);
-    
+
     // 4b. Generate signed URL for profile photo if it exists
     console.log(`[CVGenerator] Step 4b/9: Generating profile photo signed URL...`);
     const profilePhotoSignedUrl = await generateProfilePhotoSignedUrl(candidate);
@@ -756,7 +775,7 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
       candidate.profile_photo_signed_url = profilePhotoSignedUrl;
       console.log(`[CVGenerator] Profile photo signed URL generated`);
     }
-    
+
     // 5. Generate HTML based on format
     console.log(`[CVGenerator] Step 5/9: Generating HTML template...`);
     let html: string;
@@ -767,19 +786,19 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
       html = generateEmployerSafeCVHTML(candidate, documents); // Placeholder
     }
     console.log(`[CVGenerator] HTML generated, length: ${html.length} chars`);
-    
+
     // 6. Generate PDF
     console.log(`[CVGenerator] Step 6/9: Generating PDF from HTML...`);
     const pdfBuffer = await generatePDFFromHTML(html);
     const fileSize = pdfBuffer.length;
     console.log(`[CVGenerator] PDF generated, size: ${fileSize} bytes`);
-    
+
     // 7. Upload to storage
     console.log(`[CVGenerator] Step 7/9: Uploading PDF to storage...`);
     const storagePath = `cvs/${options.candidateId}/${options.format}_${versionHash}.pdf`;
     await uploadPDFToStorage(storagePath, pdfBuffer);
     console.log(`[CVGenerator] PDF uploaded to: ${storagePath}`);
-    
+
     // 8. Save metadata
     console.log(`[CVGenerator] Step 8/9: Saving CV metadata...`);
     await saveCVMetadata(
@@ -791,22 +810,22 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
       options.userId
     );
     console.log(`[CVGenerator] Metadata saved`);
-    
+
     // 9. Generate signed URL
     console.log(`[CVGenerator] Step 9/9: Generating signed URL...`);
     const db = supabaseAdminClient();
     const { data: signedUrlData, error: urlError } = await db.storage
       .from(STORAGE_BUCKET)
       .createSignedUrl(storagePath, 7 * 24 * 60 * 60); // 7 days
-    
+
     if (urlError || !signedUrlData) {
       throw new Error(`Failed to generate signed URL: ${urlError?.message}`);
     }
     console.log(`[CVGenerator] Signed URL generated successfully`);
-    
+
     const generationTime = Date.now() - startTime;
     console.log(`[CVGenerator] CV generated successfully in ${generationTime}ms, size: ${fileSize} bytes`);
-    
+
     return {
       cv_url: signedUrlData.signedUrl,
       cached: false,
@@ -829,19 +848,19 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
  */
 export async function generateBulkCVs(request: BulkCVRequest, userId: string): Promise<CVGenerationResult[]> {
   const results: CVGenerationResult[] = [];
-  
+
   for (const candidateId of request.candidate_ids) {
     try {
       const candidate = await getCandidateById(candidateId, userId);
       const format = request.format || 'employer-safe';
-      
+
       const result = await generateCV({
         candidateId,
         format: format as 'employer-safe' | 'internal' | 'standard',
         template: (request.template as any) || 'professional',
         userId,
       });
-      
+
       results.push({
         candidate_id: candidateId,
         candidate_name: candidate.name,
@@ -857,7 +876,7 @@ export async function generateBulkCVs(request: BulkCVRequest, userId: string): P
       });
     }
   }
-  
+
   return results;
 }
 
@@ -874,7 +893,7 @@ export async function generateSingleCV(
     format: format as 'employer-safe' | 'internal' | 'standard',
     userId,
   });
-  
+
   return {
     cv_url: result.cv_url,
   };

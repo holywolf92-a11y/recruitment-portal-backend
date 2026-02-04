@@ -530,6 +530,8 @@ export async function uploadCandidateDocument(
     const expectedCategory = uploadCategoryMap[uploadDocType];
     const expectedDocType = uploadDocTypeMap[uploadDocType] || 'other';
 
+    const isImagePhotoUpload = expectedCategory === DOCUMENT_CATEGORIES.PHOTOS && (data.mime_type || '').toLowerCase().startsWith('image/');
+
     // Create candidate_documents record with status = PENDING_AI; store expected type when provided
     const documentData: Record<string, unknown> = {
       candidate_id: data.candidate_id,
@@ -540,7 +542,7 @@ export async function uploadCandidateDocument(
       mime_type: data.mime_type,
       source: data.source || 'manual',
       status: 'received',
-      verification_status: VERIFICATION_STATUS.PENDING_AI,
+      verification_status: isImagePhotoUpload ? VERIFICATION_STATUS.VERIFIED : VERIFICATION_STATUS.PENDING_AI,
       received_at: new Date().toISOString(),
     };
     if (expectedCategory) {
@@ -580,38 +582,58 @@ export async function uploadCandidateDocument(
       storagePath
     );
 
-    // Enqueue AI processing job
-    try {
-      const jobData = {
-        requestId,
-        documentId: document.id,
-        candidateId: data.candidate_id,
-        storageBucket: STORAGE_BUCKET,
-        storagePath,
-        fileName: data.file_name,
-        mimeType: data.mime_type,
-      };
+    if (!isImagePhotoUpload) {
+      // Enqueue AI processing job
+      try {
+        const jobData = {
+          requestId,
+          documentId: document.id,
+          candidateId: data.candidate_id,
+          storageBucket: STORAGE_BUCKET,
+          storagePath,
+          fileName: data.file_name,
+          mimeType: data.mime_type,
+        };
 
-      await documentVerificationQueue.add('verify-document', jobData, {
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 2000,
-        },
-      });
+        await documentVerificationQueue.add('verify-document', jobData, {
+          attempts: 3,
+          backoff: {
+            type: 'exponential',
+            delay: 2000,
+          },
+        });
 
-      console.log(`[UploadDocument] Enqueued AI verification job for document ${document.id}`);
-    } catch (queueError: any) {
-      console.error('[UploadDocument] Failed to enqueue AI job:', queueError);
-      
-      // Don't fail the upload, but log the error
-      await logService.logError(
-        requestId,
-        `Failed to enqueue AI job: ${queueError.message}`,
-        queueError.stack,
-        document.id,
-        data.candidate_id
-      );
+        console.log(`[UploadDocument] Enqueued AI verification job for document ${document.id}`);
+      } catch (queueError: any) {
+        console.error('[UploadDocument] Failed to enqueue AI job:', queueError);
+        
+        // Don't fail the upload, but log the error
+        await logService.logError(
+          requestId,
+          `Failed to enqueue AI job: ${queueError.message}`,
+          queueError.stack,
+          document.id,
+          data.candidate_id
+        );
+      }
+    } else {
+      console.log(`[UploadDocument] ⏭️  Skipped AI verification for auto-verified photo ${document.id}`);
+
+      // Immediately set candidate profile photo for image uploads
+      try {
+        await db
+          .from('candidates')
+          .update({
+            profile_photo_bucket: STORAGE_BUCKET,
+            profile_photo_path: storagePath,
+            profile_photo_url: null,
+            photo_received: true,
+            photo_received_at: new Date().toISOString(),
+          })
+          .eq('id', data.candidate_id);
+      } catch (photoUpdateError: any) {
+        console.error('[UploadDocument] Failed to update candidate profile photo for image upload:', photoUpdateError);
+      }
     }
 
     // Update candidate document flags based on filename and document_type

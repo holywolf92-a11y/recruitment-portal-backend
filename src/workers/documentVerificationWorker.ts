@@ -1178,10 +1178,18 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         
         if (identity.phone) enrichmentData.phone = identity.phone;
         if (identity.date_of_birth) enrichmentData.date_of_birth = identity.date_of_birth;
-        if (identity.nationality) enrichmentData.nationality = identity.nationality;
+        if (identity.nationality) {
+          enrichmentData.nationality = identity.nationality;
+          console.log(`[DocumentVerification] 🌍 Extracted nationality: "${identity.nationality}" from ${documentSource} document (category: ${aiResult.category})`);
+        } else {
+          console.log(`[DocumentVerification] ⚠️ No nationality extracted from ${documentSource} document (category: ${aiResult.category})`);
+        }
         if (identity.passport_expiry || identity.expiry_date) enrichmentData.passport_expiry = identity.passport_expiry || identity.expiry_date;
         if (identity.issue_date) enrichmentData.issue_date = identity.issue_date;
         if (identity.place_of_issue) enrichmentData.place_of_issue = identity.place_of_issue;
+        
+        // Log enrichment data being sent
+        console.log(`[DocumentVerification] Enrichment data for ${documentSource}:`, Object.keys(enrichmentData));
         
         // Enrich candidate data (progressive completion)
         const enrichmentResult = await enrichCandidateData(

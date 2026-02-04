@@ -166,6 +166,16 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
       }
     }
     
+    const rawProfilePhotoUrl = parsed?.candidate?.profile_photo_url || parsed?.profile_photo_url || undefined;
+    const normalizedProfilePhotoUrl = typeof rawProfilePhotoUrl === 'string' && rawProfilePhotoUrl.trim()
+      ? rawProfilePhotoUrl.trim()
+      : undefined;
+    const isProfilePhotoPdf = !!normalizedProfilePhotoUrl && normalizedProfilePhotoUrl.toLowerCase().includes('.pdf');
+
+    if (isProfilePhotoPdf) {
+      console.warn('[CVParser] Ignoring PDF profile_photo_url from parser response:', normalizedProfilePhotoUrl);
+    }
+
     const candidateData: CreateCandidateData = {
       name: resolvedName,
       father_name: identityFields?.father_name || candidate.father_name || undefined,
@@ -194,8 +204,8 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
       ),
       passport_expiry: passportExpiry,
       professional_summary: candidate.professional_summary || candidate.summary || undefined,
-      // Pass through profile_photo_url from parser response if present
-      profile_photo_url: parsed?.candidate?.profile_photo_url || parsed?.profile_photo_url || undefined,
+      // Pass through profile_photo_url from parser response if present (ignore PDF links)
+      profile_photo_url: isProfilePhotoPdf ? undefined : normalizedProfilePhotoUrl,
     };
 
     // Create candidate (system-created, no specific userId)

@@ -143,26 +143,21 @@ async function createCandidate(data, userId) {
     }
     // Generate candidate code
     const candidateCode = await generateCandidateCode();
-    // Validate profile_photo_url (only allow image URLs)
+    // Validate profile_photo_url (only allow image URLs or Supabase signed URLs)
     let validProfilePhotoUrl = null;
     if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
-        const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
         const url = data.profile_photo_url.toLowerCase();
+        const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
         const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
-        // Reject URLs that contain CV document UUIDs (these are extracted images from CVs, not real profile photos)
-        // Pattern: documents/candidate_photos/{UUID}/profile.jpeg where UUID matches inbox_attachments IDs
-        const isCVExtractedImage = url.includes('documents/candidate_photos/') &&
-            /candidate_photos\/[a-f0-9\-]{36}\//.test(url);
-        if (extMatch && allowedExts.includes(extMatch[1]) && !isCVExtractedImage) {
+        // Check for Supabase signed URLs which might not match extension regex easily
+        const isSupabaseUrl = url.includes('supabase.co') && url.includes('/storage/v1/object/sign/');
+        // Accept all valid image URLs including CV-extracted photos
+        if (isSupabaseUrl || (extMatch && allowedExts.includes(extMatch[1]))) {
             validProfilePhotoUrl = data.profile_photo_url;
+            console.log(`[ProfilePhotoValidation] Accepted profile photo URL: ${data.profile_photo_url}`);
         }
         else {
-            if (isCVExtractedImage) {
-                console.warn(`[ProfilePhotoValidation] Rejected CV-extracted image (not real profile photo): ${data.profile_photo_url}`);
-            }
-            else {
-                console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
-            }
+            console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
         }
     }
     // Create candidate record
@@ -191,6 +186,7 @@ async function createCandidate(data, userId) {
         languages: data.languages,
         education: data.education,
         certifications: data.certifications,
+        internships: data.internships,
         previous_employment: data.previous_employment,
         passport_expiry: data.passport_expiry,
         professional_summary: data.professional_summary,
@@ -242,6 +238,7 @@ async function getCandidateById(id, userId) {
         .from('candidates')
         .select('*')
         .eq('id', id)
+        .neq('status', 'Deleted') // Exclude soft-deleted candidates
         .single();
     if (error)
         throw error;
@@ -250,14 +247,22 @@ async function getCandidateById(id, userId) {
 async function listCandidates(filters = {}, userId) {
     const db = (0, database_1.supabaseAdminClient)();
     let query = db.from('candidates').select('*', { count: 'exact' });
+    // By default, exclude deleted candidates (unless explicitly filtering for them)
+    if (!filters.status || filters.status !== 'Deleted') {
+        query = query.neq('status', 'Deleted');
+    }
     // Global search: partial, case-insensitive, across name, passport, CNIC, email, phone (server-side)
     if (filters.search && filters.search.trim()) {
         const q = filters.search.trim();
         query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%`);
     }
     // Apply status filter
-    if (filters.status && filters.status !== 'all') {
+    if (filters.status && filters.status !== 'all' && filters.status !== 'Deleted') {
         query = query.eq('status', filters.status);
+    }
+    else if (filters.status === 'Deleted') {
+        // Only show deleted if explicitly requested
+        query = query.eq('status', 'Deleted');
     }
     // Apply profession (position) filter
     if (filters.position && filters.position !== 'all') {
@@ -388,6 +393,11 @@ function exportToCSV(candidates) {
     }
     // Get frontend URL from environment
     const frontendUrl = process.env.FRONTEND_URL || 'https://exquisite-surprise-production.up.railway.app';
+    // Get backend URL for CV download links
+    const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
+    const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
+        ? backendBaseUrl.replace(/\/$/, '')
+        : `${backendBaseUrl.replace(/\/$/, '')}/api`;
     // CSV headers - now includes Profile Link and Employer CV
     const headers = [
         'ID', 'Code', 'Name', 'Email', 'Phone', 'Position', 'Nationality', 'Country of Interest',
@@ -400,7 +410,7 @@ function exportToCSV(candidates) {
         const age = c.date_of_birth ? calculateAgeFromDOB(c.date_of_birth) : '';
         const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
         const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
-        const cvLink = `${frontendUrl}/profile/${c.id}/${slug}`;
+        const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe&force=true`;
         const row = [
             c.id || '',
             c.candidate_code || '',
@@ -443,6 +453,11 @@ function exportToExcel(candidates) {
     }
     // Get frontend URL from environment
     const frontendUrl = process.env.FRONTEND_URL || 'https://exquisite-surprise-production.up.railway.app';
+    // Get backend URL for CV download links
+    const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
+    const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
+        ? backendBaseUrl.replace(/\/$/, '')
+        : `${backendBaseUrl.replace(/\/$/, '')}/api`;
     // Build data array with headers
     const data = [[
             'ID', 'Code', 'Name', 'Email', 'Phone', 'Position', 'Nationality', 'Country of Interest',
@@ -454,7 +469,7 @@ function exportToExcel(candidates) {
         const age = c.date_of_birth ? calculateAgeFromDOB(c.date_of_birth) : '';
         const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
         const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
-        const cvLink = profileLink; // Same link, but we'll label it differently
+        const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe&force=true`;
         data.push([
             c.id || '',
             c.candidate_code || '',
@@ -590,23 +605,19 @@ async function updateCandidate(id, data, userId) {
     if (data.phone) {
         updateData.phone = normalizePhoneE164(data.phone);
     }
-    // Validate profile_photo_url if provided (only allow real profile photos, not CV-extracted images)
+    // Validate profile_photo_url if provided (accept all valid image URLs including CV-extracted photos)
     if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
         const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
         const url = data.profile_photo_url.toLowerCase();
         const extMatch = url.match(/\.([a-z0-9]+)(?:\?|#|$)/);
-        // Reject URLs that contain CV document UUIDs (these are extracted images from CVs, not real profile photos)
-        const isCVExtractedImage = url.includes('documents/candidate_photos/') &&
-            /candidate_photos\/[a-f0-9\-]{36}\//.test(url);
-        if (!(extMatch && allowedExts.includes(extMatch[1]) && !isCVExtractedImage)) {
-            if (isCVExtractedImage) {
-                console.warn(`[ProfilePhotoValidation] Rejected CV-extracted image for update (not real profile photo): ${data.profile_photo_url}`);
-            }
-            else {
-                console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url for update: ${data.profile_photo_url}`);
-            }
+        // Accept all valid image URLs including CV-extracted photos
+        if (!(extMatch && allowedExts.includes(extMatch[1]))) {
+            console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url for update: ${data.profile_photo_url}`);
             // Remove invalid profile_photo_url from update
             delete updateData.profile_photo_url;
+        }
+        else {
+            console.log(`[ProfilePhotoValidation] Accepted profile photo URL for update: ${data.profile_photo_url}`);
         }
     }
     // Check for duplicates (excluding current candidate)

@@ -52,6 +52,7 @@ exports.updateCandidateFieldManuallyController = updateCandidateFieldManuallyCon
 exports.getMissingFieldsController = getMissingFieldsController;
 // import { AuthRequest } from '../middleware/auth';
 const candidateService_1 = require("../services/candidateService");
+const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
 const linkCVService_1 = require("../services/linkCVService");
 const database_1 = require("../config/database");
 async function createCandidateController(req, res) {
@@ -62,6 +63,11 @@ async function createCandidateController(req, res) {
         // Basic validation
         if (!candidateData.name || candidateData.name.trim().length === 0) {
             return res.status(400).json({ error: 'Candidate name is required' });
+        }
+        // Filter out government emails
+        if (candidateData.email && (0, progressiveDataCompletionService_1.isGovernmentEmail)(candidateData.email)) {
+            console.log(`🚫 Filtered government email in manual candidate creation: ${candidateData.email}`);
+            candidateData.email = undefined;
         }
         const candidate = await (0, candidateService_1.createCandidate)(candidateData, userId);
         res.status(201).json({ candidate });
@@ -111,7 +117,7 @@ async function getCandidateController(req, res) {
                     }
                 }
                 if (storagePath) {
-                    const ttlSeconds = 600; // 10 minutes
+                    const ttlSeconds = 31536000; // 1 year (effectively permanent)
                     const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
                     if (!urlError && signedData && signedData.signedUrl) {
                         mappedCandidate.profile_photo_signed_url = signedData.signedUrl;
@@ -153,17 +159,51 @@ async function listCandidatesController(req, res) {
             offset: req.query.offset ? parseInt(req.query.offset) : undefined,
         };
         const result = await (0, candidateService_1.listCandidates)(filters, userId);
-        // Best-effort: attach short-lived signed URLs for profile photos in list
-        // Skip for list endpoint to avoid slow DB/storage queries; let frontend fetch per-candidate
-        try {
-            res.json(result);
-            return;
-        }
-        catch (e) {
-            console.warn('Failed to return candidates list:', e);
-            res.status(500).json({ error: 'Failed to return candidates' });
-            return;
-        }
+        // Generate signed URLs for all candidates in the list
+        // This is necessary because the stored profile_photo_url might be expired
+        const candidatesWithSignedUrls = await Promise.all(result.candidates.map(async (candidate) => {
+            try {
+                const db = (0, database_1.supabaseAdminClient)();
+                let bucket = candidate.profile_photo_bucket || 'documents';
+                let storagePath = candidate.profile_photo_path || null;
+                // Try to derive path from URL if explicit path is missing
+                if (!storagePath && candidate.profile_photo_url) {
+                    const url = candidate.profile_photo_url;
+                    const publicMarker = '/storage/v1/object/public/';
+                    const signMarker = '/storage/v1/object/sign/';
+                    if (url.includes(publicMarker)) {
+                        const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+                        const parts = rest.split('/');
+                        bucket = parts.shift() || bucket;
+                        storagePath = parts.join('/');
+                    }
+                    else if (url.includes(signMarker)) {
+                        const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+                        const parts = after.split('/');
+                        bucket = parts.shift() || bucket;
+                        storagePath = parts.join('/');
+                    }
+                }
+                if (storagePath) {
+                    const ttlSeconds = 31536000; // 1 year (effectively permanent)
+                    const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
+                    if (!urlError && signedData && signedData.signedUrl) {
+                        // Assign to profile_photo_url directly so frontend uses the fresh one
+                        return {
+                            ...candidate,
+                            profile_photo_url: signedData.signedUrl,
+                            profile_photo_signed_url: signedData.signedUrl
+                        };
+                    }
+                }
+                return candidate;
+            }
+            catch (e) {
+                return candidate;
+            }
+        }));
+        res.json({ ...result, candidates: candidatesWithSignedUrls });
+        return;
     }
     catch (error) {
         console.error('Error listing candidates:', error);
@@ -616,6 +656,7 @@ async function uploadCandidatePhotoController(req, res) {
             .from('candidates')
             .select('id, name')
             .eq('id', id)
+            .neq('status', 'Deleted') // Exclude deleted candidates
             .single();
         if (candidateError || !candidate) {
             return res.status(404).json({ error: 'Candidate not found' });
@@ -655,7 +696,7 @@ async function uploadCandidatePhotoController(req, res) {
         // Generate signed URL for display
         const { data: signedUrlData, error: urlError } = await db.storage
             .from(bucket)
-            .createSignedUrl(storagePath, 3600); // 1 hour expiry
+            .createSignedUrl(storagePath, 31536000); // 1 year expiry
         if (urlError) {
             console.error('Signed URL error:', urlError);
             // Photo uploaded successfully but URL generation failed

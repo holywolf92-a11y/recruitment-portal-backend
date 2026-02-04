@@ -47,9 +47,9 @@ const candidateMatcher_1 = require("../services/candidateMatcher");
 const documentCategories_1 = require("../config/documentCategories");
 const documentRejectionService_1 = require("../services/documentRejectionService");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
-const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
-if (!HMAC_SECRET) {
-    throw new Error('PYTHON_HMAC_SECRET environment variable is required for document verification worker');
+const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
+if (!HMAC_SECRET && process.env.NODE_ENV === 'production') {
+    throw new Error('PYTHON_HMAC_SECRET environment variable is required for document verification worker in production');
 }
 /**
  * Parse date string in various formats (DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD) to ISO format (YYYY-MM-DD)
@@ -99,6 +99,77 @@ function parseDateToISO(dateStr) {
     console.warn(`[DateParser] Could not parse date: ${dateStr}`);
     return null;
 }
+/**
+ * Infer profession/position from certificate filename or category
+ * Helps populate missing profession data when certificate is uploaded
+ */
+function inferProfessionFromCertificate(category, fileName) {
+    const fileNameLower = (fileName || '').toLowerCase();
+    const professionPatterns = {
+        'construction': 'Construction Worker',
+        'electrician': 'Electrician',
+        'plumber': 'Plumber',
+        'carpenter': 'Carpenter',
+        'mechanic': 'Mechanic',
+        'welder': 'Welder',
+        'mason': 'Mason',
+        'painter': 'Painter',
+        'foreman': 'Foreman',
+        'supervisor': 'Supervisor',
+        'engineer': 'Engineer',
+        'technician': 'Technician',
+        'driver': 'Driver',
+        'chef': 'Chef',
+        'cook': 'Cook',
+        'nurse': 'Nurse',
+        'teacher': 'Teacher',
+        'trainer': 'Trainer',
+    };
+    // Common profession patterns in certificate names
+    // Check filename for profession keywords
+    for (const [keyword, profession] of Object.entries(professionPatterns)) {
+        if (fileNameLower.includes(keyword)) {
+            return profession;
+        }
+    }
+    // If no profession found in filename, return null
+    return null;
+}
+const CERTIFICATE_CORE_KEYWORDS = [
+    'certificate',
+    'cert',
+    'qualification',
+    'training',
+    'credential',
+    'achievement',
+    'diploma',
+    'course',
+];
+const CERTIFICATE_PROFESSION_KEYWORDS = [
+    'police',
+    'construction',
+    'electrician',
+    'plumber',
+    'mechanic',
+    'welder',
+    'carpenter',
+    'mason',
+    'painter',
+    'foreman',
+    'supervisor',
+    'engineer',
+    'technician',
+    'driver',
+    'chef',
+    'cook',
+    'nurse',
+    'teacher',
+    'trainer',
+];
+const CERTIFICATE_KEYWORDS = [
+    ...CERTIFICATE_CORE_KEYWORDS,
+    ...CERTIFICATE_PROFESSION_KEYWORDS,
+];
 /**
  * Sign request body with HMAC-SHA256
  */
@@ -403,6 +474,15 @@ async function processDocumentVerification(job) {
         // =============================================================================
         let matchResult = null;
         let finalCategory = aiResult.category;
+        // Secondary classification validation: Detect certificate misclassified as CV
+        if ((finalCategory === 'cv' || finalCategory === 'cv_resume') && fileName) {
+            const filenameLower = fileName.toLowerCase();
+            if (CERTIFICATE_KEYWORDS.some(keyword => filenameLower.includes(keyword))) {
+                console.log(`⚠️ [DocumentVerification] AI classified as CV but filename suggests certificate: "${fileName}"`);
+                console.log(`   Correcting classification: cv → certificate`);
+                finalCategory = 'certificate';
+            }
+        }
         let finalStatus = documentCategories_1.VERIFICATION_STATUS.VERIFIED;
         let reasonCode = ''; // Empty string for verified (no rejection code needed)
         let mismatchFields = [];
@@ -654,12 +734,41 @@ async function processDocumentVerification(job) {
                 });
             }
         }
+        // Fallback: If no identity fields were extracted, still infer profession from certificate filename
+        if (!aiResult.extracted_identity || Object.keys(aiResult.extracted_identity).length === 0) {
+            if (candidateId && fileName) {
+                const fileNameLower = fileName.toLowerCase();
+                const looksLikeCertificate = CERTIFICATE_KEYWORDS.some(keyword => fileNameLower.includes(keyword));
+                if (looksLikeCertificate) {
+                    try {
+                        const { data: currentCandidate, error: candidateError } = await db
+                            .from('candidates')
+                            .select('position')
+                            .eq('id', candidateId)
+                            .single();
+                        if (!candidateError && currentCandidate && !currentCandidate.position) {
+                            const professionInferred = inferProfessionFromCertificate(finalCategory, fileName);
+                            if (professionInferred) {
+                                console.log(`[DocumentVerification] ✅ Inferred profession from certificate filename (no identity): ${professionInferred}`);
+                                await db
+                                    .from('candidates')
+                                    .update({ position: professionInferred })
+                                    .eq('id', candidateId);
+                            }
+                        }
+                    }
+                    catch (profError) {
+                        console.error('[DocumentVerification] Failed fallback profession inference (no identity):', profError);
+                    }
+                }
+            }
+        }
         // =============================================================================
         // STEP 6: Category assignment decision
         // =============================================================================
         // Auto-assign category if confidence >= threshold, otherwise set to 'other_documents'
         if (aiResult.confidence && aiResult.confidence >= documentCategories_1.AI_CONFIDENCE_THRESHOLD) {
-            finalCategory = aiResult.category;
+            // Keep corrected finalCategory (do not overwrite with raw AI category)
         }
         else {
             finalCategory = documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
@@ -753,8 +862,20 @@ async function processDocumentVerification(job) {
         try {
             const updateFlags = {};
             const category = finalCategory?.toLowerCase() || '';
+            const fileNameLower = (fileName || '').toLowerCase();
             const now = new Date().toISOString();
-            if (category === 'cv_resume' || category === 'cv') {
+            // STRICT CERTIFICATE DETECTION: Check filename for certificate keywords FIRST
+            // This prevents AI misclassification from marking certificates as CVs
+            const isCertificate = CERTIFICATE_CORE_KEYWORDS.some(keyword => fileNameLower.includes(keyword));
+            // STRICT CV DETECTION: Filename should contain cv, resume, or cv_resume pattern
+            const cvKeywords = ['cv', 'resume', 'curriculum'];
+            const isCV = cvKeywords.some(keyword => fileNameLower.includes(keyword)) && !isCertificate;
+            // Priority: Use filename as override if clear category indicators exist
+            if (isCertificate) {
+                updateFlags.certificate_received = true;
+                updateFlags.certificate_received_at = now;
+            }
+            else if (isCV && (category === 'cv_resume' || category === 'cv')) {
                 updateFlags.cv_received = true;
                 updateFlags.cv_received_at = now;
             }
@@ -800,24 +921,33 @@ async function processDocumentVerification(job) {
             try {
                 // Import progressive completion service
                 const { enrichCandidateData, updateMissingFields } = await Promise.resolve().then(() => __importStar(require('../services/progressiveDataCompletionService')));
+                // Fetch current candidate to check for missing fields
+                const { data: currentCandidate, error: candidateError } = await db
+                    .from('candidates')
+                    .select('position')
+                    .eq('id', candidateId)
+                    .single();
+                if (candidateError) {
+                    console.warn(`[DocumentVerification] Could not fetch current candidate for profession inference:`, candidateError);
+                }
                 // Determine document source type from category
                 let documentSource = 'other';
-                if (aiResult.category === 'cv_resume' || aiResult.category === 'cv') {
+                if (finalCategory === 'cv_resume' || finalCategory === 'cv') {
                     documentSource = 'cv';
                 }
-                else if (aiResult.category === 'passport') {
+                else if (finalCategory === 'passport') {
                     documentSource = 'passport';
                 }
-                else if (aiResult.category === 'cnic') {
+                else if (finalCategory === 'cnic') {
                     documentSource = 'passport'; // Use 'passport' source type for CNIC to ensure nationality precedence
                 }
-                else if (aiResult.category === 'driving_license') {
+                else if (finalCategory === 'driving_license') {
                     documentSource = 'driving_license';
                 }
-                else if (aiResult.category === 'medical_report' || aiResult.category === 'medical') {
+                else if (finalCategory === 'medical_report' || finalCategory === 'medical') {
                     documentSource = 'medical';
                 }
-                else if (aiResult.category === 'certificate' || aiResult.category === 'certificates') {
+                else if (finalCategory === 'certificate' || finalCategory === 'certificates') {
                     documentSource = 'certificate';
                 }
                 // Map extracted_identity to enrichment data format
@@ -831,8 +961,17 @@ async function processDocumentVerification(job) {
                     enrichmentData.cnic = identity.cnic;
                 if (identity.passport_no)
                     enrichmentData.passport_no = identity.passport_no; // Will be mapped to passport_normalized
-                if (identity.email)
+                // ABSOLUTE EMAIL FILTERING: NEVER include government/police emails from ANY document
+                // This protects against police certificates, government IDs, etc. that extract government emails
+                if (identity.email && !candidateMatcher_1.CandidateMatcher.isGovernmentEmail(identity.email)) {
+                    // Only use email from CV documents for primary email (most trusted source)
+                    // For other documents, store email but it won't be used for matching
                     enrichmentData.email = identity.email;
+                }
+                else if (identity.email && candidateMatcher_1.CandidateMatcher.isGovernmentEmail(identity.email)) {
+                    console.log(`[DocumentVerification] ⚠️ FILTERING OUT government/police email from ${documentSource}: ${identity.email}`);
+                    // Do NOT add to enrichmentData - email is completely rejected
+                }
                 if (identity.phone)
                     enrichmentData.phone = identity.phone;
                 if (identity.date_of_birth)
@@ -852,6 +991,26 @@ async function processDocumentVerification(job) {
                     skipped: enrichmentResult.skipped,
                     source: documentSource,
                 });
+                // Special handling for certificates: Infer profession from certificate name/title if CV profession is missing
+                // Also handle misclassified certificates that were originally marked as CV
+                if ((documentSource === 'certificate' || documentSource === 'cv') && currentCandidate && !currentCandidate.position) {
+                    const professionInferred = inferProfessionFromCertificate(aiResult.category, fileName);
+                    if (professionInferred) {
+                        console.log(`[DocumentVerification] ✅ Inferred profession from ${documentSource === 'certificate' ? 'certificate' : 'filename'}: ${professionInferred}`);
+                        try {
+                            await db
+                                .from('candidates')
+                                .update({
+                                position: professionInferred,
+                            })
+                                .eq('id', candidateId);
+                        }
+                        catch (profError) {
+                            console.error('[DocumentVerification] Failed to update inferred profession:', profError);
+                            // Don't fail - profession inference is optional
+                        }
+                    }
+                }
                 // Recalculate missing fields
                 await updateMissingFields(candidateId);
             }

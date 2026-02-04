@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getCVStatusController = exports.generateBulkCVsController = exports.generateSingleCVController = void 0;
+exports.getCVStatusController = exports.generateBulkCVsController = exports.downloadCVController = exports.generateSingleCVController = void 0;
 const cvGeneratorService_1 = require("../services/cvGeneratorService");
 const errorHandling_1 = require("../utils/errorHandling");
 /**
@@ -63,6 +63,29 @@ exports.generateSingleCVController = (0, errorHandling_1.asyncHandler)(async (re
         version_hash: result.version_hash,
         file_size: result.file_size,
     });
+});
+/**
+ * Download CV for a candidate (redirects to signed URL)
+ * GET /api/cv-generator/:candidateId/download?format=employer-safe&force=true
+ */
+exports.downloadCVController = (0, errorHandling_1.asyncHandler)(async (req, res) => {
+    const userId = req.user?.id || 'system';
+    const { candidateId } = req.params;
+    const format = req.query.format || 'employer-safe';
+    const forceRegenerate = req.query.force === 'true';
+    if (!candidateId) {
+        return res.status(400).json({ error: 'Candidate ID is required' });
+    }
+    if (!['standard', 'employer-safe', 'internal'].includes(format)) {
+        return res.status(400).json({ error: 'Invalid format. Must be "standard", "employer-safe", or "internal"' });
+    }
+    const result = await (0, cvGeneratorService_1.generateCV)({
+        candidateId,
+        format: format,
+        forceRegenerate,
+        userId,
+    });
+    return res.redirect(302, result.cv_url);
 });
 /**
  * Generate CVs for multiple candidates (bulk operation)

@@ -72,7 +72,10 @@ router.get('/health', async (req, res) => {
         });
     }
 });
-// Generate single CV
+// Download CV (redirect to signed URL)
+// GET /api/cv-generator/:candidateId/download?format=employer-safe&force=true
+router.get('/:candidateId/download', cvGeneratorController_1.downloadCVController);
+// Generate single CV (returns JSON)
 // GET /api/cv-generator/:candidateId?format=employer-safe&force=true
 router.get('/:candidateId', cvGeneratorController_1.generateSingleCVController);
 // Get CV generation status

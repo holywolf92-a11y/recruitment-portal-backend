@@ -13,6 +13,7 @@ exports.enrichCandidateData = enrichCandidateData;
 exports.calculateMissingFields = calculateMissingFields;
 exports.updateMissingFields = updateMissingFields;
 exports.updateFieldManually = updateFieldManually;
+exports.isGovernmentEmail = isGovernmentEmail;
 exports.findExistingCandidate = findExistingCandidate;
 const database_1 = require("../config/database");
 const candidateService_1 = require("./candidateService");
@@ -47,6 +48,13 @@ exports.EXCEL_BROWSER_FIELDS = {
     father_name: 'Father Name',
     cnic: 'CNIC',
     date_of_birth: 'Date of Birth', // Required for Age calculation
+    // CV Extraction fields
+    education: 'Education',
+    certifications: 'Certifications',
+    internships: 'Internships',
+    previous_employment: 'Previous Employment',
+    skills: 'Skills',
+    professional_summary: 'Professional Summary',
 };
 // Required fields for candidate creation (minimum identity)
 exports.REQUIRED_FIELDS_FOR_CREATION = [
@@ -84,13 +92,23 @@ async function enrichCandidateData(candidateId, extractedData, source, documentI
         if (extractedValue === null || extractedValue === undefined || extractedValue === '') {
             continue;
         }
+        // Skip placeholder strings that commonly appear from OCR/LLM parsing
+        if (typeof extractedValue === 'string') {
+            const normalized = extractedValue.trim().toLowerCase();
+            if (normalized === '' || ['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(normalized)) {
+                continue;
+            }
+        }
         // Get current value
         const currentValue = currentCandidate[field];
         // Check if field is missing (NULL, empty string, or undefined)
+        const placeholderCurrent = typeof currentValue === 'string' &&
+            ['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(currentValue.trim().toLowerCase());
         const isMissing = currentValue === null ||
             currentValue === undefined ||
             currentValue === '' ||
-            (typeof currentValue === 'string' && currentValue.trim() === '');
+            (typeof currentValue === 'string' && currentValue.trim() === '') ||
+            placeholderCurrent;
         // Get current field source
         const currentSource = currentFieldSources[field];
         // Priority check: Manual updates are never overwritten
@@ -239,6 +257,7 @@ async function enrichCandidateData(candidateId, extractedData, source, documentI
  */
 function calculateMissingFields(candidate) {
     const missing = [];
+    const placeholderValues = new Set(['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided']);
     // Check each Excel Browser field
     for (const [field, label] of Object.entries(exports.EXCEL_BROWSER_FIELDS)) {
         const value = candidate[field];
@@ -256,9 +275,9 @@ function calculateMissingFields(candidate) {
             continue;
         }
         // Check if field is missing
-        // Also check for the string "missing" (which might be stored as a default value)
+        // Also check for placeholder strings (which might be stored as defaults or bad extraction values)
         if (value === null || value === undefined || value === '' ||
-            (typeof value === 'string' && (value.trim() === '' || value.toLowerCase() === 'missing'))) {
+            (typeof value === 'string' && (value.trim() === '' || placeholderValues.has(value.trim().toLowerCase())))) {
             missing.push(field);
         }
     }
@@ -475,13 +494,17 @@ function isGovernmentEmail(email) {
         return false;
     const normalized = email.toLowerCase().trim();
     const patterns = [
-        'police@', '@police.', 'police.gov',
-        'govt@', '@gov.', 'government@',
-        'department@', 'admin@', 'info@',
-        'contact@', 'support@', 'noinformation@',
-        'noinformation.', '@noinformation',
-        '@pk', 'gov.pk', 'police.pk', 'jhelum',
-        'gjtpolice', 'lahore.police', 'islamabad.police',
+        // Police/law enforcement patterns (Pakistan specific)
+        'police', 'jhelum', 'lahore', 'islamabad', 'karachi', 'faisalabad',
+        'rawalpindi', 'multan', 'peshawar', 'quetta', 'gjtpolice',
+        'sindhpolice', 'punjabpolice', 'kppolice', 'balochistanpolice',
+        'dpo', 'cpo', 'igp', 'dig', 'ssp', 'sho',
+        // Government/official patterns  
+        'govt', 'gov.', '@gov', 'government', 'department', 'ministry',
+        'official', 'contact', 'info', 'admin', 'support', 'help', 'career',
+        // Generic organizational emails that shouldn't be personal
+        'admin@', 'info@', 'contact@', 'support@', 'noinformation',
+        'noreply', 'do-not-reply', 'automail',
     ];
     return patterns.some(pattern => normalized.includes(pattern));
 }

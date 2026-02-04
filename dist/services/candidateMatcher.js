@@ -19,7 +19,8 @@ class CandidateMatcher {
             const { data, error } = await db
                 .from('candidates')
                 .select('id')
-                .eq('cnic_normalized', normalized);
+                .eq('cnic_normalized', normalized)
+                .neq('status', 'Deleted'); // Exclude deleted candidates
             if (!error && data && data.length > 0) {
                 if (data.length === 1) {
                     logger.info(`Matched candidate by CNIC: ${normalized}`);
@@ -52,7 +53,8 @@ class CandidateMatcher {
             const { data, error } = await db
                 .from('candidates')
                 .select('id')
-                .ilike('email', normalized);
+                .ilike('email', normalized)
+                .neq('status', 'Deleted'); // Exclude deleted candidates
             if (!error && data && data.length > 0) {
                 if (data.length === 1) {
                     logger.info(`Matched candidate by email: ${normalized}`);
@@ -88,7 +90,8 @@ class CandidateMatcher {
             const { data, error } = await db
                 .from('candidates')
                 .select('id, phone')
-                .not('phone', 'is', null);
+                .not('phone', 'is', null)
+                .neq('status', 'Deleted'); // Exclude deleted candidates
             if (!error && data && data.length > 0) {
                 // Match by normalized phone
                 const matches = data.filter(c => this.normalizePhone(c.phone || '') === normalized);
@@ -125,7 +128,8 @@ class CandidateMatcher {
             const { data, error } = await db
                 .from('candidates')
                 .select('id, name, father_name')
-                .not('father_name', 'is', null);
+                .not('father_name', 'is', null)
+                .neq('status', 'Deleted'); // Exclude deleted candidates
             if (error) {
                 const msg = error?.message || String(error);
                 if (/column\s+candidates\.father_name\s+does not exist/i.test(msg)) {
@@ -177,7 +181,8 @@ class CandidateMatcher {
             const { data, error } = await db
                 .from('candidates')
                 .select('id, name')
-                .not('name', 'is', null);
+                .not('name', 'is', null)
+                .neq('status', 'Deleted'); // Exclude deleted candidates
             if (!error && data && data.length > 0) {
                 const matches = data.filter(c => {
                     const candidateName = this.normalizeName(c.name || '');

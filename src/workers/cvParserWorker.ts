@@ -229,6 +229,76 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
 export function startCvParserWorker() {
   const parsingJobs = new ParsingJobsService();
 
+  function buildPreviousEmploymentFromExperience(experience: any): string | undefined {
+    if (!Array.isArray(experience) || experience.length === 0) return undefined;
+
+    const cleanText = (value: any): string => {
+      if (typeof value !== 'string') return '';
+      const trimmed = value.trim();
+      if (!trimmed) return '';
+      const lower = trimmed.toLowerCase();
+      if (['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(lower)) return '';
+      return trimmed;
+    };
+
+    const lines = experience
+      .filter((e: any) => e && typeof e === 'object')
+      .map((e: any) => {
+        const title = cleanText(e.title);
+        const company = cleanText(e.company);
+        const location = cleanText(e.location);
+        const start = cleanText(e.start_date);
+        const end = cleanText(e.end_date);
+
+        const role = [title, company ? `at ${company}` : ''].filter(Boolean).join(' ');
+        const metaParts = [location, start && end ? `${start} - ${end}` : start || end].filter(Boolean);
+        const meta = metaParts.length > 0 ? ` (${metaParts.join(', ')})` : '';
+
+        const description = cleanText(e.description);
+        const desc = description ? `\n- ${description}` : '';
+
+        const line = `${role || company || title}`.trim();
+        if (!line) return null;
+        return `${line}${meta}${desc}`;
+      })
+      .filter(Boolean) as string[];
+
+    if (lines.length === 0) return undefined;
+    return lines.slice(0, 12).join('\n\n');
+  }
+
+  function parseYear(value: unknown): number | null {
+    if (!value || typeof value !== 'string') return null;
+    const v = value.trim();
+    if (!v) return null;
+    if (/^(present|current|now)$/i.test(v)) return new Date().getFullYear();
+    const match = v.match(/(19\d{2}|20\d{2})/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    return Number.isFinite(year) ? year : null;
+  }
+
+  function inferExperienceYearsFromExperience(experience: any): number | undefined {
+    if (!Array.isArray(experience) || experience.length === 0) return undefined;
+
+    const years: { start?: number; end?: number }[] = experience
+      .filter((e: any) => e && typeof e === 'object')
+      .map((e: any) => ({
+        start: parseYear(e.start_date) ?? undefined,
+        end: parseYear(e.end_date) ?? (parseYear(e.start_date) ? new Date().getFullYear() : undefined),
+      }))
+      .filter((r: any) => r.start);
+
+    if (years.length === 0) return undefined;
+    const minStart = Math.min(...years.map((y) => y.start as number));
+    const maxEnd = Math.max(...years.map((y) => (y.end ?? new Date().getFullYear()) as number));
+
+    const diff = maxEnd - minStart;
+    if (!Number.isFinite(diff) || diff <= 0) return undefined;
+    // Keep as integer years for DB column type
+    return Math.max(1, Math.round(diff));
+  }
+
   const worker = new Worker(
     'cv-parsing',
     async (job: Job) => {
@@ -353,6 +423,16 @@ export function startCvParserWorker() {
         
         // Combine data from both sources (parse-cv and categorize-document)
         const parsedCandidate = parsed.candidate || {};
+        const derivedPreviousEmployment =
+          typeof parsedCandidate.previous_employment === 'string' && parsedCandidate.previous_employment.trim()
+            ? parsedCandidate.previous_employment
+            : buildPreviousEmploymentFromExperience(parsedCandidate.experience);
+
+        const derivedExperienceYears =
+          typeof parsedCandidate.experience_years === 'number' && Number.isFinite(parsedCandidate.experience_years)
+            ? parsedCandidate.experience_years
+            : inferExperienceYearsFromExperience(parsedCandidate.experience);
+
         const combinedData: Record<string, any> = {
           // From parse-cv
           name: parsedCandidate.full_name,
@@ -366,14 +446,14 @@ export function startCvParserWorker() {
           date_of_birth: parsedCandidate.date_of_birth,
           marital_status: parsedCandidate.marital_status,
           position: parsedCandidate.position,
-          experience_years: parsedCandidate.experience_years,
+          experience_years: derivedExperienceYears,
           country_of_interest: parsedCandidate.country_of_interest,
           skills: parsedCandidate.skills,
           languages: parsedCandidate.languages,
           education: parsedCandidate.education,
           certifications: parsedCandidate.certifications,
           internships: parsedCandidate.internships,
-          previous_employment: parsedCandidate.previous_employment,
+          previous_employment: derivedPreviousEmployment,
           passport_expiry: parsedCandidate.passport_expiry,
           professional_summary: parsedCandidate.professional_summary || parsedCandidate.summary,
         };

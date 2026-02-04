@@ -120,6 +120,14 @@ export async function enrichCandidateData(
       continue;
     }
 
+    // Skip placeholder strings that commonly appear from OCR/LLM parsing
+    if (typeof extractedValue === 'string') {
+      const normalized = extractedValue.trim().toLowerCase();
+      if (normalized === '' || ['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(normalized)) {
+        continue;
+      }
+    }
+
     // Log nationality processing for debugging
     if (field === 'nationality') {
       console.log(`[ProgressiveCompletion] Processing nationality field:`, {
@@ -135,10 +143,14 @@ export async function enrichCandidateData(
     const currentValue = currentCandidate[field as keyof typeof currentCandidate];
 
     // Check if field is missing (NULL, empty string, or undefined)
+    const placeholderCurrent =
+      typeof currentValue === 'string' &&
+      ['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(currentValue.trim().toLowerCase());
     const isMissing = currentValue === null ||
       currentValue === undefined ||
       currentValue === '' ||
-      (typeof currentValue === 'string' && currentValue.trim() === '');
+      (typeof currentValue === 'string' && currentValue.trim() === '') ||
+      placeholderCurrent;
 
     // Get current field source
     const currentSource = currentFieldSources[field];
@@ -312,6 +324,7 @@ export async function enrichCandidateData(
  */
 export function calculateMissingFields(candidate: any): string[] {
   const missing: string[] = [];
+  const placeholderValues = new Set(['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided']);
 
   // Check each Excel Browser field
   for (const [field, label] of Object.entries(EXCEL_BROWSER_FIELDS)) {
@@ -333,9 +346,9 @@ export function calculateMissingFields(candidate: any): string[] {
     }
 
     // Check if field is missing
-    // Also check for the string "missing" (which might be stored as a default value)
+    // Also check for placeholder strings (which might be stored as defaults or bad extraction values)
     if (value === null || value === undefined || value === '' ||
-      (typeof value === 'string' && (value.trim() === '' || value.toLowerCase() === 'missing'))) {
+      (typeof value === 'string' && (value.trim() === '' || placeholderValues.has(value.trim().toLowerCase())))) {
       missing.push(field);
     }
   }

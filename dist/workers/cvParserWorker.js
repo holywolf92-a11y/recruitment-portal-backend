@@ -49,11 +49,35 @@ const queue_1 = require("../config/queue");
 const documentVerificationLogService_1 = require("../services/documentVerificationLogService");
 const crypto_2 = require("crypto");
 const splitDocumentProcessor_1 = require("../utils/splitDocumentProcessor");
+const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
+const aiProfilePhotoExtractionService_1 = require("../services/aiProfilePhotoExtractionService");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 const STORAGE_BUCKET = 'documents';
 function signHmac(body) {
     return crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
+}
+function isPlaceholderName(name) {
+    if (!name)
+        return false;
+    return /^(john|jane)\s+doe$/i.test(name.trim());
+}
+function isPlaceholderEmail(email) {
+    if (!email)
+        return false;
+    return /@example\.com$/i.test(email.trim()) || /^test@/i.test(email.trim());
+}
+function isPlaceholderPhone(phone) {
+    if (!phone)
+        return false;
+    const digits = phone.replace(/\D/g, '');
+    return digits === '1234567890';
+}
+function hasProfilePhoto(candidate) {
+    return !!(candidate?.photo_received ||
+        candidate?.profile_photo_bucket ||
+        candidate?.profile_photo_path ||
+        candidate?.profile_photo_url);
 }
 // Helper to parse and validate dates from various formats
 function parseDate(dateStr, fieldName) {
@@ -119,18 +143,62 @@ async function createCandidateFromParsedData(parsed, attachmentId, identityField
         const passportExpiry = parseDate(candidate.passport_expiry || identityFields?.passport_expiry || identityFields?.expiry_date, 'passport_expiry');
         // Build candidate data from parsed CV - map all fields from Python parser
         // Include identity fields extracted from CV (father_name, cnic, passport, date_of_birth, etc.)
+        // Filter out government/police emails - don't use them as candidate email
+        const extractedEmail = candidate.email || identityFields?.email;
+        const candidateEmail = extractedEmail && !(0, progressiveDataCompletionService_1.isGovernmentEmail)(extractedEmail) ? extractedEmail : undefined;
+        const resolvedEmail = identityFields?.email && isPlaceholderEmail(candidateEmail)
+            ? identityFields.email
+            : candidateEmail;
+        const resolvedPhone = identityFields?.phone && isPlaceholderPhone(candidate.phone)
+            ? identityFields.phone
+            : (candidate.phone || identityFields?.phone || undefined);
+        const resolvedName = identityFields?.name && isPlaceholderName(candidate.full_name)
+            ? identityFields.name
+            : (candidate.full_name || identityFields?.name || 'Unknown');
+        if (extractedEmail && !candidateEmail) {
+            console.log(`[CVParser] Filtered out official/government email during extraction: ${extractedEmail}`);
+        }
+        // Extract profession from certificates if not explicitly mentioned
+        let extractedPosition = candidate.position || undefined;
+        if (!extractedPosition && (candidate.certifications || []).length > 0) {
+            // Try to infer position from certificate names
+            const certNames = Array.isArray(candidate.certifications) ? candidate.certifications : [];
+            const certString = certNames.join(' ').toLowerCase();
+            // Common patterns to extract profession
+            if (certString.includes('construction') || certString.includes('builder')) {
+                extractedPosition = 'Construction Worker';
+            }
+            else if (certString.includes('electrician')) {
+                extractedPosition = 'Electrician';
+            }
+            else if (certString.includes('plumber')) {
+                extractedPosition = 'Plumber';
+            }
+            else if (certString.includes('carpenter')) {
+                extractedPosition = 'Carpenter';
+            }
+            else if (certString.includes('mechanic')) {
+                extractedPosition = 'Mechanic';
+            }
+            else if (certString.includes('welding') || certString.includes('welder')) {
+                extractedPosition = 'Welder';
+            }
+            if (extractedPosition) {
+                console.log(`[CVParser] Inferred position from certificates: ${extractedPosition}`);
+            }
+        }
         const candidateData = {
-            name: candidate.full_name || identityFields?.name || 'Unknown',
+            name: resolvedName,
             father_name: identityFields?.father_name || candidate.father_name || undefined,
-            email: candidate.email || identityFields?.email || undefined,
-            phone: candidate.phone || identityFields?.phone || undefined,
+            email: resolvedEmail,
+            phone: resolvedPhone,
             address: candidate.location || undefined,
             date_of_birth: dateOfBirth,
             marital_status: candidate.marital_status || undefined,
             cnic: identityFields?.cnic || candidate.cnic || undefined,
             passport: identityFields?.passport_no || candidate.passport || undefined,
             nationality: candidate.nationality || identityFields?.nationality || undefined,
-            position: candidate.position || undefined,
+            position: extractedPosition,
             experience_years: candidate.experience_years || undefined,
             country_of_interest: candidate.country_of_interest || undefined,
             skills: Array.isArray(candidate.skills) ? candidate.skills.join(', ') : undefined,
@@ -139,6 +207,7 @@ async function createCandidateFromParsedData(parsed, attachmentId, identityField
                 ? candidate.education.map((e) => `${e.degree} from ${e.institution}`).join('; ')
                 : undefined,
             certifications: Array.isArray(candidate.certifications) ? candidate.certifications.join(', ') : undefined,
+            internships: Array.isArray(candidate.internships) ? candidate.internships.join(', ') : undefined,
             previous_employment: candidate.previous_employment || (Array.isArray(candidate.experience) && candidate.experience.length > 0
                 ? candidate.experience.map((e) => `${e.title} at ${e.company}`).join('; ')
                 : undefined),
@@ -165,6 +234,77 @@ async function createCandidateFromParsedData(parsed, attachmentId, identityField
 }
 function startCvParserWorker() {
     const parsingJobs = new parsingJobsService_1.ParsingJobsService();
+    function buildPreviousEmploymentFromExperience(experience) {
+        if (!Array.isArray(experience) || experience.length === 0)
+            return undefined;
+        const cleanText = (value) => {
+            if (typeof value !== 'string')
+                return '';
+            const trimmed = value.trim();
+            if (!trimmed)
+                return '';
+            const lower = trimmed.toLowerCase();
+            if (['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(lower))
+                return '';
+            return trimmed;
+        };
+        const lines = experience
+            .filter((e) => e && typeof e === 'object')
+            .map((e) => {
+            const title = cleanText(e.title);
+            const company = cleanText(e.company);
+            const location = cleanText(e.location);
+            const start = cleanText(e.start_date);
+            const end = cleanText(e.end_date);
+            const role = [title, company ? `at ${company}` : ''].filter(Boolean).join(' ');
+            const metaParts = [location, start && end ? `${start} - ${end}` : start || end].filter(Boolean);
+            const meta = metaParts.length > 0 ? ` (${metaParts.join(', ')})` : '';
+            const description = cleanText(e.description);
+            const desc = description ? `\n- ${description}` : '';
+            const line = `${role || company || title}`.trim();
+            if (!line)
+                return null;
+            return `${line}${meta}${desc}`;
+        })
+            .filter(Boolean);
+        if (lines.length === 0)
+            return undefined;
+        return lines.slice(0, 12).join('\n\n');
+    }
+    function parseYear(value) {
+        if (!value || typeof value !== 'string')
+            return null;
+        const v = value.trim();
+        if (!v)
+            return null;
+        if (/^(present|current|now)$/i.test(v))
+            return new Date().getFullYear();
+        const match = v.match(/(19\d{2}|20\d{2})/);
+        if (!match)
+            return null;
+        const year = Number(match[1]);
+        return Number.isFinite(year) ? year : null;
+    }
+    function inferExperienceYearsFromExperience(experience) {
+        if (!Array.isArray(experience) || experience.length === 0)
+            return undefined;
+        const years = experience
+            .filter((e) => e && typeof e === 'object')
+            .map((e) => ({
+            start: parseYear(e.start_date) ?? undefined,
+            end: parseYear(e.end_date) ?? (parseYear(e.start_date) ? new Date().getFullYear() : undefined),
+        }))
+            .filter((r) => r.start);
+        if (years.length === 0)
+            return undefined;
+        const minStart = Math.min(...years.map((y) => y.start));
+        const maxEnd = Math.max(...years.map((y) => (y.end ?? new Date().getFullYear())));
+        const diff = maxEnd - minStart;
+        if (!Number.isFinite(diff) || diff <= 0)
+            return undefined;
+        // Keep as integer years for DB column type
+        return Math.max(1, Math.round(diff));
+    }
     const worker = new bullmq_1.Worker('cv-parsing', async (job) => {
         const { jobId, attachmentId, fileUrl, fileHash } = job.data;
         await parsingJobs.setStatus(jobId, 'processing', {
@@ -269,6 +409,12 @@ function startCvParserWorker() {
             const { findExistingCandidate, enrichCandidateData, updateMissingFields } = await Promise.resolve().then(() => __importStar(require('../services/progressiveDataCompletionService')));
             // Combine data from both sources (parse-cv and categorize-document)
             const parsedCandidate = parsed.candidate || {};
+            const derivedPreviousEmployment = typeof parsedCandidate.previous_employment === 'string' && parsedCandidate.previous_employment.trim()
+                ? parsedCandidate.previous_employment
+                : buildPreviousEmploymentFromExperience(parsedCandidate.experience);
+            const derivedExperienceYears = typeof parsedCandidate.experience_years === 'number' && Number.isFinite(parsedCandidate.experience_years)
+                ? parsedCandidate.experience_years
+                : inferExperienceYearsFromExperience(parsedCandidate.experience);
             const combinedData = {
                 // From parse-cv
                 name: parsedCandidate.full_name,
@@ -282,13 +428,14 @@ function startCvParserWorker() {
                 date_of_birth: parsedCandidate.date_of_birth,
                 marital_status: parsedCandidate.marital_status,
                 position: parsedCandidate.position,
-                experience_years: parsedCandidate.experience_years,
+                experience_years: derivedExperienceYears,
                 country_of_interest: parsedCandidate.country_of_interest,
                 skills: parsedCandidate.skills,
                 languages: parsedCandidate.languages,
                 education: parsedCandidate.education,
                 certifications: parsedCandidate.certifications,
-                previous_employment: parsedCandidate.previous_employment,
+                internships: parsedCandidate.internships,
+                previous_employment: derivedPreviousEmployment,
                 passport_expiry: parsedCandidate.passport_expiry,
                 professional_summary: parsedCandidate.professional_summary || parsedCandidate.summary,
             };
@@ -403,10 +550,24 @@ function startCvParserWorker() {
                                 national_id: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
                                 cnic: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
                                 driving_license: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                police_character_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+                                police_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+                                educational_documents: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                educational_document: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                degree: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                diploma: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                transcript: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                experience_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+                                experience_certificates: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+                                employment_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+                                navttc_report: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+                                navttc_reports: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+                                navttc: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
                                 medical_reports: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
                                 medical_certificate: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
                                 certificates: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
                                 certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+                                professional_certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
                                 contracts: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
                                 contract: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
                                 photos: documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS,
@@ -418,11 +579,25 @@ function startCvParserWorker() {
                                 passport: 'passport',
                                 cnic: 'cnic',
                                 national_id: 'cnic',
+                                police_character_certificate: 'police_character_certificate',
+                                police_certificate: 'police_character_certificate',
+                                educational_documents: 'degree',
+                                educational_document: 'degree',
+                                degree: 'degree',
+                                diploma: 'degree',
+                                transcript: 'degree',
+                                experience_certificate: 'certificate',
+                                experience_certificates: 'certificate',
+                                employment_certificate: 'certificate',
+                                navttc_report: 'certificate',
+                                navttc_reports: 'certificate',
+                                navttc: 'certificate',
                                 cv_resume: 'other',
                                 medical_reports: 'medical',
                                 medical_certificate: 'medical',
                                 certificate: 'certificate',
                                 certificates: 'certificate',
+                                professional_certificate: 'certificate',
                                 driving_license: 'other',
                                 contracts: 'other',
                                 contract: 'other',
@@ -490,6 +665,33 @@ function startCvParserWorker() {
                 catch (splitErr) {
                     console.error(`[CVParser] Split-and-categorize failed for attachment ${attachmentId}:`, splitErr?.message || splitErr);
                     // Non-blocking: CV parsing should still succeed even if splitting fails
+                }
+            }
+            // If no profile photo exists yet, try extracting it directly from the CV PDF.
+            if (newCandidate?.id && mimeType === 'application/pdf') {
+                try {
+                    const { data: freshCandidate } = await db
+                        .from('candidates')
+                        .select('profile_photo_bucket, profile_photo_path, profile_photo_url, photo_received')
+                        .eq('id', newCandidate.id)
+                        .maybeSingle();
+                    if (!hasProfilePhoto(freshCandidate)) {
+                        console.log(`[CVParser] No profile photo found for candidate ${newCandidate.id}. Extracting from CV PDF...`);
+                        const extraction = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfUsingAI)({
+                            candidateId: newCandidate.id,
+                        });
+                        console.log(`[CVParser] ✅ Extracted profile photo from CV PDF`, {
+                            candidateId: newCandidate.id,
+                            pageUsed: extraction.pageUsed,
+                            confidence: extraction.confidence,
+                        });
+                    }
+                    else {
+                        console.log(`[CVParser] Profile photo already present for candidate ${newCandidate.id}. Skipping CV photo extraction.`);
+                    }
+                }
+                catch (photoErr) {
+                    console.warn(`[CVParser] CV photo extraction failed for candidate ${newCandidate?.id}:`, photoErr?.message || photoErr);
                 }
             }
             // IMPORTANT: Set cv_received flag immediately after candidate is created from inbox CV

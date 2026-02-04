@@ -20,6 +20,7 @@ async function extractPhotoFromPdfController(req, res) {
             .from('candidates')
             .select('profile_photo_url, profile_photo_path')
             .eq('id', candidateId)
+            .neq('status', 'Deleted') // Exclude deleted candidates
             .single();
         if (candidateError || !candidate) {
             console.error(`[Extract Photo] Candidate not found:`, candidateError);

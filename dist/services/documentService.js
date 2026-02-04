@@ -133,17 +133,19 @@ async function uploadDocument(data, userId) {
             updateFlags.visa_received = true;
             updateFlags.visa_received_at = now;
         }
+        else if (type === 'certificate' || type.includes('certificate')) {
+            // CHECK CERTIFICATE FIRST to prevent misclassification as CV
+            updateFlags.certificate_received = true;
+            updateFlags.certificate_received_at = now;
+        }
         else if (type === 'cv' || type.includes('resume')) {
+            // Only mark CV if it's NOT a certificate
             updateFlags.cv_received = true;
             updateFlags.cv_received_at = now;
         }
         else if (type === 'photo' || type.includes('profile photo')) {
             updateFlags.photo_received = true;
             updateFlags.photo_received_at = now;
-        }
-        else if (type === 'certificate' || type.includes('certificate')) {
-            updateFlags.certificate_received = true;
-            updateFlags.certificate_received_at = now;
         }
         if (Object.keys(updateFlags).length > 0) {
             const { error: updateError } = await db

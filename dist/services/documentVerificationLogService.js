@@ -72,7 +72,13 @@ function maskSensitiveData(data) {
  */
 class DocumentVerificationLogService {
     constructor() {
-        this.db = (0, database_1.supabaseAdminClient)();
+        this.db = null;
+    }
+    getDb() {
+        if (!this.db) {
+            this.db = (0, database_1.supabaseAdminClient)();
+        }
+        return this.db;
     }
     /**
      * Create a new log entry
@@ -82,7 +88,7 @@ class DocumentVerificationLogService {
         const maskedExtractedFields = logData.extracted_fields
             ? maskSensitiveData(logData.extracted_fields)
             : undefined;
-        const { data, error } = await this.db
+        const { data, error } = await this.getDb()
             .from('document_verification_logs')
             .insert({
             ...logData,
@@ -226,7 +232,7 @@ class DocumentVerificationLogService {
      * Get logs by request ID (trace all events for a single upload)
      */
     async getLogsByRequestId(requestId) {
-        const { data, error } = await this.db
+        const { data, error } = await this.getDb()
             .from('document_verification_logs')
             .select('*')
             .eq('request_id', requestId)
@@ -242,7 +248,7 @@ class DocumentVerificationLogService {
     async getLogsByDocumentId(documentId) {
         // First, get one log with document_id to find the request_id
         // This includes upload_started which is logged before document_id exists
-        const { data: docLog, error: docLogError } = await this.db
+        const { data: docLog, error: docLogError } = await this.getDb()
             .from('document_verification_logs')
             .select('request_id')
             .eq('document_id', documentId)
@@ -254,7 +260,7 @@ class DocumentVerificationLogService {
         }
         const requestId = docLog.request_id;
         // Get all logs with this request_id (includes upload_started which has no document_id)
-        const { data: allLogs, error: allLogsError } = await this.db
+        const { data: allLogs, error: allLogsError } = await this.getDb()
             .from('document_verification_logs')
             .select('*')
             .eq('request_id', requestId)
@@ -268,7 +274,7 @@ class DocumentVerificationLogService {
      * Get logs by candidate ID
      */
     async getLogsByCandidateId(candidateId, limit = 50) {
-        const { data, error } = await this.db
+        const { data, error } = await this.getDb()
             .from('document_verification_logs')
             .select('*')
             .eq('candidate_id', candidateId)

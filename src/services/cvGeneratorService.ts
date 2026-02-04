@@ -185,6 +185,14 @@ async function generateProfilePhotoSignedUrl(candidate: any): Promise<string | n
  * Generate HTML template for employer-safe CV
  */
 function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
+  const isMeaningfulText = (value: any): value is string => {
+    if (typeof value !== 'string') return false;
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    const lower = trimmed.toLowerCase();
+    return !['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(lower);
+  };
+
   // Parse skills - handle JSON array or comma-separated string
   let skills: string[] = [];
   if (candidate.skills) {
@@ -202,6 +210,8 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
 
   const languages = candidate.languages ? candidate.languages.split(',').map((l: string) => l.trim()) : [];
   const initial = (candidate.name || '?').charAt(0).toUpperCase();
+  const professionalSummary = isMeaningfulText(candidate.professional_summary) ? candidate.professional_summary.trim() : '';
+  const previousEmployment = isMeaningfulText(candidate.previous_employment) ? candidate.previous_employment.trim() : '';
 
   return `
 <!DOCTYPE html>
@@ -537,16 +547,16 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[]): string {
       <div class="section">
         <h2 class="section-title">Professional Summary</h2>
         <div class="section-content">
-          <p>${candidate.professional_summary || `Highly skilled ${candidate.position || 'professional'} with ${candidate.experience_years || 0} years of professional experience seeking opportunities in ${candidate.country_of_interest || 'various markets'} to contribute expertise and drive excellence.`}</p>
+          <p>${professionalSummary || `Highly skilled ${candidate.position || 'professional'}${candidate.experience_years ? ` with ${candidate.experience_years} years of professional experience` : ''} seeking opportunities in ${candidate.country_of_interest || 'various markets'} to contribute expertise and drive excellence.`}</p>
         </div>
       </div>
       
       <!-- Work Experience -->
-      ${candidate.previous_employment ? `
+      ${previousEmployment ? `
       <div class="section">
         <h2 class="section-title">Work Experience</h2>
         <div class="entry">
-          <div class="entry-description" style="white-space: pre-line;">${candidate.previous_employment}</div>
+          <div class="entry-description" style="white-space: pre-line;">${previousEmployment}</div>
         </div>
       </div>
       ` : ''}

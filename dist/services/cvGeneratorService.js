@@ -89,9 +89,65 @@ async function checkCache(options) {
     };
 }
 /**
+ * Generate a signed URL for the profile photo if it exists
+ */
+async function generateProfilePhotoSignedUrl(candidate) {
+    try {
+        // Check if we have bucket and path
+        let bucket = candidate.profile_photo_bucket;
+        let storagePath = candidate.profile_photo_path;
+        // If not, try to derive from URL
+        if ((!bucket || !storagePath) && candidate.profile_photo_url) {
+            const url = candidate.profile_photo_url;
+            const publicMarker = '/storage/v1/object/public/';
+            const signMarker = '/storage/v1/object/sign/';
+            if (url.includes(publicMarker)) {
+                const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+                const parts = rest.split('/');
+                bucket = parts.shift() || 'documents';
+                storagePath = parts.join('/');
+            }
+            else if (url.includes(signMarker)) {
+                const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+                const parts = after.split('/');
+                bucket = parts.shift() || 'documents';
+                storagePath = parts.join('/');
+            }
+        }
+        if (!bucket || !storagePath) {
+            console.log('[CVGenerator] No profile photo bucket/path found, skipping signed URL generation');
+            return null;
+        }
+        // Generate a long-lived signed URL (1 year)
+        const db = (0, database_1.supabaseAdminClient)();
+        const { data: signedData, error } = await db.storage
+            .from(bucket)
+            .createSignedUrl(storagePath, 31536000); // 1 year (permanent)
+        if (error || !signedData?.signedUrl) {
+            console.warn(`[CVGenerator] Failed to generate signed URL for profile photo: ${error?.message}`);
+            return null;
+        }
+        console.log('[CVGenerator] Generated signed URL for profile photo');
+        return signedData.signedUrl;
+    }
+    catch (err) {
+        console.warn(`[CVGenerator] Error generating profile photo signed URL: ${err.message}`);
+        return null;
+    }
+}
+/**
  * Generate HTML template for employer-safe CV
  */
 function generateEmployerSafeCVHTML(candidate, documents) {
+    const isMeaningfulText = (value) => {
+        if (typeof value !== 'string')
+            return false;
+        const trimmed = value.trim();
+        if (!trimmed)
+            return false;
+        const lower = trimmed.toLowerCase();
+        return !['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(lower);
+    };
     // Parse skills - handle JSON array or comma-separated string
     let skills = [];
     if (candidate.skills) {
@@ -110,6 +166,8 @@ function generateEmployerSafeCVHTML(candidate, documents) {
     }
     const languages = candidate.languages ? candidate.languages.split(',').map((l) => l.trim()) : [];
     const initial = (candidate.name || '?').charAt(0).toUpperCase();
+    const professionalSummary = isMeaningfulText(candidate.professional_summary) ? candidate.professional_summary.trim() : '';
+    const previousEmployment = isMeaningfulText(candidate.previous_employment) ? candidate.previous_employment.trim() : '';
     return `
 <!DOCTYPE html>
 <html lang="en">
@@ -390,7 +448,7 @@ function generateEmployerSafeCVHTML(candidate, documents) {
     <!-- Left Sidebar - Contact & Skills -->
     <div class="sidebar">
       <!-- Profile Photo -->
-      ${candidate.profile_photo_url ? `<img src="${candidate.profile_photo_url}" alt="Profile" class="profile-photo">` : ''}
+      ${candidate.profile_photo_signed_url ? `<img src="${candidate.profile_photo_signed_url}" alt="Profile" class="profile-photo">` : ''}
       
       <!-- Contact Information (Protected) -->
       <div class="sidebar-section">
@@ -444,16 +502,16 @@ function generateEmployerSafeCVHTML(candidate, documents) {
       <div class="section">
         <h2 class="section-title">Professional Summary</h2>
         <div class="section-content">
-          <p>${candidate.professional_summary || `Highly skilled ${candidate.position || 'professional'} with ${candidate.experience_years || 0} years of professional experience seeking opportunities in ${candidate.country_of_interest || 'various markets'} to contribute expertise and drive excellence.`}</p>
+          <p>${professionalSummary || `Highly skilled ${candidate.position || 'professional'}${candidate.experience_years ? ` with ${candidate.experience_years} years of professional experience` : ''} seeking opportunities in ${candidate.country_of_interest || 'various markets'} to contribute expertise and drive excellence.`}</p>
         </div>
       </div>
       
       <!-- Work Experience -->
-      ${candidate.previous_employment ? `
+      ${previousEmployment ? `
       <div class="section">
         <h2 class="section-title">Work Experience</h2>
         <div class="entry">
-          <div class="entry-description" style="white-space: pre-line;">${candidate.previous_employment}</div>
+          <div class="entry-description" style="white-space: pre-line;">${previousEmployment}</div>
         </div>
       </div>
       ` : ''}
@@ -642,6 +700,13 @@ async function generateCV(options) {
         console.log(`[CVGenerator] Step 4/9: Calculating version hash...`);
         const versionHash = await calculateCandidateVersionHash(options.candidateId);
         console.log(`[CVGenerator] Version hash: ${versionHash}`);
+        // 4b. Generate signed URL for profile photo if it exists
+        console.log(`[CVGenerator] Step 4b/9: Generating profile photo signed URL...`);
+        const profilePhotoSignedUrl = await generateProfilePhotoSignedUrl(candidate);
+        if (profilePhotoSignedUrl) {
+            candidate.profile_photo_signed_url = profilePhotoSignedUrl;
+            console.log(`[CVGenerator] Profile photo signed URL generated`);
+        }
         // 5. Generate HTML based on format
         console.log(`[CVGenerator] Step 5/9: Generating HTML template...`);
         let html;

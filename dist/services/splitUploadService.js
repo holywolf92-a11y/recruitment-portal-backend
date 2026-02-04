@@ -25,6 +25,7 @@ const timelineService_1 = require("./timelineService");
 const documentService_1 = require("./documentService");
 const documentNaming_1 = require("../utils/documentNaming");
 const splitDocumentProcessor_1 = require("../utils/splitDocumentProcessor");
+const progressiveDataCompletionService_1 = require("./progressiveDataCompletionService");
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
 const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
@@ -32,18 +33,61 @@ const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
 /**
  * Mandatory doc_type -> storage folder mapping.
  * Unknown / unmapped -> other_documents/
+ *
+ * ⚠️ BUSINESS RULE: certificates folder = Professional/IT certifications ONLY
+ * - Educational documents (degrees, diplomas) → educational_documents
+ * - Experience letters → experience_certificates
+ * - NAVTTC vocational certs → navttc_reports
+ * - Police clearance → police_character_certificate
  */
 exports.DOC_TYPE_TO_FOLDER = {
+    // Identity documents
     passport: 'passport',
     driving_license: 'driving_license',
     national_id: 'cnic',
     cnic: 'cnic',
+    // Police clearance certificates
     police_character_certificate: 'police_character_certificate',
+    police_certificate: 'police_character_certificate',
+    police_clearance: 'police_character_certificate',
+    character_certificate: 'police_character_certificate',
+    pcc: 'police_character_certificate',
+    // Educational documents (academic qualifications)
+    educational_documents: 'educational_documents',
+    educational_document: 'educational_documents',
+    degree: 'educational_documents',
+    diploma: 'educational_documents',
+    transcript: 'educational_documents',
+    marksheet: 'educational_documents',
+    academic_certificate: 'educational_documents',
+    university_degree: 'educational_documents',
+    college_diploma: 'educational_documents',
+    // Experience certificates (employment proof)
+    experience_certificate: 'experience_certificates',
+    experience_certificates: 'experience_certificates',
+    employment_certificate: 'experience_certificates',
+    experience_letter: 'experience_certificates',
+    service_certificate: 'experience_certificates',
+    employment_letter: 'experience_certificates',
+    work_reference: 'experience_certificates',
+    // NAVTTC vocational training (government technical training)
+    navttc_report: 'navttc_reports',
+    navttc_reports: 'navttc_reports',
+    navtic_report: 'navttc_reports',
+    nvtc_report: 'navttc_reports',
+    navttc: 'navttc_reports',
+    navttc_certificate: 'navttc_reports',
+    vocational_certificate: 'navttc_reports',
+    trade_certificate: 'navttc_reports',
+    technical_training: 'navttc_reports',
+    // Professional/IT certifications ONLY
     cv_resume: 'cv_resume',
     medical_certificate: 'medical_reports',
     medical_reports: 'medical_reports',
     certificate: 'certificates',
     certificates: 'certificates',
+    professional_certificate: 'certificates',
+    skill_certificate: 'certificates',
     contract: 'contracts',
     contracts: 'contracts',
     photos: 'other_documents',
@@ -119,9 +163,15 @@ async function createCandidateFromIdentity(identity, userId) {
         return { id: duplicates[0].id };
     }
     const name = identity?.name || identity?.father_name || 'Unknown';
+    // Filter government emails
+    let email = identity?.email || undefined;
+    if (email && (0, progressiveDataCompletionService_1.isGovernmentEmail)(email)) {
+        console.log(`🚫 Filtered government email in split upload: ${email}`);
+        email = undefined;
+    }
     const data = {
         name: String(name).trim() || 'Unknown',
-        email: identity?.email || undefined,
+        email,
         phone: identity?.phone || undefined,
         date_of_birth: identity?.date_of_birth || undefined,
         cnic,

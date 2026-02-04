@@ -1185,7 +1185,6 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           console.log(`[DocumentVerification] ⚠️ No nationality extracted from ${documentSource} document (category: ${aiResult.category})`);
         }
         if (identity.passport_expiry || identity.expiry_date) enrichmentData.passport_expiry = identity.passport_expiry || identity.expiry_date;
-        if (identity.issue_date) enrichmentData.issue_date = identity.issue_date;
         if (identity.place_of_issue) enrichmentData.place_of_issue = identity.place_of_issue;
         
         // Log enrichment data being sent

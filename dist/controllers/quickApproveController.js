@@ -58,27 +58,33 @@ async function quickApproveCandidateDocument(req, res) {
             return res.status(500).json({ error: `Failed to approve document: ${updateError?.message}` });
         }
         console.log(`[QuickApprove] Document ${id} approved by ${userId}`);
-        // If this is a photo document, update the candidate's profile_photo_url
+        // If this is a photo document, update the candidate's profile photo ONLY for image files
         if (updatedDocument.category === 'photos' && updatedDocument.candidate_id && updatedDocument.storage_path) {
-            console.log(`[QuickApprove] Setting profile photo for candidate ${updatedDocument.candidate_id}`);
-            // Build the full public URL for the photo
-            const supabaseUrl = process.env.SUPABASE_URL || '';
-            const bucket = updatedDocument.storage_bucket || 'documents';
-            const photoUrl = `${supabaseUrl}/storage/v1/object/public/${bucket}/${updatedDocument.storage_path}`;
-            const { error: photoUpdateError } = await db
-                .from('candidates')
-                .update({
-                profile_photo_url: photoUrl,
-                photo_received: true,
-                updated_at: now,
-            })
-                .eq('id', updatedDocument.candidate_id);
-            if (photoUpdateError) {
-                console.error(`[QuickApprove] Failed to update candidate profile photo:`, photoUpdateError);
-                // Don't fail the whole operation, just log the error
+            const mimeType = (updatedDocument.mime_type || '').toLowerCase();
+            const isImage = mimeType.startsWith('image/');
+            if (!isImage) {
+                console.warn(`[QuickApprove] Skipping profile photo update for non-image photo document ${updatedDocument.id} (mime: ${mimeType || 'unknown'})`);
             }
             else {
-                console.log(`[QuickApprove] ✓ Profile photo updated for candidate ${updatedDocument.candidate_id} - URL: ${photoUrl}`);
+                console.log(`[QuickApprove] Setting profile photo for candidate ${updatedDocument.candidate_id}`);
+                const bucket = updatedDocument.storage_bucket || 'documents';
+                const { error: photoUpdateError } = await db
+                    .from('candidates')
+                    .update({
+                    profile_photo_bucket: bucket,
+                    profile_photo_path: updatedDocument.storage_path,
+                    profile_photo_url: null,
+                    photo_received: true,
+                    updated_at: now,
+                })
+                    .eq('id', updatedDocument.candidate_id);
+                if (photoUpdateError) {
+                    console.error(`[QuickApprove] Failed to update candidate profile photo:`, photoUpdateError);
+                    // Don't fail the whole operation, just log the error
+                }
+                else {
+                    console.log(`[QuickApprove] ✓ Profile photo updated for candidate ${updatedDocument.candidate_id} - path: ${updatedDocument.storage_path}`);
+                }
             }
         }
         res.json({

@@ -225,10 +225,15 @@ async function extractProfilePhotoFromPdfUsingAI(args) {
         const verify = await verifyCropLooksLikeHeadshot({ jpeg: cropJpeg, model });
         const combinedConfidence = Math.max(0, Math.min(1, (locate.confidence || 0) * 0.7 + (verify.confidence || 0) * 0.3));
         if (!verify.ok) {
-            // Still keep as fallback if nothing else is found.
-            if (!best || combinedConfidence > best.locate.confidence) {
-                best = { page: pageNumber, locate: { ...locate, confidence: combinedConfidence }, cropJpeg };
-            }
+            // Reject non-headshot crops to avoid saving full CV pages or wrong images.
+            logger.warn('Rejected non-headshot crop', {
+                candidateId: args.candidateId,
+                documentId,
+                pageNumber,
+                locateConfidence: locate.confidence,
+                verifyConfidence: verify.confidence,
+                reason: verify.reason,
+            });
             continue;
         }
         if (!best || combinedConfidence > best.locate.confidence) {

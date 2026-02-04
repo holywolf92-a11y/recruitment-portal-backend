@@ -99,6 +99,16 @@ async function enrichCandidateData(candidateId, extractedData, source, documentI
                 continue;
             }
         }
+        // Log nationality processing for debugging
+        if (field === 'nationality') {
+            console.log(`[ProgressiveCompletion] Processing nationality field:`, {
+                extractedValue,
+                currentValue: currentCandidate.nationality,
+                source,
+                documentType,
+                currentSource: currentFieldSources[field],
+            });
+        }
         // Get current value
         const currentValue = currentCandidate[field];
         // Check if field is missing (NULL, empty string, or undefined)

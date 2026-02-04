@@ -15,6 +15,7 @@ import { calculateSHA256 } from './documentService';
 import { generateDescriptiveFilename } from '../utils/documentNaming';
 import { processSplitDocument } from '../utils/splitDocumentProcessor';
 import { isGovernmentEmail } from './progressiveDataCompletionService';
+import { extractProfilePhotoHybrid, uploadExtractedPhotoToCandidatePhotos } from './hybridPhotoExtractionService';
 
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
@@ -238,6 +239,11 @@ export async function ensureCandidateId(
 
 /**
  * Upload one split document to storage and create DB record.
+ * 
+ * Special handling for photos:
+ * - Use hybrid extraction (Python parser → Backend AI → manual review)
+ * - Skip creating a candidate_document if extraction succeeds
+ * - Mark photo as received and set profile photo
  */
 async function uploadOneSplitDoc(
   candidateId: string,
@@ -247,6 +253,54 @@ async function uploadOneSplitDoc(
   engineUsed: string
 ): Promise<void> {
   const db = supabaseAdminClient();
+  const docType = (doc.doc_type || '').toLowerCase();
+  
+  // SPECIAL HANDLING FOR PHOTOS: Use hybrid extraction
+  if (docType === 'photo' || docType === 'photos') {
+    console.log(`[UploadOneSplitDoc] Photos detected for candidate ${candidateId}, attempting hybrid extraction`);
+    
+    const fileBuffer = Buffer.from(doc.pdf_base64, 'base64');
+    
+    try {
+      const extractionResult = await extractProfilePhotoHybrid(candidateId, uploadId, fileBuffer);
+      
+      if (extractionResult.success && extractionResult.photoBuffer) {
+        // Extraction succeeded - save photo directly
+        console.log(`[UploadOneSplitDoc] Hybrid extraction succeeded using ${extractionResult.method} method`);
+        
+        await uploadExtractedPhotoToCandidatePhotos(candidateId, uploadId, extractionResult.photoBuffer);
+        
+        // Log the successful extraction
+        try {
+          await logDocumentUploaded(candidateId, userId, {
+            doc_type: doc.doc_type,
+            file_name: `profile_photo_${Date.now()}.jpg`,
+            mime_type: 'image/jpeg',
+            split_strategy: doc.split_strategy,
+            needs_review: false,
+            extraction_method: extractionResult.method,
+            extraction_status: 'success',
+          });
+        } catch (e) {
+          console.error('Failed to log timeline for extracted photo:', e);
+        }
+        
+        // Successfully processed - don't create a document record, photo is now the candidate's profile
+        return;
+      } else {
+        // Extraction failed - create document record for manual review
+        console.log(`[UploadOneSplitDoc] Hybrid extraction failed for candidate ${candidateId}. Creating document for manual review.`);
+      }
+    } catch (error) {
+      console.error(`[UploadOneSplitDoc] Hybrid extraction error for candidate ${candidateId}:`, error);
+      // Fall through to create document for manual review
+    }
+    
+    // If we get here, extraction failed - create split_photos_*.pdf for manual review
+    // Continue with normal document creation below
+  }
+  
+  // NORMAL DOCUMENT PROCESSING (for non-photos or failed photo extraction)
   const folder = docTypeToFolder(doc.doc_type);
   
   // Use shared utility to process the split document (handles images, profile photos, etc.)
@@ -287,9 +341,8 @@ async function uploadOneSplitDoc(
     needs_review: !!doc.needs_review,
   };
 
-  // For profile photos that were extracted as images, set verification_status to 'verified'
-  // to skip the approval workflow since we've already saved them as the candidate's profile photo
-  const verificationStatus = processed.shouldAutoVerify ? 'verified' : undefined;
+  // For photos that failed extraction, mark as needing review
+  const needsReview = (docType === 'photo' || docType === 'photos');
 
   const { error: insErr } = await db.from('documents').insert({
     candidate_id: candidateId,
@@ -302,9 +355,13 @@ async function uploadOneSplitDoc(
     is_primary: false,
     pages: doc.pages ?? [],
     confidence: doc.confidence ?? null,
-    needs_review: false,  // Photos are auto-verified, no review needed
-    verification_status: verificationStatus,  // Set to 'verified' for extracted photos
-    metadata,
+    needs_review: needsReview,  // Photos that failed extraction need review
+    verification_status: undefined,  // Pending review
+    metadata: {
+      ...metadata,
+      extraction_status: 'failed',
+      extraction_reason: 'Hybrid extraction could not find profile photo',
+    },
   });
 
   if (insErr) {

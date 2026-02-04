@@ -119,7 +119,14 @@ export function maskSensitiveData(data: Record<string, any>): Record<string, any
  * Service for logging document verification events
  */
 export class DocumentVerificationLogService {
-  private db = supabaseAdminClient();
+  private db: ReturnType<typeof supabaseAdminClient> | null = null;
+
+  private getDb() {
+    if (!this.db) {
+      this.db = supabaseAdminClient();
+    }
+    return this.db;
+  }
 
   /**
    * Create a new log entry
@@ -130,7 +137,7 @@ export class DocumentVerificationLogService {
       ? maskSensitiveData(logData.extracted_fields)
       : undefined;
 
-    const { data, error } = await this.db
+    const { data, error } = await this.getDb()
       .from('document_verification_logs')
       .insert({
         ...logData,
@@ -346,7 +353,7 @@ export class DocumentVerificationLogService {
    * Get logs by request ID (trace all events for a single upload)
    */
   async getLogsByRequestId(requestId: string): Promise<DocumentVerificationLog[]> {
-    const { data, error } = await this.db
+    const { data, error } = await this.getDb()
       .from('document_verification_logs')
       .select('*')
       .eq('request_id', requestId)
@@ -365,7 +372,7 @@ export class DocumentVerificationLogService {
   async getLogsByDocumentId(documentId: string): Promise<DocumentVerificationLog[]> {
     // First, get one log with document_id to find the request_id
     // This includes upload_started which is logged before document_id exists
-    const { data: docLog, error: docLogError } = await this.db
+    const { data: docLog, error: docLogError } = await this.getDb()
       .from('document_verification_logs')
       .select('request_id')
       .eq('document_id', documentId)
@@ -380,7 +387,7 @@ export class DocumentVerificationLogService {
     const requestId = docLog.request_id;
 
     // Get all logs with this request_id (includes upload_started which has no document_id)
-    const { data: allLogs, error: allLogsError } = await this.db
+    const { data: allLogs, error: allLogsError } = await this.getDb()
       .from('document_verification_logs')
       .select('*')
       .eq('request_id', requestId)
@@ -397,7 +404,7 @@ export class DocumentVerificationLogService {
    * Get logs by candidate ID
    */
   async getLogsByCandidateId(candidateId: string, limit: number = 50): Promise<DocumentVerificationLog[]> {
-    const { data, error } = await this.db
+    const { data, error } = await this.getDb()
       .from('document_verification_logs')
       .select('*')
       .eq('candidate_id', candidateId)

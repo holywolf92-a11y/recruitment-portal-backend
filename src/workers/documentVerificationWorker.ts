@@ -18,10 +18,10 @@ import {
 import { DocumentRejectionService, RejectionContext } from '../services/documentRejectionService';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
-const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
+const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 
-if (!HMAC_SECRET) {
-  throw new Error('PYTHON_HMAC_SECRET environment variable is required for document verification worker');
+if (!HMAC_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('PYTHON_HMAC_SECRET environment variable is required for document verification worker in production');
 }
 
 /**

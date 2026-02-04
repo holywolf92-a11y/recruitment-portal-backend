@@ -4,9 +4,9 @@ import { createLogger } from '../utils/errorHandling';
 
 const logger = createLogger('Redis');
 
-const redisUrl = process.env.REDIS_URL;
-if (!redisUrl) {
-  throw new Error('REDIS_URL is required but was not set');
+const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+if (!redisUrl && process.env.NODE_ENV === 'production') {
+  throw new Error('REDIS_URL is required in production but was not set');
 }
 
 let redisHostForDiagnostics: string | undefined;

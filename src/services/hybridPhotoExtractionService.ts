@@ -39,13 +39,13 @@ async function extractPhotoPythonParser(pdfBuffer: Buffer, attachmentId: string)
       file_name: 'photo_section.pdf',
       mime_type: 'application/pdf',
       attachment_id: attachmentId,
-      extract_photo_only: true, // Signal to parser to skip full parsing, just extract photo
     };
 
     const body = Buffer.from(JSON.stringify(payload), 'utf8');
     const sig = crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
 
-    const res = await fetch(`${PARSER_URL.replace(/\/$/, '')}/parse`, {
+    const baseUrl = PARSER_URL.replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/extract-photo`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -64,17 +64,17 @@ async function extractPhotoPythonParser(pdfBuffer: Buffer, attachmentId: string)
     }
 
     const json = (await res.json()) as any;
-    
-    // The parser returns profile_photo_url which is a public signed URL
-    // We need to fetch the actual image from that URL
-    if (!json.profile_photo_url) {
+
+    // /extract-photo returns { success, profile_photo_url, error }
+    const profilePhotoUrl = json?.profile_photo_url;
+    if (!profilePhotoUrl) {
       logger.warn('Python parser returned no profile_photo_url', { json });
       return null;
     }
 
     // Fetch the actual image from the URL
     try {
-      const imgRes = await fetch(json.profile_photo_url);
+      const imgRes = await fetch(profilePhotoUrl);
       if (!imgRes.ok) {
         logger.warn('Failed to fetch photo from parser-provided URL', { status: imgRes.status });
         return null;

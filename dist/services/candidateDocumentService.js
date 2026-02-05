@@ -55,6 +55,7 @@ const splitUploadService_1 = require("./splitUploadService");
 const crypto_2 = require("crypto");
 const documentNaming_1 = require("../utils/documentNaming");
 const splitDocumentProcessor_1 = require("../utils/splitDocumentProcessor");
+const hybridPhotoExtractionService_1 = require("./hybridPhotoExtractionService");
 const STORAGE_BUCKET = 'documents';
 /**
  * Format document response with rejection details for API
@@ -233,6 +234,31 @@ async function uploadCandidateDocument(data) {
                     const createdDocuments = [];
                     for (const splitDoc of splitResult.documents) {
                         const pdfBuffer = Buffer.from(splitDoc.pdf_base64, 'base64');
+                        const docTypeLower = (splitDoc.doc_type || '').toLowerCase();
+                        // Special handling: if split produced a PHOTOS PDF section, try hybrid extraction
+                        // from that section and skip creating split_photos document if successful.
+                        if ((docTypeLower === 'photo' || docTypeLower === 'photos') && splitDoc.is_image !== true) {
+                            try {
+                                console.log(`[UploadDocument] Photos PDF detected for candidate ${data.candidate_id}. Attempting hybrid extraction from photos section...`);
+                                const extractionResult = await (0, hybridPhotoExtractionService_1.extractProfilePhotoHybrid)(data.candidate_id, uploadId, pdfBuffer);
+                                if (extractionResult.success && extractionResult.photoBuffer) {
+                                    const uploaded = await (0, hybridPhotoExtractionService_1.uploadExtractedPhotoToCandidatePhotos)(data.candidate_id, uploadId, extractionResult.photoBuffer);
+                                    console.log(`[UploadDocument] ✅ Hybrid photos-section extraction succeeded (method=${extractionResult.method}). Skipping split_photos document creation.`, {
+                                        candidateId: data.candidate_id,
+                                        uploadId,
+                                        storagePath: uploaded.storagePath,
+                                    });
+                                    continue;
+                                }
+                                console.log(`[UploadDocument] Hybrid photos-section extraction did not produce a photo. Continuing with normal split document creation.`, {
+                                    candidateId: data.candidate_id,
+                                    uploadId,
+                                });
+                            }
+                            catch (hyErr) {
+                                console.warn(`[UploadDocument] Hybrid photos-section extraction error; continuing with normal split document creation:`, hyErr?.message || hyErr);
+                            }
+                        }
                         const folder = (0, splitUploadService_1.docTypeToFolder)(splitDoc.doc_type);
                         // Use shared utility to handle image detection, profile photo saving, and storage upload
                         let processed;

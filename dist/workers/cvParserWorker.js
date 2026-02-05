@@ -44,6 +44,7 @@ const parsingJobsService_1 = require("../services/parsingJobsService");
 const candidateService_1 = require("../services/candidateService");
 const database_1 = require("../config/database");
 const splitUploadService_1 = require("../services/splitUploadService");
+const hybridPhotoExtractionService_1 = require("../services/hybridPhotoExtractionService");
 const documentCategories_1 = require("../config/documentCategories");
 const queue_1 = require("../config/queue");
 const documentVerificationLogService_1 = require("../services/documentVerificationLogService");
@@ -542,6 +543,31 @@ function startCvParserWorker() {
                         try {
                             const folder = (0, splitUploadService_1.docTypeToFolder)(d.doc_type);
                             const pdfBuffer = Buffer.from(d.pdf_base64, 'base64');
+                            const docTypeLower = (d.doc_type || '').toLowerCase();
+                            // Special handling: if parser produced a PHOTOS PDF section, try hybrid extraction
+                            // from that section instead of scanning the whole CV.
+                            if ((docTypeLower === 'photo' || docTypeLower === 'photos') && d.is_image !== true) {
+                                try {
+                                    console.log(`[CVParser] Photos PDF detected for candidate ${newCandidate.id}. Attempting hybrid extraction from photos section...`);
+                                    const extractionResult = await (0, hybridPhotoExtractionService_1.extractProfilePhotoHybrid)(newCandidate.id, attachmentId, pdfBuffer);
+                                    if (extractionResult.success && extractionResult.photoBuffer) {
+                                        const uploaded = await (0, hybridPhotoExtractionService_1.uploadExtractedPhotoToCandidatePhotos)(newCandidate.id, attachmentId, extractionResult.photoBuffer);
+                                        console.log(`[CVParser] ✅ Hybrid photos-section extraction succeeded (method=${extractionResult.method}). Skipping split_photos document creation.`, {
+                                            candidateId: newCandidate.id,
+                                            attachmentId,
+                                            storagePath: uploaded.storagePath,
+                                        });
+                                        continue;
+                                    }
+                                    console.log(`[CVParser] Hybrid photos-section extraction did not produce a photo. Continuing with normal split document creation.`, {
+                                        candidateId: newCandidate.id,
+                                        attachmentId,
+                                    });
+                                }
+                                catch (hyErr) {
+                                    console.warn(`[CVParser] Hybrid photos-section extraction error; continuing with normal split document creation:`, hyErr?.message || hyErr);
+                                }
+                            }
                             // Use shared utility to handle image detection, profile photo saving, and storage upload
                             let processed;
                             try {

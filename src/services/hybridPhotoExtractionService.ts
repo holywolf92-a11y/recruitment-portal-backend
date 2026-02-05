@@ -159,6 +159,14 @@ export async function uploadExtractedPhotoToCandidatePhotos(
     throw new Error(`Failed to sign extracted photo: ${signError?.message || 'unknown'}`);
   }
 
+  logger.info('Uploaded extracted profile photo', {
+    candidateId,
+    attachmentId,
+    bucket: STORAGE_BUCKET,
+    storagePath,
+    sizeBytes: photoBuffer.length,
+  });
+
   // Update candidate's profile_photo_url to point to this photo
   const { error: updateError } = await db
     .from('candidates')

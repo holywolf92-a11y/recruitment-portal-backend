@@ -233,4 +233,72 @@ router.get('/employees', authenticate, async (req: AuthRequest, res) => {
   }
 });
 
+// Seed/initialize admin user with proper role metadata
+router.post('/seed-admin', async (req, res) => {
+  try {
+    const adminEmail = 'admin@falisha.com';
+    const adminPassword = 'admin123';
+
+    const supabase = supabaseAdminClient();
+
+    // First, check if admin user already exists
+    const { data: existingUsers, error: listError } = await supabase.auth.admin.listUsers();
+    
+    if (listError) {
+      return res.status(400).json({ error: listError.message });
+    }
+
+    const adminUser = existingUsers.users.find(u => u.email === adminEmail);
+
+    if (adminUser) {
+      // Update existing admin user with role metadata
+      const { error: updateError } = await supabase.auth.admin.updateUserById(adminUser.id, {
+        user_metadata: {
+          ...adminUser.user_metadata,
+          role: 'admin'
+        }
+      });
+
+      if (updateError) {
+        return res.status(400).json({ error: updateError.message });
+      }
+
+      return res.json({
+        message: 'Admin user updated with admin role',
+        user: {
+          id: adminUser.id,
+          email: adminUser.email,
+          role: 'admin'
+        }
+      });
+    } else {
+      // Create new admin user
+      const { data, error: createError } = await supabase.auth.admin.createUser({
+        email: adminEmail,
+        password: adminPassword,
+        email_confirm: true,
+        user_metadata: {
+          role: 'admin'
+        }
+      });
+
+      if (createError) {
+        return res.status(400).json({ error: createError.message });
+      }
+
+      return res.status(201).json({
+        message: 'Admin account created successfully',
+        user: {
+          id: data.user.id,
+          email: data.user.email,
+          role: 'admin'
+        }
+      });
+    }
+  } catch (error: any) {
+    console.error('Error seeding admin user:', error);
+    res.status(500).json({ error: 'Failed to seed admin user' });
+  }
+});
+
 export default router;

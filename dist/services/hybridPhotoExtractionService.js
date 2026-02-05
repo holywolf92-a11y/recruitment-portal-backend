@@ -17,6 +17,7 @@ const database_1 = require("../config/database");
 const crypto_1 = __importDefault(require("crypto"));
 const errorHandling_1 = require("../utils/errorHandling");
 const logger = (0, errorHandling_1.createLogger)('HybridPhotoExtraction');
+// Deployment test marker - 2026-02-05
 const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
 const STORAGE_BUCKET = 'documents';

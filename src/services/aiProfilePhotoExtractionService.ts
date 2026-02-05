@@ -4,6 +4,10 @@ import { openaiCreateJsonSchemaResponse } from './openaiResponsesService';
 import { renderPdfPageCropToJpeg, renderPdfPageToJpeg } from './puppeteerPdfRenderService';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../utils/errorHandling';
+import { promises as fs } from 'fs';
+import os from 'os';
+import path from 'path';
+import { pathToFileURL } from 'url';
 
 const logger = createLogger('AIProfilePhotoExtraction');
 
@@ -363,4 +367,99 @@ export async function extractProfilePhotoFromPdfUsingAI(args: {
     signedUrl: uploaded.signedUrl,
     note: best.locate.reason,
   };
+}
+
+export async function extractProfilePhotoFromPdfBufferUsingAI(args: {
+  pdfBuffer: Buffer;
+  maxPages?: number;
+  model?: string;
+}): Promise<{
+  pageUsed: number;
+  confidence: number;
+  jpeg: Buffer;
+  note: string;
+}> {
+  const model = args.model || process.env.OPENAI_MODEL || 'gpt-4o-mini-2024-07-18';
+  const maxPages = Math.max(1, Math.min(10, args.maxPages ?? 5));
+  const startedAt = Date.now();
+
+  const viewport = { width: 1000, height: 1400, deviceScaleFactor: 2 };
+
+  const tmpPath = path.join(os.tmpdir(), `ai_extract_${Date.now()}_${uuidv4()}.pdf`);
+  try {
+    await fs.writeFile(tmpPath, args.pdfBuffer);
+    const pdfUrl = pathToFileURL(tmpPath).toString();
+
+    let best: { page: number; locate: LocateResult; cropJpeg: Buffer } | null = null;
+
+    for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
+      const pageStartedAt = Date.now();
+      const { jpeg } = await renderPdfPageToJpeg({ pdfUrl, pageNumber, viewport, timeoutMs: 30000 });
+      const locate = await locateProfilePhotoOnPage({ jpeg, model });
+
+      logger.info('Page scanned (buffer)', {
+        pageNumber,
+        found: locate.found,
+        confidence: locate.confidence,
+        ms: Date.now() - pageStartedAt,
+      });
+
+      if (!locate.found) continue;
+
+      const area = (locate.bbox.w ?? 0) * (locate.bbox.h ?? 0);
+      if (!Number.isFinite(area) || area < 0.01) continue;
+
+      const clip = bboxNormToClip(locate.bbox, viewport);
+      const { jpeg: cropJpeg } = await renderPdfPageCropToJpeg({
+        pdfUrl,
+        pageNumber,
+        viewport,
+        clip,
+        timeoutMs: 30000,
+      });
+
+      const verify = await verifyCropLooksLikeHeadshot({ jpeg: cropJpeg, model });
+      const combinedConfidence = Math.max(0, Math.min(1, (locate.confidence || 0) * 0.7 + (verify.confidence || 0) * 0.3));
+
+      if (!verify.ok) {
+        logger.warn('Rejected non-headshot crop (buffer)', {
+          pageNumber,
+          locateConfidence: locate.confidence,
+          verifyConfidence: verify.confidence,
+          reason: verify.reason,
+        });
+        continue;
+      }
+
+      if (!best || combinedConfidence > best.locate.confidence) {
+        best = { page: pageNumber, locate: { ...locate, confidence: combinedConfidence }, cropJpeg };
+      }
+
+      if (combinedConfidence >= 0.85) break;
+    }
+
+    if (!best) {
+      logger.warn('No usable headshot found (buffer)', { ms: Date.now() - startedAt });
+      throw new Error('AI could not find a usable headshot in the provided PDF');
+    }
+
+    logger.info('Success (buffer)', {
+      pageUsed: best.page,
+      confidence: best.locate.confidence,
+      ms: Date.now() - startedAt,
+    });
+
+    return {
+      pageUsed: best.page,
+      confidence: best.locate.confidence,
+      jpeg: best.cropJpeg,
+      note: best.locate.reason,
+    };
+  } finally {
+    try {
+      await fs.unlink(tmpPath);
+    } catch {
+      // ignore
+    }
+  }
 }

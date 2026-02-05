@@ -1,12 +1,20 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.extractProfilePhotoFromPdfUsingAI = extractProfilePhotoFromPdfUsingAI;
+exports.extractProfilePhotoFromPdfBufferUsingAI = extractProfilePhotoFromPdfBufferUsingAI;
 const database_1 = require("../config/database");
 const candidateDocumentService_1 = require("./candidateDocumentService");
 const openaiResponsesService_1 = require("./openaiResponsesService");
 const puppeteerPdfRenderService_1 = require("./puppeteerPdfRenderService");
 const uuid_1 = require("uuid");
 const errorHandling_1 = require("../utils/errorHandling");
+const fs_1 = require("fs");
+const os_1 = __importDefault(require("os"));
+const path_1 = __importDefault(require("path"));
+const url_1 = require("url");
 const logger = (0, errorHandling_1.createLogger)('AIProfilePhotoExtraction');
 function isPdfDoc(d) {
     return (d?.mime_type || '').toLowerCase() === 'application/pdf' || (d?.file_name || '').toLowerCase().endsWith('.pdf');
@@ -282,4 +290,79 @@ async function extractProfilePhotoFromPdfUsingAI(args) {
         signedUrl: uploaded.signedUrl,
         note: best.locate.reason,
     };
+}
+async function extractProfilePhotoFromPdfBufferUsingAI(args) {
+    const model = args.model || process.env.OPENAI_MODEL || 'gpt-4o-mini-2024-07-18';
+    const maxPages = Math.max(1, Math.min(10, args.maxPages ?? 5));
+    const startedAt = Date.now();
+    const viewport = { width: 1000, height: 1400, deviceScaleFactor: 2 };
+    const tmpPath = path_1.default.join(os_1.default.tmpdir(), `ai_extract_${Date.now()}_${(0, uuid_1.v4)()}.pdf`);
+    try {
+        await fs_1.promises.writeFile(tmpPath, args.pdfBuffer);
+        const pdfUrl = (0, url_1.pathToFileURL)(tmpPath).toString();
+        let best = null;
+        for (let pageNumber = 1; pageNumber <= maxPages; pageNumber++) {
+            const pageStartedAt = Date.now();
+            const { jpeg } = await (0, puppeteerPdfRenderService_1.renderPdfPageToJpeg)({ pdfUrl, pageNumber, viewport, timeoutMs: 30000 });
+            const locate = await locateProfilePhotoOnPage({ jpeg, model });
+            logger.info('Page scanned (buffer)', {
+                pageNumber,
+                found: locate.found,
+                confidence: locate.confidence,
+                ms: Date.now() - pageStartedAt,
+            });
+            if (!locate.found)
+                continue;
+            const area = (locate.bbox.w ?? 0) * (locate.bbox.h ?? 0);
+            if (!Number.isFinite(area) || area < 0.01)
+                continue;
+            const clip = bboxNormToClip(locate.bbox, viewport);
+            const { jpeg: cropJpeg } = await (0, puppeteerPdfRenderService_1.renderPdfPageCropToJpeg)({
+                pdfUrl,
+                pageNumber,
+                viewport,
+                clip,
+                timeoutMs: 30000,
+            });
+            const verify = await verifyCropLooksLikeHeadshot({ jpeg: cropJpeg, model });
+            const combinedConfidence = Math.max(0, Math.min(1, (locate.confidence || 0) * 0.7 + (verify.confidence || 0) * 0.3));
+            if (!verify.ok) {
+                logger.warn('Rejected non-headshot crop (buffer)', {
+                    pageNumber,
+                    locateConfidence: locate.confidence,
+                    verifyConfidence: verify.confidence,
+                    reason: verify.reason,
+                });
+                continue;
+            }
+            if (!best || combinedConfidence > best.locate.confidence) {
+                best = { page: pageNumber, locate: { ...locate, confidence: combinedConfidence }, cropJpeg };
+            }
+            if (combinedConfidence >= 0.85)
+                break;
+        }
+        if (!best) {
+            logger.warn('No usable headshot found (buffer)', { ms: Date.now() - startedAt });
+            throw new Error('AI could not find a usable headshot in the provided PDF');
+        }
+        logger.info('Success (buffer)', {
+            pageUsed: best.page,
+            confidence: best.locate.confidence,
+            ms: Date.now() - startedAt,
+        });
+        return {
+            pageUsed: best.page,
+            confidence: best.locate.confidence,
+            jpeg: best.cropJpeg,
+            note: best.locate.reason,
+        };
+    }
+    finally {
+        try {
+            await fs_1.promises.unlink(tmpPath);
+        }
+        catch {
+            // ignore
+        }
+    }
 }

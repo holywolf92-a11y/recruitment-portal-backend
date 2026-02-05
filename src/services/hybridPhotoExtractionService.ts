@@ -11,6 +11,7 @@ import { supabaseAdminClient } from '../config/database';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../utils/errorHandling';
+import { extractProfilePhotoFromPdfBufferUsingAI } from './aiProfilePhotoExtractionService';
 
 const logger = createLogger('HybridPhotoExtraction');
 
@@ -109,11 +110,14 @@ async function extractPhotoPythonParser(pdfBuffer: Buffer, attachmentId: string)
  */
 async function extractPhotoBackendAI(candidateId: string, pdfBuffer: Buffer): Promise<Buffer | null> {
   try {
-    // TODO: Future enhancement - add backend AI support by refactoring aiProfilePhotoExtractionService
-    // to accept raw PDF bytes instead of requiring a documentId
-    
-    logger.info('Backend AI extraction not yet implemented for split photos', { candidateId });
-    return null;
+    const result = await extractProfilePhotoFromPdfBufferUsingAI({ pdfBuffer, maxPages: 5 });
+    logger.info('Backend AI successfully extracted photo from PDF buffer', {
+      candidateId,
+      pageUsed: result.pageUsed,
+      confidence: result.confidence,
+      sizeBytes: result.jpeg.length,
+    });
+    return result.jpeg;
   } catch (error) {
     logger.warn('Backend AI extraction error', {
       candidateId,

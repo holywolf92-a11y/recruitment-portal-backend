@@ -16,6 +16,7 @@ exports.extractProfilePhotoHybrid = extractProfilePhotoHybrid;
 const database_1 = require("../config/database");
 const crypto_1 = __importDefault(require("crypto"));
 const errorHandling_1 = require("../utils/errorHandling");
+const aiProfilePhotoExtractionService_1 = require("./aiProfilePhotoExtractionService");
 const logger = (0, errorHandling_1.createLogger)('HybridPhotoExtraction');
 // Deployment test marker - 2026-02-05
 const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
@@ -103,10 +104,14 @@ async function extractPhotoPythonParser(pdfBuffer, attachmentId) {
  */
 async function extractPhotoBackendAI(candidateId, pdfBuffer) {
     try {
-        // TODO: Future enhancement - add backend AI support by refactoring aiProfilePhotoExtractionService
-        // to accept raw PDF bytes instead of requiring a documentId
-        logger.info('Backend AI extraction not yet implemented for split photos', { candidateId });
-        return null;
+        const result = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfBufferUsingAI)({ pdfBuffer, maxPages: 5 });
+        logger.info('Backend AI successfully extracted photo from PDF buffer', {
+            candidateId,
+            pageUsed: result.pageUsed,
+            confidence: result.confidence,
+            sizeBytes: result.jpeg.length,
+        });
+        return result.jpeg;
     }
     catch (error) {
         logger.warn('Backend AI extraction error', {

@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { supabaseAdminClient } from '../config/database';
 
 export interface AuthRequest extends Request {
-  user?: { id: string; email?: string; role?: string } | null;
+  user?: { id: string; email?: string; role?: string };
 }
 
 export async function authenticate(req: AuthRequest, res: Response, next: NextFunction) {

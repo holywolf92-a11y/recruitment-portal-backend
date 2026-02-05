@@ -13,9 +13,18 @@ import {
   CreateEmployeeLogData,
 } from '../services/employeeLogsService';
 
+// Type definition for authenticated request
+interface AuthenticatedRequest extends Request {
+  user?: {
+    id: string;
+    role?: string;
+    email?: string;
+  };
+}
+
 // ============ EMPLOYEE LOG HANDLERS ============
 
-export async function createEmployeeLogController(req: Request, res: Response) {
+export async function createEmployeeLogController(req: AuthenticatedRequest, res: Response) {
   try {
     const employeeId = req.user?.id;
     if (!employeeId) {
@@ -52,7 +61,7 @@ export async function createEmployeeLogController(req: Request, res: Response) {
   }
 }
 
-export async function getEmployeeLogsController(req: Request, res: Response) {
+export async function getEmployeeLogsController(req: AuthenticatedRequest, res: Response) {
   try {
     const employeeId = req.user?.id;
     if (!employeeId) {
@@ -77,7 +86,7 @@ export async function getEmployeeLogsController(req: Request, res: Response) {
   }
 }
 
-export async function getEmployeeLogController(req: Request, res: Response) {
+export async function getEmployeeLogController(req: AuthenticatedRequest, res: Response) {
   try {
     const { id } = req.params;
     const employeeId = req.user?.id;
@@ -98,7 +107,7 @@ export async function getEmployeeLogController(req: Request, res: Response) {
   }
 }
 
-export async function updateEmployeeLogController(req: Request, res: Response) {
+export async function updateEmployeeLogController(req: AuthenticatedRequest, res: Response) {
   try {
     const { id } = req.params;
     const employeeId = req.user?.id;
@@ -139,7 +148,7 @@ export async function updateEmployeeLogController(req: Request, res: Response) {
   }
 }
 
-export async function deleteEmployeeLogController(req: Request, res: Response) {
+export async function deleteEmployeeLogController(req: AuthenticatedRequest, res: Response) {
   try {
     const { id } = req.params;
     const employeeId = req.user?.id;
@@ -166,13 +175,17 @@ export async function deleteEmployeeLogController(req: Request, res: Response) {
 
 // ============ TEAM LOGS HANDLERS (Manager/Admin) ============
 
-export async function getTeamLogsController(req: Request, res: Response) {
+export async function getTeamLogsController(req: AuthenticatedRequest, res: Response) {
   try {
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
     if (!userRole || (userRole !== 'manager' && userRole !== 'admin')) {
       return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+
+    if (!userId) {
+      return res.status(401).json({ error: 'User not authenticated' });
     }
 
     const filters = {
@@ -194,13 +207,17 @@ export async function getTeamLogsController(req: Request, res: Response) {
   }
 }
 
-export async function getEmployeeDailySummaryController(req: Request, res: Response) {
+export async function getEmployeeDailySummaryController(req: AuthenticatedRequest, res: Response) {
   try {
     const userRole = req.user?.role;
     const userId = req.user?.id;
 
     if (!userRole || (userRole !== 'manager' && userRole !== 'admin')) {
       return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+
+    if (!userId) {
+      return res.status(401).json({ error: 'User not authenticated' });
     }
 
     const filters = {
@@ -219,7 +236,7 @@ export async function getEmployeeDailySummaryController(req: Request, res: Respo
 
 // ============ CANDIDATE ACTIVITY HANDLERS ============
 
-export async function getCandidateEmployeeActivityController(req: Request, res: Response) {
+export async function getCandidateEmployeeActivityController(req: AuthenticatedRequest, res: Response) {
   try {
     const { candidateId } = req.params;
 
@@ -242,7 +259,7 @@ export async function getCandidateEmployeeActivityController(req: Request, res: 
 
 // ============ TASK TYPE HANDLERS ============
 
-export async function getTaskTypesController(req: Request, res: Response) {
+export async function getTaskTypesController(req: AuthenticatedRequest, res: Response) {
   try {
     const includeInactive = req.query.includeInactive === 'true';
     const taskTypes = await getTaskTypes(includeInactive);
@@ -253,7 +270,7 @@ export async function getTaskTypesController(req: Request, res: Response) {
   }
 }
 
-export async function createTaskTypeController(req: Request, res: Response) {
+export async function createTaskTypeController(req: AuthenticatedRequest, res: Response) {
   try {
     const userRole = req.user?.role;
 

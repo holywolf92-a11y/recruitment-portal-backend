@@ -13,11 +13,25 @@ export async function authenticate(req: AuthRequest, res: Response, next: NextFu
   const token = auth.replace('Bearer ', '').trim();
 
   try {
-    // NOTE: Replace with proper JWT verification or Supabase auth API call
     const supabase = supabaseAdminClient();
-    // Attempt to get user by JWT - this requires server-side validation logic
-    // For now, set a placeholder user. Replace with `supabase.auth.getUser()` style call.
-    req.user = { id: 'unknown', email: undefined, role: 'Recruiter' };
+    
+    // Verify JWT token and get user info
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+
+    if (error || !user) {
+      console.error('Auth error:', error?.message || 'User not found');
+      return res.status(401).json({ error: 'Unauthorized - Invalid token' });
+    }
+
+    // Extract role from user metadata (defaults to 'employee' if not set)
+    const role = user.user_metadata?.role || 'employee';
+
+    req.user = {
+      id: user.id,
+      email: user.email,
+      role: role
+    };
+
     next();
   } catch (err) {
     console.error('Auth error', err);

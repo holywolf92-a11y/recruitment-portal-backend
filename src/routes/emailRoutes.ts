@@ -15,13 +15,36 @@ function slugifyName(name?: string): string {
  */
 emailRouter.post('/send-to-employer', async (req: Request, res: Response) => {
   try {
+    console.log('\n\n========== EMAIL ROUTE HANDLER ==========');
+    console.log('[EmailRouter] Full req.body:', JSON.stringify(req.body, null, 2));
+    console.log('[EmailRouter] req.body type:', typeof req.body);
+    console.log('[EmailRouter] req.body constructor:', req.body?.constructor?.name);
+    console.log('[EmailRouter] req.body keys:', Object.keys(req.body || {}));
+    
     const { candidateIds, employerEmail, employerId, message } = req.body;
+
+    console.log('[EmailRouter] After destructuring:');
+    console.log('[EmailRouter]   candidateIds:', candidateIds);
+    console.log('[EmailRouter]   candidateIds type:', typeof candidateIds);
+    console.log('[EmailRouter]   candidateIds is array?:', Array.isArray(candidateIds));
+    console.log('[EmailRouter]   candidateIds length:', candidateIds?.length);
+    console.log('[EmailRouter]   employerEmail:', employerEmail);
+    console.log('[EmailRouter]   employerId:', employerId);
+    console.log('[EmailRouter]   message:', message);
+    console.log('========================================\n');
 
     // Validation
     if (!candidateIds || !Array.isArray(candidateIds) || candidateIds.length === 0) {
-      console.log('[EmailRouter] Validation failed:', { candidateIds, isArray: Array.isArray(candidateIds) });
+      console.log('[EmailRouter] ❌ VALIDATION FAILED');
+      console.log('[EmailRouter] Reason:', {
+        candidateIdsExists: !!candidateIds,
+        isArray: Array.isArray(candidateIds),
+        length: candidateIds?.length
+      });
       return res.status(400).json({ error: 'Please provide at least one candidate ID' });
     }
+    
+    console.log('[EmailRouter] ✅ VALIDATION PASSED - ', candidateIds.length, 'candidates');
 
     // Get employer email (from direct input or by looking up employer ID)
     let targetEmail = employerEmail;

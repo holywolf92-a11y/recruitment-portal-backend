@@ -42,6 +42,23 @@ try {
 
   // Simple JSON/Form body parsing middleware - MUST come before routes
   app.use(express.json({ limit: '100mb' }));
+  
+  // Log what we received after parsing
+  app.use((req, res, next) => {
+    if (req.path.includes('/email/send-to-employer')) {
+      console.log('[MIDDLEWARE] POST /email/send-to-employer received');
+      console.log('[MIDDLEWARE] Method:', req.method);
+      console.log('[MIDDLEWARE] Content-Type:', req.headers['content-type']);
+      console.log('[MIDDLEWARE] Content-Length:', req.headers['content-length']);
+      console.log('[MIDDLEWARE] req.body:', JSON.stringify(req.body));
+      console.log('[MIDDLEWARE] req.body keys:', Object.keys(req.body || {}));
+      console.log('[MIDDLEWARE] candidateIds in body:', req.body?.candidateIds);
+      console.log('[MIDDLEWARE] candidateIds type:', typeof req.body?.candidateIds);
+      console.log('[MIDDLEWARE] candidateIds is array?:', Array.isArray(req.body?.candidateIds));
+    }
+    next();
+  });
+
   app.use(express.urlencoded({ extended: true, limit: '100mb' }));
   app.use(express.text({ limit: '100mb' }));
 

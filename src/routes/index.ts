@@ -19,6 +19,7 @@ import storageHealthRoutes from './storageHealth';
 import verificationLogsRoutes from './verificationLogs';
 import extractPhotoRoutes from './extractPhoto';
 import employeeLogsRoutes from './employeeLogs';
+import { emailRouter } from './emailRoutes';
 import { getWorkerStatus } from '../controllers/workerStatusController';
 
 const router = Router();
@@ -43,6 +44,7 @@ router.use('/health', queueHealthRoutes);
 router.use('/health/storage', storageHealthRoutes);
 router.use('/verification-logs', verificationLogsRoutes);
 router.use('/employee-logs', employeeLogsRoutes);
+router.use('/email', emailRouter);
 router.get('/worker-status', getWorkerStatus);
 
 export default router;

@@ -34,6 +34,14 @@ export function validateEnv() {
 
   const optional = [
     'SUPABASE_SERVICE_ROLE_KEY',
+    'FRONTEND_URL',
+    'BACKEND_URL',
+    'BREVO_SMTP_HOST',
+    'BREVO_SMTP_PORT',
+    'BREVO_SMTP_USER',
+    'BREVO_SMTP_PASSWORD',
+    'BREVO_FROM_EMAIL',
+    'BREVO_FROM_NAME',
     'WHATSAPP_ACCESS_TOKEN',
     'WHATSAPP_PHONE_NUMBER_ID',
     'WHATSAPP_APP_SECRET',

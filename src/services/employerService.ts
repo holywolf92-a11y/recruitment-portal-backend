@@ -3,17 +3,23 @@ import { supabaseAdminClient } from '../config/database';
 export interface Employer {
   id: string;
   company_name: string;
+  email?: string | null;
   created_at: string;
 }
 
 export interface CreateEmployerData {
   company_name: string;
+  email?: string;
 }
 
 export interface EmployerFilters {
   search?: string;
   limit?: number;
   offset?: number;
+}
+
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 /**
@@ -38,8 +44,13 @@ export async function createEmployer(data: CreateEmployerData, userId: string): 
     throw new Error(`Employer with company name "${existing.company_name}" already exists`);
   }
 
+  if (data.email && !isValidEmail(data.email.trim())) {
+    throw new Error('Invalid employer email address');
+  }
+
   const employerData = {
     company_name: data.company_name.trim(),
+    email: data.email ? data.email.trim().toLowerCase() : null,
   };
 
   const { data: employer, error } = await db
@@ -131,9 +142,18 @@ export async function updateEmployer(
     }
   }
 
+  if (data.email !== undefined) {
+    if (data.email && !isValidEmail(data.email.trim())) {
+      throw new Error('Invalid employer email address');
+    }
+  }
+
   const updateData: any = {};
   if (data.company_name !== undefined) {
     updateData.company_name = data.company_name.trim();
+  }
+  if (data.email !== undefined) {
+    updateData.email = data.email ? data.email.trim().toLowerCase() : null;
   }
 
   const { data: employer, error } = await db

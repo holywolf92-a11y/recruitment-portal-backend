@@ -25,6 +25,8 @@ logger.info('Environment variables loaded', {
 try {
   const app = express();
   const PORT = parseInt(process.env.PORT || '1000', 10);
+  
+  // Email feature fix: Ensure JSON middleware is properly configured
 
   app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },

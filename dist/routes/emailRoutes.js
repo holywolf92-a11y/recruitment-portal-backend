@@ -1,0 +1,160 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.emailRouter = void 0;
+const express_1 = require("express");
+const database_1 = require("../config/database");
+const emailService_1 = require("../services/emailService");
+exports.emailRouter = (0, express_1.Router)();
+function slugifyName(name) {
+    if (!name)
+        return 'candidate';
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'candidate';
+}
+/**
+ * Send candidate profiles to employer via email
+ * POST /api/email/send-to-employer
+ */
+exports.emailRouter.post('/send-to-employer', async (req, res) => {
+    try {
+        console.log('[EmailRouter] Received request body:', JSON.stringify(req.body));
+        console.log('[EmailRouter] candidateIds:', req.body.candidateIds);
+        console.log('[EmailRouter] candidateIds type:', typeof req.body.candidateIds, Array.isArray(req.body.candidateIds));
+        const { candidateIds, employerEmail, employerId, message } = req.body;
+        // Validation
+        if (!candidateIds || !Array.isArray(candidateIds) || candidateIds.length === 0) {
+            console.log('[EmailRouter] Validation failed - invalid candidateIds');
+            return res.status(400).json({ error: 'Please provide at least one candidate ID' });
+        }
+        // Get employer email (from direct input or by looking up employer ID)
+        let targetEmail = employerEmail;
+        if (!targetEmail && employerId) {
+            const supabase = (0, database_1.supabaseAdminClient)();
+            const { data: employer, error: employerError } = await supabase
+                .from('employers')
+                .select('email')
+                .eq('id', employerId)
+                .single();
+            if (employerError) {
+                console.error('[EmailRouter] Error fetching employer:', employerError);
+                return res.status(500).json({ error: 'Failed to fetch employer details' });
+            }
+            if (!employer?.email) {
+                return res.status(400).json({ error: 'Selected employer has no email address. Please enter manually.' });
+            }
+            targetEmail = employer.email;
+        }
+        if (!targetEmail) {
+            return res.status(400).json({ error: 'Please provide employer email address' });
+        }
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(targetEmail)) {
+            return res.status(400).json({ error: 'Please provide a valid email address' });
+        }
+        // Fetch candidate details
+        const supabase = (0, database_1.supabaseAdminClient)();
+        const { data: candidates, error: fetchError } = await supabase
+            .from('candidates')
+            .select('id, name, position, date_of_birth, nationality, photo_url')
+            .in('id', candidateIds);
+        if (fetchError) {
+            console.error('[EmailRouter] Error fetching candidates:', fetchError);
+            return res.status(500).json({ error: 'Failed to fetch candidate data' });
+        }
+        if (!candidates || candidates.length === 0) {
+            return res.status(404).json({ error: 'No candidates found with provided IDs' });
+        }
+        // Calculate age helper
+        const calculateAge = (dateOfBirth) => {
+            if (!dateOfBirth)
+                return undefined;
+            try {
+                const birthDate = new Date(dateOfBirth);
+                const today = new Date();
+                let age = today.getFullYear() - birthDate.getFullYear();
+                const monthDiff = today.getMonth() - birthDate.getMonth();
+                if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+                    age--;
+                }
+                return age;
+            }
+            catch {
+                return undefined;
+            }
+        };
+        // Detect primary position (most common position among selected candidates)
+        const positionCounts = {};
+        candidates.forEach(c => {
+            if (c.position) {
+                positionCounts[c.position] = (positionCounts[c.position] || 0) + 1;
+            }
+        });
+        let primaryPosition;
+        let maxCount = 0;
+        Object.entries(positionCounts).forEach(([pos, count]) => {
+            if (count > maxCount) {
+                maxCount = count;
+                primaryPosition = pos;
+            }
+        });
+        // Build candidate data for email
+        const frontendUrl = process.env.FRONTEND_URL || 'https://exquisite-surprise-production.up.railway.app';
+        const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
+        const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
+            ? backendBaseUrl.replace(/\/$/, '')
+            : `${backendBaseUrl.replace(/\/$/, '')}/api`;
+        const candidateData = candidates.map(candidate => ({
+            id: candidate.id,
+            name: candidate.name || 'Unknown',
+            age: calculateAge(candidate.date_of_birth),
+            nationality: candidate.nationality,
+            position: candidate.position,
+            profileLink: `${frontendUrl}/profile/${candidate.id}/${slugifyName(candidate.name)}`,
+            cvDownloadLink: `${apiBaseUrl}/cv-generator/${candidate.id}/download?format=employer-safe&force=true`,
+        }));
+        // Send email
+        await emailService_1.emailService.sendCandidateProfilesToEmployer({
+            employerEmail: targetEmail,
+            candidates: candidateData,
+            position: primaryPosition,
+            message,
+        });
+        console.log(`[EmailRouter] Successfully sent ${candidates.length} candidate profiles to ${targetEmail}`);
+        return res.status(200).json({
+            success: true,
+            message: `Email sent successfully to ${targetEmail}`,
+            candidateCount: candidates.length,
+        });
+    }
+    catch (error) {
+        console.error('[EmailRouter] Error sending email:', error);
+        return res.status(500).json({
+            error: error.message || 'Failed to send email. Please try again.'
+        });
+    }
+});
+/**
+ * Get list of employers (for dropdown selection)
+ * GET /api/email/employers
+ */
+exports.emailRouter.get('/employers', async (req, res) => {
+    try {
+        const supabase = (0, database_1.supabaseAdminClient)();
+        const { data: employers, error } = await supabase
+            .from('employers')
+            .select('id, company_name, email')
+            .order('company_name', { ascending: true });
+        if (error) {
+            console.error('[EmailRouter] Error fetching employers:', error);
+            return res.status(500).json({ error: 'Failed to fetch employers' });
+        }
+        return res.status(200).json({
+            success: true,
+            employers: employers || []
+        });
+    }
+    catch (error) {
+        console.error('[EmailRouter] Error fetching employers:', error);
+        return res.status(500).json({ error: 'Failed to fetch employers' });
+    }
+});

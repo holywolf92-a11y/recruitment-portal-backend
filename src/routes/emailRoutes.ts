@@ -15,10 +15,15 @@ function slugifyName(name?: string): string {
  */
 emailRouter.post('/send-to-employer', async (req: Request, res: Response) => {
   try {
+    console.log('[EmailRouter] Received request body:', JSON.stringify(req.body));
+    console.log('[EmailRouter] candidateIds:', req.body.candidateIds);
+    console.log('[EmailRouter] candidateIds type:', typeof req.body.candidateIds, Array.isArray(req.body.candidateIds));
+    
     const { candidateIds, employerEmail, employerId, message } = req.body;
 
     // Validation
     if (!candidateIds || !Array.isArray(candidateIds) || candidateIds.length === 0) {
+      console.log('[EmailRouter] Validation failed - invalid candidateIds');
       return res.status(400).json({ error: 'Please provide at least one candidate ID' });
     }
 

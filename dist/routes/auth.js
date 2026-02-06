@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const auth_1 = require("../middleware/auth");
 const userService_1 = require("../services/userService");
+const database_1 = require("../config/database");
 const router = (0, express_1.Router)();
 router.get('/me', auth_1.authenticate, async (req, res) => {
     const user = req.user;
@@ -10,5 +11,262 @@ router.get('/me', auth_1.authenticate, async (req, res) => {
         return res.status(401).json({ error: 'Unauthorized' });
     const profile = await (0, userService_1.getUserProfile)(user.id);
     res.json({ user: profile });
+});
+// Register/Create employee account
+router.post('/register-employee', async (req, res) => {
+    try {
+        const { email, password, firstName, lastName, phone } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email and password are required' });
+        }
+        const supabase = (0, database_1.supabaseAdminClient)();
+        // Create user in Supabase with employee role
+        const { data, error } = await supabase.auth.admin.createUser({
+            email,
+            password,
+            email_confirm: true,
+            user_metadata: {
+                firstName,
+                lastName,
+                phone,
+                role: 'employee'
+            }
+        });
+        if (error) {
+            return res.status(400).json({ error: error.message });
+        }
+        // Return created user info
+        res.status(201).json({
+            message: 'Employee account created successfully',
+            user: {
+                id: data.user.id,
+                email: data.user.email,
+                role: 'employee'
+            }
+        });
+    }
+    catch (error) {
+        console.error('Error creating employee account:', error);
+        res.status(500).json({ error: 'Failed to create employee account' });
+    }
+});
+// Seed demo employee accounts
+router.post('/seed-demo-employees', async (req, res) => {
+    try {
+        const demoEmployees = [
+            {
+                email: 'employee1@falisha.com',
+                password: 'employee123',
+                firstName: 'Ahmed',
+                lastName: 'Khan',
+                phone: '+971501234567'
+            },
+            {
+                email: 'employee2@falisha.com',
+                password: 'employee123',
+                firstName: 'Fatima',
+                lastName: 'Ali',
+                phone: '+971502345678'
+            },
+            {
+                email: 'employee3@falisha.com',
+                password: 'employee123',
+                firstName: 'Mohammad',
+                lastName: 'Hassan',
+                phone: '+971503456789'
+            }
+        ];
+        const supabase = (0, database_1.supabaseAdminClient)();
+        const results = [];
+        for (const employee of demoEmployees) {
+            try {
+                const { data, error } = await supabase.auth.admin.createUser({
+                    email: employee.email,
+                    password: employee.password,
+                    email_confirm: true,
+                    user_metadata: {
+                        firstName: employee.firstName,
+                        lastName: employee.lastName,
+                        phone: employee.phone,
+                        role: 'employee'
+                    }
+                });
+                if (error) {
+                    results.push({
+                        email: employee.email,
+                        success: false,
+                        message: error.message
+                    });
+                }
+                else {
+                    results.push({
+                        email: employee.email,
+                        success: true,
+                        userId: data.user.id
+                    });
+                }
+            }
+            catch (err) {
+                results.push({
+                    email: employee.email,
+                    success: false,
+                    message: err.message
+                });
+            }
+        }
+        res.json({ message: 'Demo employees seeding complete', results });
+    }
+    catch (error) {
+        console.error('Error seeding demo employees:', error);
+        res.status(500).json({ error: 'Failed to seed demo employees' });
+    }
+});
+// Change employee password (admin only)
+router.post('/change-employee-password', auth_1.authenticate, async (req, res) => {
+    try {
+        const { employeeId, newPassword } = req.body;
+        if (!employeeId || !newPassword) {
+            return res.status(400).json({ error: 'Employee ID and new password are required' });
+        }
+        // Verify requester is admin
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json({ error: 'Only admins can change employee passwords' });
+        }
+        const supabase = (0, database_1.supabaseAdminClient)();
+        // Update user password via admin API
+        const { error } = await supabase.auth.admin.updateUserById(employeeId, {
+            password: newPassword
+        });
+        if (error) {
+            return res.status(400).json({ error: error.message });
+        }
+        res.json({
+            message: 'Employee password updated successfully'
+        });
+    }
+    catch (error) {
+        console.error('Error changing employee password:', error);
+        res.status(500).json({ error: 'Failed to change employee password' });
+    }
+});
+// Delete employee account (admin only)
+router.post('/delete-employee', auth_1.authenticate, async (req, res) => {
+    try {
+        const { employeeId } = req.body;
+        if (!employeeId) {
+            return res.status(400).json({ error: 'Employee ID is required' });
+        }
+        // Verify requester is admin
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json({ error: 'Only admins can delete employees' });
+        }
+        const supabase = (0, database_1.supabaseAdminClient)();
+        // Delete user via admin API
+        const { error } = await supabase.auth.admin.deleteUser(employeeId);
+        if (error) {
+            return res.status(400).json({ error: error.message });
+        }
+        res.json({
+            message: 'Employee account deleted successfully'
+        });
+    }
+    catch (error) {
+        console.error('Error deleting employee:', error);
+        res.status(500).json({ error: 'Failed to delete employee' });
+    }
+});
+// Get all employees (admin only)
+router.get('/employees', auth_1.authenticate, async (req, res) => {
+    try {
+        // Verify requester is admin
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json({ error: 'Only admins can view all employees' });
+        }
+        const supabase = (0, database_1.supabaseAdminClient)();
+        // Get all users with employee role
+        const { data: users, error } = await supabase.auth.admin.listUsers();
+        if (error) {
+            return res.status(400).json({ error: error.message });
+        }
+        // Filter to only employees
+        const employees = users.users
+            .filter((user) => user.user_metadata?.role === 'employee')
+            .map((user) => ({
+            id: user.id,
+            email: user.email,
+            firstName: user.user_metadata?.firstName || '',
+            lastName: user.user_metadata?.lastName || '',
+            phone: user.user_metadata?.phone || '',
+            createdAt: user.created_at
+        }));
+        res.json({
+            count: employees.length,
+            employees
+        });
+    }
+    catch (error) {
+        console.error('Error fetching employees:', error);
+        res.status(500).json({ error: 'Failed to fetch employees' });
+    }
+});
+// Seed/initialize admin user with proper role metadata
+router.post('/seed-admin', async (req, res) => {
+    try {
+        const adminEmail = 'admin@falisha.com';
+        const adminPassword = 'admin123';
+        const supabase = (0, database_1.supabaseAdminClient)();
+        // First, check if admin user already exists
+        const { data: existingUsers, error: listError } = await supabase.auth.admin.listUsers();
+        if (listError) {
+            return res.status(400).json({ error: listError.message });
+        }
+        const adminUser = existingUsers.users.find(u => u.email === adminEmail);
+        if (adminUser) {
+            // Update existing admin user with role metadata
+            const { error: updateError } = await supabase.auth.admin.updateUserById(adminUser.id, {
+                user_metadata: {
+                    ...adminUser.user_metadata,
+                    role: 'admin'
+                }
+            });
+            if (updateError) {
+                return res.status(400).json({ error: updateError.message });
+            }
+            return res.json({
+                message: 'Admin user updated with admin role',
+                user: {
+                    id: adminUser.id,
+                    email: adminUser.email,
+                    role: 'admin'
+                }
+            });
+        }
+        else {
+            // Create new admin user
+            const { data, error: createError } = await supabase.auth.admin.createUser({
+                email: adminEmail,
+                password: adminPassword,
+                email_confirm: true,
+                user_metadata: {
+                    role: 'admin'
+                }
+            });
+            if (createError) {
+                return res.status(400).json({ error: createError.message });
+            }
+            return res.status(201).json({
+                message: 'Admin account created successfully',
+                user: {
+                    id: data.user.id,
+                    email: data.user.email,
+                    role: 'admin'
+                }
+            });
+        }
+    }
+    catch (error) {
+        console.error('Error seeding admin user:', error);
+        res.status(500).json({ error: 'Failed to seed admin user' });
+    }
 });
 exports.default = router;

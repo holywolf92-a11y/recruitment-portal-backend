@@ -6,6 +6,9 @@ exports.listEmployers = listEmployers;
 exports.updateEmployer = updateEmployer;
 exports.deleteEmployer = deleteEmployer;
 const database_1 = require("../config/database");
+function isValidEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
 /**
  * Create a new employer
  */
@@ -24,8 +27,12 @@ async function createEmployer(data, userId) {
     if (existing) {
         throw new Error(`Employer with company name "${existing.company_name}" already exists`);
     }
+    if (data.email && !isValidEmail(data.email.trim())) {
+        throw new Error('Invalid employer email address');
+    }
     const employerData = {
         company_name: data.company_name.trim(),
+        email: data.email ? data.email.trim().toLowerCase() : null,
     };
     const { data: employer, error } = await db
         .from('employers')
@@ -100,9 +107,17 @@ async function updateEmployer(id, data, userId) {
             throw new Error(`Employer with company name "${existing.company_name}" already exists`);
         }
     }
+    if (data.email !== undefined) {
+        if (data.email && !isValidEmail(data.email.trim())) {
+            throw new Error('Invalid employer email address');
+        }
+    }
     const updateData = {};
     if (data.company_name !== undefined) {
         updateData.company_name = data.company_name.trim();
+    }
+    if (data.email !== undefined) {
+        updateData.email = data.email ? data.email.trim().toLowerCase() : null;
     }
     const { data: employer, error } = await db
         .from('employers')

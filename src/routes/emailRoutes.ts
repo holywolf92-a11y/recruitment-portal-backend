@@ -15,13 +15,26 @@ function slugifyName(name?: string): string {
  */
 emailRouter.post('/send-to-employer', async (req: Request, res: Response) => {
   try {
+    // Accept bodies that may arrive as strings (e.g., if any upstream middleware leaves raw text)
+    const parsedBody = (() => {
+      if (typeof req.body === 'string') {
+        try {
+          return JSON.parse(req.body);
+        } catch (err) {
+          console.warn('[EmailRouter] Failed to parse string body as JSON', err);
+          return {};
+        }
+      }
+      return req.body || {};
+    })();
+
     console.log('\n\n========== EMAIL ROUTE HANDLER ==========');
-    console.log('[EmailRouter] Full req.body:', JSON.stringify(req.body, null, 2));
-    console.log('[EmailRouter] req.body type:', typeof req.body);
-    console.log('[EmailRouter] req.body constructor:', req.body?.constructor?.name);
-    console.log('[EmailRouter] req.body keys:', Object.keys(req.body || {}));
+    console.log('[EmailRouter] Full req.body:', JSON.stringify(parsedBody, null, 2));
+    console.log('[EmailRouter] req.body type:', typeof parsedBody);
+    console.log('[EmailRouter] req.body constructor:', parsedBody?.constructor?.name);
+    console.log('[EmailRouter] req.body keys:', Object.keys(parsedBody || {}));
     
-    const { candidateIds, employerEmail, employerId, message } = req.body;
+    const { candidateIds, employerEmail, employerId, message } = parsedBody as any;
 
     console.log('[EmailRouter] After destructuring:');
     console.log('[EmailRouter]   candidateIds:', candidateIds);

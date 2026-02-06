@@ -39,6 +39,29 @@ try {
 
   // Handle preflight OPTIONS requests explicitly
   app.options('*', cors());
+
+  // Global request logger to debug body parsing
+  app.use((req, res, next) => {
+    console.log('[SERVER] Incoming request:', {
+      method: req.method,
+      path: req.path,
+      contentType: req.headers['content-type'],
+      contentLength: req.headers['content-length']
+    });
+    
+    // Log original send to see response
+    const originalSend = res.send;
+    res.send = function(data) {
+      console.log('[SERVER] Response:', {
+        path: req.path,
+        status: res.statusCode,
+        bodySize: typeof data === 'string' ? data.length : JSON.stringify(data).length
+      });
+      return originalSend.call(this, data);
+    };
+    
+    next();
+  });
   
   // Increase request timeout for file uploads (5 minutes)
   app.use((req, res, next) => {
@@ -57,12 +80,22 @@ try {
     if (req.headers['content-type']?.startsWith('multipart/form-data')) {
       return next();
     }
+    console.log('[SERVER] [ParseJSON] Request to:', req.path, 'Content-Type:', req.headers['content-type']);
     express.json({
       limit: '100mb',
       verify: (req: any, _res, buf) => {
         req.rawBody = buf.toString('utf8');
+        console.log('[SERVER] [ParseJSON] Parsed raw body:', req.rawBody.substring(0, 200));
       }
-    })(req, res, next);
+    })(req, res, (err) => {
+      if (err) {
+        console.log('[SERVER] [ParseJSON] Error parsing JSON:', err.message);
+        return res.status(400).json({ error: 'Invalid JSON' });
+      }
+      console.log('[SERVER] [ParseJSON] Successfully parsed, req.body keys:', Object.keys(req.body || {}));
+      console.log('[SERVER] [ParseJSON] req.body:', JSON.stringify(req.body));
+      next();
+    });
   });
   app.use((req, res, next) => {
     if (req.headers['content-type']?.startsWith('multipart/form-data')) {

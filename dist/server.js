@@ -38,9 +38,12 @@ try {
     }));
     // Handle preflight OPTIONS requests explicitly
     app.options('*', (0, cors_1.default)());
+    // Simple JSON/Form body parsing middleware - MUST come before routes
+    app.use(express_1.default.json({ limit: '100mb' }));
+    app.use(express_1.default.urlencoded({ extended: true, limit: '100mb' }));
+    app.use(express_1.default.text({ limit: '100mb' }));
     // Increase request timeout for file uploads (5 minutes)
     app.use((req, res, next) => {
-        // Set timeout to 5 minutes for file uploads
         req.setTimeout(300000, () => {
             if (!res.headersSent) {
                 res.status(408).json({ error: 'Request timeout' });
@@ -48,26 +51,6 @@ try {
         });
         next();
     });
-    // Increase body size limits for file uploads (base64-encoded PDFs, etc.)
-    // Skip body parsing for multipart/form-data (handled by multer)
-    app.use((req, res, next) => {
-        if (req.headers['content-type']?.startsWith('multipart/form-data')) {
-            return next();
-        }
-        express_1.default.json({
-            limit: '100mb',
-            verify: (req, _res, buf) => {
-                req.rawBody = buf.toString('utf8');
-            }
-        })(req, res, next);
-    });
-    app.use((req, res, next) => {
-        if (req.headers['content-type']?.startsWith('multipart/form-data')) {
-            return next();
-        }
-        express_1.default.urlencoded({ extended: true, limit: '100mb' })(req, res, next);
-    });
-    app.use(express_1.default.text({ limit: '100mb' }));
     app.get('/health', (_req, res) => res.json({ status: 'ok' }));
     app.get('/health/supabase', async (_req, res) => {
         try {

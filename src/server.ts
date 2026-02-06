@@ -40,32 +40,13 @@ try {
   // Handle preflight OPTIONS requests explicitly
   app.options('*', cors());
 
-  // Global request logger to debug body parsing
-  app.use((req, res, next) => {
-    console.log('[SERVER] Incoming request:', {
-      method: req.method,
-      path: req.path,
-      contentType: req.headers['content-type'],
-      contentLength: req.headers['content-length']
-    });
-    
-    // Log original send to see response
-    const originalSend = res.send;
-    res.send = function(data) {
-      console.log('[SERVER] Response:', {
-        path: req.path,
-        status: res.statusCode,
-        bodySize: typeof data === 'string' ? data.length : JSON.stringify(data).length
-      });
-      return originalSend.call(this, data);
-    };
-    
-    next();
-  });
-  
+  // Simple JSON/Form body parsing middleware - MUST come before routes
+  app.use(express.json({ limit: '100mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+  app.use(express.text({ limit: '100mb' }));
+
   // Increase request timeout for file uploads (5 minutes)
   app.use((req, res, next) => {
-    // Set timeout to 5 minutes for file uploads
     req.setTimeout(300000, () => {
       if (!res.headersSent) {
         res.status(408).json({ error: 'Request timeout' });
@@ -73,37 +54,6 @@ try {
     });
     next();
   });
-  
-  // Increase body size limits for file uploads (base64-encoded PDFs, etc.)
-  // Skip body parsing for multipart/form-data (handled by multer)
-  app.use((req, res, next) => {
-    if (req.headers['content-type']?.startsWith('multipart/form-data')) {
-      return next();
-    }
-    console.log('[SERVER] [ParseJSON] Request to:', req.path, 'Content-Type:', req.headers['content-type']);
-    express.json({
-      limit: '100mb',
-      verify: (req: any, _res, buf) => {
-        req.rawBody = buf.toString('utf8');
-        console.log('[SERVER] [ParseJSON] Parsed raw body:', req.rawBody.substring(0, 200));
-      }
-    })(req, res, (err) => {
-      if (err) {
-        console.log('[SERVER] [ParseJSON] Error parsing JSON:', err.message);
-        return res.status(400).json({ error: 'Invalid JSON' });
-      }
-      console.log('[SERVER] [ParseJSON] Successfully parsed, req.body keys:', Object.keys(req.body || {}));
-      console.log('[SERVER] [ParseJSON] req.body:', JSON.stringify(req.body));
-      next();
-    });
-  });
-  app.use((req, res, next) => {
-    if (req.headers['content-type']?.startsWith('multipart/form-data')) {
-      return next();
-    }
-    express.urlencoded({ extended: true, limit: '100mb' })(req, res, next);
-  });
-  app.use(express.text({ limit: '100mb' }));
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

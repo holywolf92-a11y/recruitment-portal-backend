@@ -83,7 +83,7 @@ emailRouter.post('/send-to-employer', async (req: Request, res: Response) => {
     const supabase = supabaseAdminClient();
     const { data: candidates, error: fetchError } = await supabase
       .from('candidates')
-      .select('id, name, position, date_of_birth, nationality, photo_url')
+      .select('id, name, position, date_of_birth, nationality')
       .in('id', candidateIds);
 
     if (fetchError) {

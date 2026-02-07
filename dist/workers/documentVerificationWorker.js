@@ -690,13 +690,17 @@ async function processDocumentVerification(job) {
                         // FIX 5: Enforce mandatory rejection_code
                         console.error(`[DocumentVerification] ERROR: Document ${documentId} reached rejected_mismatch without rejection_code!`);
                         // Use DocumentRejectionService to determine rejection code
+                        // NOTE: Skip expiry validation for passport page 2 (non-main pages)
+                        const isPassportPage2 = finalCategory === documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT &&
+                            (fileName?.toLowerCase().includes('page 2') ||
+                                fileName?.toLowerCase().includes('page2'));
                         const rejectionContext = {
                             documentCategory: finalCategory,
                             extractedIdentity: aiResult.extracted_identity,
                             candidateData: undefined, // Not available in this context
                             aiConfidence: aiResult.confidence,
                             ocrConfidence: aiResult.ocr_confidence,
-                            expiryDate: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
+                            expiryDate: isPassportPage2 ? undefined : (aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date),
                             errorStage: undefined,
                             mismatchFields,
                         };
@@ -812,13 +816,17 @@ async function processDocumentVerification(job) {
                 finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
                 reasonCode = documentCategories_1.REJECTION_REASON_CODES.LOW_CONFIDENCE;
                 // Use DocumentRejectionService for low confidence rejection
+                // NOTE: Skip expiry validation for passport page 2 (non-main pages)
+                const isPassportPage2 = finalCategory === documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT &&
+                    (fileName?.toLowerCase().includes('page 2') ||
+                        fileName?.toLowerCase().includes('page2'));
                 const rejectionContext = {
                     documentCategory: finalCategory,
                     extractedIdentity: aiResult.extracted_identity,
                     candidateData: undefined,
                     aiConfidence: aiResult.confidence,
                     ocrConfidence: aiResult.ocr_confidence,
-                    expiryDate: aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date,
+                    expiryDate: isPassportPage2 ? undefined : (aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date),
                     errorStage: undefined,
                 };
                 const rejectionResult = documentRejectionService_1.DocumentRejectionService.determineRejectionCode(rejectionContext);

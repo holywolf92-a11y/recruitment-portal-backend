@@ -17,6 +17,47 @@ const aiPhotoExtractionController_1 = require("../controllers/aiPhotoExtractionC
 const rateLimit_1 = require("../middleware/rateLimit");
 const logger = (0, errorHandling_1.createLogger)('DocumentsRouter');
 const router = (0, express_1.Router)();
+// Bulk processing status (reduces per-candidate polling)
+// POST /api/documents/processing-status
+// Body: { candidate_ids: string[] }
+router.post('/processing-status', async (req, res) => {
+    try {
+        const candidateIds = (req.body?.candidate_ids || req.body?.candidateIds);
+        if (!candidateIds || !Array.isArray(candidateIds) || candidateIds.length === 0) {
+            return res.status(400).json({ error: 'candidate_ids array is required and must not be empty' });
+        }
+        if (candidateIds.length > 500) {
+            return res.status(400).json({ error: 'Maximum 500 candidates allowed per request' });
+        }
+        const db = (0, database_1.supabaseAdminClient)();
+        // Only fetch minimal columns; aggregate on server.
+        const { data, error } = await db
+            .from('candidate_documents')
+            .select('candidate_id, verification_status')
+            .in('candidate_id', candidateIds)
+            .in('verification_status', ['pending_ai', 'pending']);
+        if (error)
+            throw error;
+        const pendingCounts = new Map();
+        for (const row of data || []) {
+            const id = row.candidate_id;
+            pendingCounts.set(id, (pendingCounts.get(id) || 0) + 1);
+        }
+        const statuses = {};
+        for (const id of candidateIds) {
+            const pendingCount = pendingCounts.get(id) || 0;
+            statuses[id] = {
+                isProcessing: pendingCount > 0,
+                pendingCount,
+            };
+        }
+        return res.json({ statuses });
+    }
+    catch (err) {
+        logger.error('Failed to fetch processing status', err);
+        return res.status(500).json({ error: 'Failed to fetch processing status' });
+    }
+});
 // Configure multer for memory storage
 const upload = (0, multer_1.default)({
     storage: multer_1.default.memoryStorage(),
@@ -197,19 +238,23 @@ router.post('/unmatched/:documentId/link', async (req, res) => {
         }
         // Move document to candidate folder
         const newPath = `candidates/${candidateId}/documents/${doc.document_type}/${doc.file_name}`;
+        // Prefer Storage-side move to avoid backend download -> re-upload egress.
+        // If move fails, keep original storage_path to avoid broken links.
+        let resolvedStoragePath = doc.storage_path;
         try {
-            // Copy file to new location
-            const { data: fileData } = await db.storage
-                .from('documents')
-                .download(doc.storage_path);
-            if (fileData) {
-                await db.storage
-                    .from('documents')
-                    .upload(newPath, fileData, { upsert: false });
+            const bucket = db.storage.from('documents');
+            if (typeof bucket.move === 'function') {
+                const { error: moveError } = await bucket.move(doc.storage_path, newPath);
+                if (moveError)
+                    throw moveError;
+                resolvedStoragePath = newPath;
+            }
+            else {
+                logger.warn('Supabase Storage move() not available; keeping original storage_path to avoid egress');
             }
         }
         catch (moveErr) {
-            logger.warn(`Could not move file, continuing with reference update`, moveErr);
+            logger.warn(`Could not move file, keeping original storage_path`, moveErr);
         }
         // Create candidate_documents entry
         const { error: linkError } = await db
@@ -218,7 +263,7 @@ router.post('/unmatched/:documentId/link', async (req, res) => {
             candidate_id: candidateId,
             document_type: doc.document_type,
             file_name: doc.file_name,
-            storage_path: newPath,
+            storage_path: resolvedStoragePath,
             source: doc.source,
             received_at: doc.received_at,
         });

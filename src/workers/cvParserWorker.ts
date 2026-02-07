@@ -752,8 +752,26 @@ export function startCvParserWorker() {
               }
             }
           } catch (splitErr: any) {
-            console.error(`[CVParser] Split-and-categorize failed for attachment ${attachmentId}:`, splitErr?.message || splitErr);
-            // Non-blocking: CV parsing should still succeed even if splitting fails
+            const msg = String(splitErr?.message || splitErr || '');
+            const statusMatch = msg.match(/split-and-categorize failed \((\d+)\)/i);
+            const statusCode = statusMatch ? Number(statusMatch[1]) : null;
+
+            // If the parser is temporarily unavailable (e.g. Railway cold-start / 502),
+            // fail the job so BullMQ can retry (attempts/backoff configured on enqueue).
+            const isTransient =
+              statusCode === 502 ||
+              statusCode === 503 ||
+              statusCode === 504 ||
+              /Application failed to respond/i.test(msg) ||
+              /ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(msg);
+
+            console.error(`[CVParser] Split-and-categorize failed for attachment ${attachmentId}:`, msg);
+
+            if (isTransient) {
+              throw new Error(`Transient split-and-categorize failure (will retry): ${msg}`);
+            }
+
+            // Non-blocking for non-transient failures: CV parsing should still succeed.
           }
         }
 

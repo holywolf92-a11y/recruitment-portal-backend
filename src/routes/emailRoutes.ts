@@ -1,8 +1,12 @@
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import { supabaseAdminClient } from '../config/database';
 import { emailService } from '../services/emailService';
 
 export const emailRouter = Router();
+
+// Allow text/plain bodies (some clients send text/plain for JSON).
+// This is scoped to the email routes to avoid impacting other middleware.
+emailRouter.use(express.text({ type: ['text/plain', 'text/*'], limit: '2mb' }));
 
 function slugifyName(name?: string): string {
   if (!name) return 'candidate';

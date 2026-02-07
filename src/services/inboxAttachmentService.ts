@@ -1,9 +1,11 @@
 import { supabaseAdminClient } from '../config/database';
+import { cvParsingQueue } from '../config/queue';
 import { AppError, ErrorType, NotFoundError, createLogger } from '../utils/errorHandling';
 import { hashFile } from '../utils/hashing';
 import { memCreateAttachment, memListAttachmentsForMessage, memDeleteAttachment } from './inboxMemory';
 import { DocumentClassifier } from './documentClassifier';
 import { enqueueDocumentLink } from '../queues/documentLinkQueue';
+import { ParsingJobsService } from './parsingJobsService';
 
 const logger = createLogger('InboxAttachmentService');
 
@@ -306,4 +308,55 @@ export async function getAttachmentSignedUrl(id: string, expiresInSeconds: numbe
     throw new AppError(`Failed to create signed URL: ${error.message}`, ErrorType.DATABASE, 500);
   }
   return data.signedUrl as string;
+}
+
+export async function enqueueCvParsingJobForAttachment(
+  attachmentId: string,
+  options?: { force?: boolean; expiresInSeconds?: number }
+) {
+  const parsingJobs = new ParsingJobsService();
+  let jobRow: { id: string } | null = null;
+
+  try {
+    const attachment = await getAttachmentById(attachmentId);
+    const fileHash = attachment?.sha256 ?? null;
+    const signedUrl = await getAttachmentSignedUrl(attachmentId, options?.expiresInSeconds ?? 3600);
+
+    jobRow = await parsingJobs.createJob({ attachmentId, fileHash });
+
+    await cvParsingQueue.add(
+      'parse',
+      {
+        jobId: jobRow.id,
+        attachmentId,
+        fileUrl: signedUrl,
+        fileHash,
+        force: options?.force ?? false,
+      },
+      {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
+        removeOnComplete: 200,
+        removeOnFail: 200,
+      }
+    );
+
+    logger.info('Enqueued CV parsing job', { attachmentId, jobId: jobRow.id });
+
+    return { jobId: jobRow.id, status: 'queued' as const };
+  } catch (err) {
+    if (jobRow?.id) {
+      try {
+        await parsingJobs.setStatus(jobRow.id, 'failed', {
+          result_json: {
+            error: 'QUEUE_ENQUEUE_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+      } catch {
+        // Best-effort only; original error still thrown.
+      }
+    }
+    throw err;
+  }
 }

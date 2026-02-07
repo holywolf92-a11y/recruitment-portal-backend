@@ -1,6 +1,6 @@
 import { createLogger } from '../utils/errorHandling';
 import { createInboxMessage } from '../services/inboxService';
-import { createAttachment } from '../services/inboxAttachmentService';
+import { createAttachment, enqueueCvParsingJobForAttachment } from '../services/inboxAttachmentService';
 import { listMessages, getMessage, getAttachment } from '../services/gmailService';
 
 const logger = createLogger('GmailPollingWorker');
@@ -87,7 +87,7 @@ async function pollGmail() {
             const buffer = await getAttachment(fullMessage.id, attachment.id);
             const storagePath = `gmail/${fullMessage.id}/${attachment.filename}`;
 
-            await createAttachment({
+            const createdAttachment = await createAttachment({
               inboxMessageId: inboxMessage.id,
               fileBuffer: buffer,
               fileName: attachment.filename,
@@ -104,6 +104,20 @@ async function pollGmail() {
               }
               throw err;
             });
+
+            if (createdAttachment?.id) {
+              try {
+                await enqueueCvParsingJobForAttachment(createdAttachment.id, {
+                  force: false,
+                  expiresInSeconds: 3600,
+                });
+              } catch (enqueueErr) {
+                logger.error('Failed to enqueue CV parsing job', enqueueErr, {
+                  attachmentId: createdAttachment.id,
+                  filename: attachment.filename,
+                });
+              }
+            }
 
             logger.debug('Attachment stored', { filename: attachment.filename, messageId: fullMessage.id });
           } catch (err) {

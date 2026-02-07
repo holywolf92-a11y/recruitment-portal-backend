@@ -13,6 +13,7 @@ import {
   listAttachmentsForMessage,
   getAttachmentById,
   getAttachmentSignedUrl,
+  enqueueCvParsingJobForAttachment,
 } from '../services/inboxAttachmentService';
 import { cvParsingQueue } from '../config/queue';
 import { ParsingJobsService } from '../services/parsingJobsService';
@@ -105,7 +106,16 @@ router.post(
       storagePath: storage_path,
       candidateId: candidate_id,
     });
-    res.status(201).json(attachment);
+    const shouldEnqueue = (attachment?.attachment_type ?? 'cv') === 'cv';
+    const jobInfo = shouldEnqueue
+      ? await enqueueCvParsingJobForAttachment(attachment.id, { force: false, expiresInSeconds: 3600 })
+      : null;
+
+    res.status(200).json({
+      attachment,
+      job_id: jobInfo?.jobId ?? null,
+      status: jobInfo?.status ?? null,
+    });
   })
 );
 

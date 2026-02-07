@@ -81,7 +81,8 @@ export async function quickApproveCandidateDocument(req: Request, res: Response)
         // Use existing progressiveDataCompletionService
         const { enrichCandidateData } = await import('../services/progressiveDataCompletionService');
         
-        // Determine source type based on document category
+        // Determine source type based on document category (for tracking in field_sources)
+        // With fallback chain, order doesn't matter - we only fill missing fields
         let documentSource: 'cv' | 'passport' | 'driving_license' | 'medical' | 'certificate' | 'other' = 'other';
         const category = updatedDocument.category?.toLowerCase();
         
@@ -90,9 +91,11 @@ export async function quickApproveCandidateDocument(req: Request, res: Response)
         } else if (category === 'passport') {
           documentSource = 'passport';
         } else if (category === 'cnic') {
-          documentSource = 'passport'; // CNIC uses passport source for nationality precedence
+          documentSource = 'passport'; // CNIC is identity document like passport
         } else if (category === 'driving_license') {
           documentSource = 'driving_license';
+                } else if (category === 'degree' || category === 'education' || category?.includes('university') || category?.includes('school')) {
+                  documentSource = 'certificate'; // Education docs as fallback for nationality
         } else if (category?.includes('medical')) {
           documentSource = 'medical';
         } else if (category?.includes('certif')) {

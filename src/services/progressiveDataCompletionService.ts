@@ -1,6 +1,9 @@
 /**
  * Progressive Candidate Data Completion Service
- * 
+ * 1. Only fill missing fields (NULL, empty string, undefined, or "Unknown")
+ * 2. Never overwrite existing values - simple fallback chain
+ *    - Nationality extraction order: CV → CNIC → Passport → Driving License → Education docs
+ *    - First source that has the field wins, no overrides
  * Core Principle: Any document can enrich a candidate, only fill missing fields, never overwrite.
  * Priority: Manual > Any Document (CV/Passport/License/Medical/Certificate)
  * 
@@ -161,40 +164,13 @@ export async function enrichCandidateData(
       continue;
     }
 
-    // Special precedence for nationality: CNIC/Passport should override CV
-    // CNIC and Passport are authoritative identity documents, CV may have incorrect nationality
-    if (field === 'nationality' && currentValue && typeof currentValue === 'string') {
-      const currentNationality = currentValue.trim().toLowerCase();
-      const extractedNationality = typeof extractedValue === 'string' ? extractedValue.trim().toLowerCase() : '';
+    // Simple fallback chain: only fill missing fields, never override
+    // Priority order: CV → CNIC → Passport → Driving License → Education documents
+    // This respects user's preference: check CV first, only fallback if not found
+    const isMissingOrUnknown = isMissing || 
+      (field === 'nationality' && currentValue === 'Unknown');
 
-      // Check if current nationality is from CV (less authoritative)
-      const isFromCV = currentSource?.source === 'cv';
-
-      // Check if new source is authoritative (CNIC, Passport, Driving License)
-      const isAuthoritativeSource = source === 'passport' ||
-        source === 'driving_license' ||
-        documentType === 'cnic' ||
-        documentType === 'passport' ||
-        documentType === 'driving_license';
-
-      // If current nationality is from CV and new source is authoritative, override
-      if (isFromCV && isAuthoritativeSource) {
-        console.log(`[ProgressiveCompletion] Overriding nationality from CV (${currentNationality}) with authoritative source ${source}/${documentType} nationality (${extractedNationality})`);
-        // Continue to update below (bypass the isMissing check)
-      } else if (!isMissing && !isFromCV) {
-        // Field exists and not from CV, don't overwrite (unless manual)
-        skipped.push(field);
-        continue;
-      }
-    }
-
-    // Only update if field is missing OR nationality override case above
-    const shouldUpdate = isMissing ||
-      (field === 'nationality' &&
-        currentSource?.source === 'cv' &&
-        (source === 'passport' || source === 'driving_license' || documentType === 'cnic' || documentType === 'passport' || documentType === 'driving_license'));
-
-    if (shouldUpdate) {
+    if (isMissingOrUnknown) {
       // Normalize special fields
       let normalizedValue = extractedValue;
 

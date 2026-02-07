@@ -46,6 +46,18 @@ function slugifyName(name) {
         return 'candidate';
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'candidate';
 }
+function resolveFrontendUrl() {
+    const defaultFrontendUrl = 'https://falishamanpower.up.railway.app';
+    let frontendUrl = (process.env.FRONTEND_URL || '').trim() || defaultFrontendUrl;
+    // Normalize trailing slash to avoid double slashes in templates.
+    frontendUrl = frontendUrl.replace(/\/$/, '');
+    // Auto-correct legacy hosts if the env var wasn't updated.
+    if (frontendUrl.includes('recruitment-portal-frontend-production.up.railway.app') ||
+        frontendUrl.includes('exquisite-surprise-production.up.railway.app')) {
+        return defaultFrontendUrl;
+    }
+    return frontendUrl;
+}
 /**
  * Test Brevo configuration
  * POST /api/email/test-brevo
@@ -210,7 +222,7 @@ exports.emailRouter.post('/send-to-employer', async (req, res) => {
             }
         });
         // Build candidate data for email
-        const frontendUrl = process.env.FRONTEND_URL || 'https://exquisite-surprise-production.up.railway.app';
+        const frontendUrl = resolveFrontendUrl();
         const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
         const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
             ? backendBaseUrl.replace(/\/$/, '')

@@ -74,6 +74,7 @@ router.delete('/attachments/:attachmentId', (0, errorHandling_1.asyncHandler)(as
 // Trigger parsing job for an attachment
 router.post('/attachments/:attachmentId/process', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const { attachmentId } = req.params;
+    const force = String(req.query?.force ?? '').toLowerCase() === 'true' || String(req.query?.force ?? '') === '1';
     console.log(`[AttachmentProcess] Starting for attachmentId=${attachmentId}`);
     const parsingJobs = new parsingJobsService_1.ParsingJobsService();
     let jobRow = null;
@@ -85,8 +86,8 @@ router.post('/attachments/:attachmentId/process', (0, errorHandling_1.asyncHandl
         const signedUrl = await (0, inboxAttachmentService_1.getAttachmentSignedUrl)(attachmentId, 300);
         console.log(`[AttachmentProcess] Got signed URL, creating job...`);
         const fileHash = attachment?.sha256 ?? null;
-        // 2) Idempotency: if same attachment+hash already extracted, reuse job
-        if (fileHash) {
+        // 2) Idempotency: if same attachment+hash already extracted, reuse job (unless forced)
+        if (!force && fileHash) {
             console.log(`[AttachmentProcess] Checking for existing job with hash...`);
             const existing = await parsingJobs.findLatestExtractedForAttachment(attachmentId, fileHash);
             if (existing) {
@@ -106,6 +107,7 @@ router.post('/attachments/:attachmentId/process', (0, errorHandling_1.asyncHandl
             attachmentId,
             fileUrl: signedUrl,
             fileHash,
+            force,
         }, {
             attempts: 3,
             backoff: { type: 'exponential', delay: 2000 },

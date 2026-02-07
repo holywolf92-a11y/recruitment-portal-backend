@@ -304,11 +304,12 @@ export function startCvParserWorker() {
   const worker = new Worker(
     'cv-parsing',
     async (job: Job) => {
-      const { jobId, attachmentId, fileUrl, fileHash } = job.data as {
+      const { jobId, attachmentId, fileUrl, fileHash, force } = job.data as {
         jobId: string;
         attachmentId: string;
         fileUrl: string;
         fileHash?: string | null;
+        force?: boolean;
       };
 
       await parsingJobs.setStatus(jobId, 'processing', {
@@ -561,6 +562,24 @@ export function startCvParserWorker() {
           try {
             console.log(`[CVParser] PDF detected for attachment ${attachmentId}. Running split-and-categorize for candidate ${newCandidate.id}...`);
 
+            // Avoid creating duplicate split documents on reprocessing unless explicitly forced.
+            let shouldSkipSplit = false;
+            if (!force) {
+              const { data: existingSplitDocs, error: existingErr } = await db
+                .from('candidate_documents')
+                .select('id')
+                .eq('inbox_attachment_id', attachmentId)
+                .limit(1);
+              if (!existingErr && existingSplitDocs && existingSplitDocs.length > 0) {
+                console.log(`[CVParser] Split documents already exist for attachment ${attachmentId}; skipping split-and-categorize (use force=1 to override).`);
+                shouldSkipSplit = true;
+              }
+            }
+
+            if (shouldSkipSplit) {
+              // Skip split doc creation to avoid duplicates.
+            } else {
+
             // Preserve original PDF for audit/reprocessing
             const uploadId = randomUUID();
             const originalPath = await preserveOriginalPdf(fileBytes, uploadId, mimeType);
@@ -750,6 +769,7 @@ export function startCvParserWorker() {
               } catch (oneErr: any) {
                 console.error(`[CVParser] Error processing split doc:`, oneErr?.message || oneErr);
               }
+            }
             }
           } catch (splitErr: any) {
             const msg = String(splitErr?.message || splitErr || '');

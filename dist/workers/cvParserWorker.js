@@ -316,7 +316,7 @@ function startCvParserWorker() {
         return Math.max(1, Math.round(diff));
     }
     const worker = new bullmq_1.Worker('cv-parsing', async (job) => {
-        const { jobId, attachmentId, fileUrl, fileHash } = job.data;
+        const { jobId, attachmentId, fileUrl, fileHash, force } = job.data;
         await parsingJobs.setStatus(jobId, 'processing', {
             started_at: new Date().toISOString(),
             attempts: (job.attemptsMade ?? 0) + 1,
@@ -532,173 +532,191 @@ function startCvParserWorker() {
             if (newCandidate?.id && mimeType === 'application/pdf') {
                 try {
                     console.log(`[CVParser] PDF detected for attachment ${attachmentId}. Running split-and-categorize for candidate ${newCandidate.id}...`);
-                    // Preserve original PDF for audit/reprocessing
-                    const uploadId = (0, crypto_2.randomUUID)();
-                    const originalPath = await (0, splitUploadService_1.preserveOriginalPdf)(fileBytes, uploadId, mimeType);
-                    console.log(`[CVParser] Original PDF preserved at: ${originalPath}`);
-                    const splitResult = await (0, splitUploadService_1.callSplitAndCategorize)(fileBase64, fileName, mimeType, undefined, true);
-                    const docs = splitResult?.documents || [];
-                    console.log(`[CVParser] Split returned ${docs.length} document(s) (engine=${splitResult.engine_used})`);
-                    // Only create records when we have at least 1 doc (normally always true)
-                    for (const d of docs) {
-                        try {
-                            const folder = (0, splitUploadService_1.docTypeToFolder)(d.doc_type);
-                            const pdfBuffer = Buffer.from(d.pdf_base64, 'base64');
-                            const docTypeLower = (d.doc_type || '').toLowerCase();
-                            // Special handling: if parser produced a PHOTOS PDF section, try hybrid extraction
-                            // from that section instead of scanning the whole CV.
-                            if ((docTypeLower === 'photo' || docTypeLower === 'photos') && d.is_image !== true) {
-                                try {
-                                    console.log(`[CVParser] Photos PDF detected for candidate ${newCandidate.id}. Attempting hybrid extraction from photos section...`);
-                                    const extractionResult = await (0, hybridPhotoExtractionService_1.extractProfilePhotoHybrid)(newCandidate.id, attachmentId, pdfBuffer);
-                                    if (extractionResult.success && extractionResult.photoBuffer) {
-                                        const uploaded = await (0, hybridPhotoExtractionService_1.uploadExtractedPhotoToCandidatePhotos)(newCandidate.id, attachmentId, extractionResult.photoBuffer);
-                                        console.log(`[CVParser] ✅ Hybrid photos-section extraction succeeded (method=${extractionResult.method}). Skipping split_photos document creation.`, {
+                    // Avoid creating duplicate split documents on reprocessing unless explicitly forced.
+                    let shouldSkipSplit = false;
+                    if (!force) {
+                        const { data: existingSplitDocs, error: existingErr } = await db
+                            .from('candidate_documents')
+                            .select('id')
+                            .eq('inbox_attachment_id', attachmentId)
+                            .limit(1);
+                        if (!existingErr && existingSplitDocs && existingSplitDocs.length > 0) {
+                            console.log(`[CVParser] Split documents already exist for attachment ${attachmentId}; skipping split-and-categorize (use force=1 to override).`);
+                            shouldSkipSplit = true;
+                        }
+                    }
+                    if (shouldSkipSplit) {
+                        // Skip split doc creation to avoid duplicates.
+                    }
+                    else {
+                        // Preserve original PDF for audit/reprocessing
+                        const uploadId = (0, crypto_2.randomUUID)();
+                        const originalPath = await (0, splitUploadService_1.preserveOriginalPdf)(fileBytes, uploadId, mimeType);
+                        console.log(`[CVParser] Original PDF preserved at: ${originalPath}`);
+                        const splitResult = await (0, splitUploadService_1.callSplitAndCategorize)(fileBase64, fileName, mimeType, undefined, true);
+                        const docs = splitResult?.documents || [];
+                        console.log(`[CVParser] Split returned ${docs.length} document(s) (engine=${splitResult.engine_used})`);
+                        // Only create records when we have at least 1 doc (normally always true)
+                        for (const d of docs) {
+                            try {
+                                const folder = (0, splitUploadService_1.docTypeToFolder)(d.doc_type);
+                                const pdfBuffer = Buffer.from(d.pdf_base64, 'base64');
+                                const docTypeLower = (d.doc_type || '').toLowerCase();
+                                // Special handling: if parser produced a PHOTOS PDF section, try hybrid extraction
+                                // from that section instead of scanning the whole CV.
+                                if ((docTypeLower === 'photo' || docTypeLower === 'photos') && d.is_image !== true) {
+                                    try {
+                                        console.log(`[CVParser] Photos PDF detected for candidate ${newCandidate.id}. Attempting hybrid extraction from photos section...`);
+                                        const extractionResult = await (0, hybridPhotoExtractionService_1.extractProfilePhotoHybrid)(newCandidate.id, attachmentId, pdfBuffer);
+                                        if (extractionResult.success && extractionResult.photoBuffer) {
+                                            const uploaded = await (0, hybridPhotoExtractionService_1.uploadExtractedPhotoToCandidatePhotos)(newCandidate.id, attachmentId, extractionResult.photoBuffer);
+                                            console.log(`[CVParser] ✅ Hybrid photos-section extraction succeeded (method=${extractionResult.method}). Skipping split_photos document creation.`, {
+                                                candidateId: newCandidate.id,
+                                                attachmentId,
+                                                storagePath: uploaded.storagePath,
+                                            });
+                                            continue;
+                                        }
+                                        console.log(`[CVParser] Hybrid photos-section extraction did not produce a photo. Continuing with normal split document creation.`, {
                                             candidateId: newCandidate.id,
                                             attachmentId,
-                                            storagePath: uploaded.storagePath,
                                         });
-                                        continue;
                                     }
-                                    console.log(`[CVParser] Hybrid photos-section extraction did not produce a photo. Continuing with normal split document creation.`, {
-                                        candidateId: newCandidate.id,
-                                        attachmentId,
-                                    });
+                                    catch (hyErr) {
+                                        console.warn(`[CVParser] Hybrid photos-section extraction error; continuing with normal split document creation:`, hyErr?.message || hyErr);
+                                    }
                                 }
-                                catch (hyErr) {
-                                    console.warn(`[CVParser] Hybrid photos-section extraction error; continuing with normal split document creation:`, hyErr?.message || hyErr);
-                                }
-                            }
-                            // Use shared utility to handle image detection, profile photo saving, and storage upload
-                            let processed;
-                            try {
-                                processed = await (0, splitDocumentProcessor_1.processSplitDocument)(d, newCandidate.id, uploadId, folder);
-                            }
-                            catch (processErr) {
-                                console.error(`[CVParser] Failed to process split doc ${d.doc_type}:`, processErr.message);
-                                continue;
-                            }
-                            // Map parser doc_type to candidate_documents category
-                            const categoryMap = {
-                                cv_resume: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
-                                passport: documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT,
-                                national_id: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
-                                cnic: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
-                                driving_license: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
-                                police_character_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
-                                police_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
-                                educational_documents: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                educational_document: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                degree: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                diploma: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                transcript: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                experience_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
-                                experience_certificates: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
-                                employment_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
-                                navttc_report: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
-                                navttc_reports: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
-                                navttc: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
-                                medical_reports: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
-                                medical_certificate: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
-                                certificates: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
-                                certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
-                                professional_certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
-                                contracts: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
-                                contract: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
-                                photos: documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS,
-                                other_documents: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
-                            };
-                            const category = categoryMap[d.doc_type] || documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
-                            // Map parser doc_type to DB constraint document_type
-                            const docTypeMap = {
-                                passport: 'passport',
-                                cnic: 'cnic',
-                                national_id: 'cnic',
-                                police_character_certificate: 'police_character_certificate',
-                                police_certificate: 'police_character_certificate',
-                                educational_documents: 'degree',
-                                educational_document: 'degree',
-                                degree: 'degree',
-                                diploma: 'degree',
-                                transcript: 'degree',
-                                experience_certificate: 'certificate',
-                                experience_certificates: 'certificate',
-                                employment_certificate: 'certificate',
-                                navttc_report: 'certificate',
-                                navttc_reports: 'certificate',
-                                navttc: 'certificate',
-                                cv_resume: 'other',
-                                medical_reports: 'medical',
-                                medical_certificate: 'medical',
-                                certificate: 'certificate',
-                                certificates: 'certificate',
-                                professional_certificate: 'certificate',
-                                driving_license: 'other',
-                                contracts: 'other',
-                                contract: 'other',
-                                photos: 'other',
-                                other_documents: 'other',
-                            };
-                            const dbDocumentType = docTypeMap[d.doc_type] || 'other';
-                            // For extracted profile photos, set verification_status to 'verified' to skip approval workflow
-                            const verificationStatus = processed.shouldAutoVerify
-                                ? documentCategories_1.VERIFICATION_STATUS.VERIFIED
-                                : documentCategories_1.VERIFICATION_STATUS.PENDING_AI;
-                            const splitDocData = {
-                                candidate_id: newCandidate.id,
-                                inbox_attachment_id: attachmentId,
-                                document_type: dbDocumentType,
-                                category,
-                                detected_category: category,
-                                confidence: d.confidence ?? null,
-                                storage_bucket: STORAGE_BUCKET,
-                                storage_path: processed.storagePath,
-                                file_name: (0, documentNaming_1.generateDescriptiveFilename)({
-                                    doc_type: d.doc_type,
-                                    pages: d.pages,
-                                    split_strategy: d.split_strategy,
-                                    page_number: d.pages && d.pages.length === 1 ? d.pages[0] : undefined,
-                                }, newCandidate.name, Date.now()),
-                                mime_type: processed.mimeType, // Use detected MIME type (image/jpeg for photos)
-                                source: 'web',
-                                status: 'received',
-                                verification_status: verificationStatus, // Auto-verify extracted photos
-                                received_at: new Date().toISOString(),
-                            };
-                            const { data: createdDoc, error: insErr } = await db
-                                .from('candidate_documents')
-                                .insert(splitDocData)
-                                .select()
-                                .single();
-                            if (insErr || !createdDoc) {
-                                console.error(`[CVParser] Failed to create candidate_document for ${d.doc_type}:`, insErr);
-                                await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
-                                continue;
-                            }
-                            // Enqueue verification job (skip for auto-verified photos)
-                            if (verificationStatus !== documentCategories_1.VERIFICATION_STATUS.VERIFIED) {
-                                const splitRequestId = (0, documentVerificationLogService_1.generateRequestId)();
+                                // Use shared utility to handle image detection, profile photo saving, and storage upload
+                                let processed;
                                 try {
-                                    await queue_1.documentVerificationQueue.add('verify-document', {
-                                        requestId: splitRequestId,
-                                        documentId: createdDoc.id,
-                                        candidateId: newCandidate.id,
-                                        storageBucket: STORAGE_BUCKET,
-                                        storagePath: processed.storagePath,
-                                        fileName: createdDoc.file_name,
-                                        mimeType: processed.mimeType,
-                                    }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
+                                    processed = await (0, splitDocumentProcessor_1.processSplitDocument)(d, newCandidate.id, uploadId, folder);
                                 }
-                                catch (qErr) {
-                                    console.error(`[CVParser] Failed to enqueue verification for split doc ${createdDoc.id}:`, qErr?.message || qErr);
+                                catch (processErr) {
+                                    console.error(`[CVParser] Failed to process split doc ${d.doc_type}:`, processErr.message);
+                                    continue;
+                                }
+                                // Map parser doc_type to candidate_documents category
+                                const categoryMap = {
+                                    cv_resume: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+                                    passport: documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT,
+                                    national_id: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                    cnic: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                    driving_license: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                    police_character_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+                                    police_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+                                    educational_documents: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                    educational_document: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                    degree: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                    diploma: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                    transcript: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                    experience_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+                                    experience_certificates: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+                                    employment_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+                                    navttc_report: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+                                    navttc_reports: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+                                    navttc: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+                                    medical_reports: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+                                    medical_certificate: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+                                    certificates: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+                                    certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+                                    professional_certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+                                    contracts: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
+                                    contract: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
+                                    photos: documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS,
+                                    other_documents: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                };
+                                const category = categoryMap[d.doc_type] || documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
+                                // Map parser doc_type to DB constraint document_type
+                                const docTypeMap = {
+                                    passport: 'passport',
+                                    cnic: 'cnic',
+                                    national_id: 'cnic',
+                                    police_character_certificate: 'police_character_certificate',
+                                    police_certificate: 'police_character_certificate',
+                                    educational_documents: 'degree',
+                                    educational_document: 'degree',
+                                    degree: 'degree',
+                                    diploma: 'degree',
+                                    transcript: 'degree',
+                                    experience_certificate: 'certificate',
+                                    experience_certificates: 'certificate',
+                                    employment_certificate: 'certificate',
+                                    navttc_report: 'certificate',
+                                    navttc_reports: 'certificate',
+                                    navttc: 'certificate',
+                                    cv_resume: 'other',
+                                    medical_reports: 'medical',
+                                    medical_certificate: 'medical',
+                                    certificate: 'certificate',
+                                    certificates: 'certificate',
+                                    professional_certificate: 'certificate',
+                                    driving_license: 'other',
+                                    contracts: 'other',
+                                    contract: 'other',
+                                    photos: 'other',
+                                    other_documents: 'other',
+                                };
+                                const dbDocumentType = docTypeMap[d.doc_type] || 'other';
+                                // For extracted profile photos, set verification_status to 'verified' to skip approval workflow
+                                const verificationStatus = processed.shouldAutoVerify
+                                    ? documentCategories_1.VERIFICATION_STATUS.VERIFIED
+                                    : documentCategories_1.VERIFICATION_STATUS.PENDING_AI;
+                                const splitDocData = {
+                                    candidate_id: newCandidate.id,
+                                    inbox_attachment_id: attachmentId,
+                                    document_type: dbDocumentType,
+                                    category,
+                                    detected_category: category,
+                                    confidence: d.confidence ?? null,
+                                    storage_bucket: STORAGE_BUCKET,
+                                    storage_path: processed.storagePath,
+                                    file_name: (0, documentNaming_1.generateDescriptiveFilename)({
+                                        doc_type: d.doc_type,
+                                        pages: d.pages,
+                                        split_strategy: d.split_strategy,
+                                        page_number: d.pages && d.pages.length === 1 ? d.pages[0] : undefined,
+                                    }, newCandidate.name, Date.now()),
+                                    mime_type: processed.mimeType, // Use detected MIME type (image/jpeg for photos)
+                                    source: 'web',
+                                    status: 'received',
+                                    verification_status: verificationStatus, // Auto-verify extracted photos
+                                    received_at: new Date().toISOString(),
+                                };
+                                const { data: createdDoc, error: insErr } = await db
+                                    .from('candidate_documents')
+                                    .insert(splitDocData)
+                                    .select()
+                                    .single();
+                                if (insErr || !createdDoc) {
+                                    console.error(`[CVParser] Failed to create candidate_document for ${d.doc_type}:`, insErr);
+                                    await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
+                                    continue;
+                                }
+                                // Enqueue verification job (skip for auto-verified photos)
+                                if (verificationStatus !== documentCategories_1.VERIFICATION_STATUS.VERIFIED) {
+                                    const splitRequestId = (0, documentVerificationLogService_1.generateRequestId)();
+                                    try {
+                                        await queue_1.documentVerificationQueue.add('verify-document', {
+                                            requestId: splitRequestId,
+                                            documentId: createdDoc.id,
+                                            candidateId: newCandidate.id,
+                                            storageBucket: STORAGE_BUCKET,
+                                            storagePath: processed.storagePath,
+                                            fileName: createdDoc.file_name,
+                                            mimeType: processed.mimeType,
+                                        }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
+                                    }
+                                    catch (qErr) {
+                                        console.error(`[CVParser] Failed to enqueue verification for split doc ${createdDoc.id}:`, qErr?.message || qErr);
+                                    }
+                                }
+                                else {
+                                    console.log(`[CVParser] ⏭️  Skipped AI verification for auto-verified photo ${createdDoc.id}`);
                                 }
                             }
-                            else {
-                                console.log(`[CVParser] ⏭️  Skipped AI verification for auto-verified photo ${createdDoc.id}`);
+                            catch (oneErr) {
+                                console.error(`[CVParser] Error processing split doc:`, oneErr?.message || oneErr);
                             }
-                        }
-                        catch (oneErr) {
-                            console.error(`[CVParser] Error processing split doc:`, oneErr?.message || oneErr);
                         }
                     }
                 }

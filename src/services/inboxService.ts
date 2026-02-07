@@ -55,6 +55,11 @@ export async function createInboxMessage(input: InboxMessageCreateInput) {
     }
     return data;
   } catch (err) {
+    // Do not fall back to memory for expected/semantic errors (e.g. duplicates).
+    // Callers rely on these errors to safely skip re-processing.
+    if (err instanceof AppError) {
+      throw err;
+    }
     logger.warn('Falling back to memory createInboxMessage due to DB error');
     return memCreateMessage({
       source: input.source,

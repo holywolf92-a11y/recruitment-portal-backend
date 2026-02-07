@@ -205,4 +205,17 @@ router.post(
   })
 );
 
+// Retry parsing job for an attachment (re-enqueue)
+router.post(
+  '/attachments/:attachmentId/retry',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { attachmentId } = req.params;
+    const jobInfo = await enqueueCvParsingJobForAttachment(attachmentId, {
+      force: true,
+      expiresInSeconds: 3600,
+    });
+    res.status(202).json({ job_id: jobInfo.jobId, status: jobInfo.status });
+  })
+);
+
 export default router;

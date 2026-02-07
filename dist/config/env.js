@@ -40,6 +40,7 @@ function validateEnv() {
         'BREVO_SMTP_PASSWORD',
         'BREVO_FROM_EMAIL',
         'BREVO_FROM_NAME',
+        'BREVO_API_KEY',
         'WHATSAPP_ACCESS_TOKEN',
         'WHATSAPP_PHONE_NUMBER_ID',
         'WHATSAPP_APP_SECRET',

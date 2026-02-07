@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.emailService = void 0;
+const node_fetch_1 = __importDefault(require("node-fetch"));
 const nodemailer_1 = __importDefault(require("nodemailer"));
 class EmailService {
     constructor() {
@@ -13,6 +14,10 @@ class EmailService {
     initializeTransporter() {
         // Brevo (formerly Sendinblue) SMTP configuration
         const { BREVO_SMTP_HOST, BREVO_SMTP_PORT, BREVO_SMTP_USER, BREVO_SMTP_PASSWORD, BREVO_FROM_EMAIL, BREVO_FROM_NAME } = process.env;
+        if (process.env.BREVO_API_KEY) {
+            console.log('[EmailService] BREVO_API_KEY detected. SMTP transporter will be skipped.');
+            return;
+        }
         if (!BREVO_SMTP_USER || !BREVO_SMTP_PASSWORD) {
             console.warn('[EmailService] Brevo SMTP credentials not configured. Email sending will be disabled.');
             return;
@@ -29,13 +34,54 @@ class EmailService {
         console.log('[EmailService] Brevo SMTP transporter initialized');
     }
     async sendEmail(options) {
-        if (!this.transporter) {
-            console.error('[EmailService] Cannot send email: transporter not initialized');
-            throw new Error('Email service not configured. Please set Brevo SMTP credentials.');
-        }
         const { BREVO_FROM_EMAIL, BREVO_FROM_NAME } = process.env;
         const fromAddress = BREVO_FROM_EMAIL || 'noreply@recruitment.com';
         const fromName = BREVO_FROM_NAME || 'Falisha Recruitment';
+        if (process.env.BREVO_API_KEY) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            try {
+                const response = await (0, node_fetch_1.default)('https://api.brevo.com/v3/smtp/email', {
+                    method: 'POST',
+                    headers: {
+                        accept: 'application/json',
+                        'content-type': 'application/json',
+                        'api-key': process.env.BREVO_API_KEY,
+                    },
+                    body: JSON.stringify({
+                        sender: {
+                            name: fromName,
+                            email: fromAddress,
+                        },
+                        to: [{ email: options.to }],
+                        subject: options.subject,
+                        htmlContent: options.html,
+                        textContent: options.text,
+                    }),
+                    signal: controller.signal,
+                });
+                if (!response.ok) {
+                    const errorText = await response.text().catch(() => '');
+                    throw new Error(`Brevo API error: ${response.status} ${errorText}`);
+                }
+                console.log('[EmailService] Email sent successfully via Brevo API');
+                return true;
+            }
+            catch (error) {
+                const message = error?.name === 'AbortError'
+                    ? 'Brevo API request timed out'
+                    : error?.message || 'Unknown Brevo API error';
+                console.error('[EmailService] Failed to send email via Brevo API:', message);
+                throw new Error(`Failed to send email: ${message}`);
+            }
+            finally {
+                clearTimeout(timeoutId);
+            }
+        }
+        if (!this.transporter) {
+            console.error('[EmailService] Cannot send email: transporter not initialized');
+            throw new Error('Email service not configured. Please set Brevo SMTP credentials or BREVO_API_KEY.');
+        }
         try {
             const info = await this.transporter.sendMail({
                 from: `"${fromName}" <${fromAddress}>`,

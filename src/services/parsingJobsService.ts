@@ -77,4 +77,16 @@ export class ParsingJobsService {
     if (error) throw error;
     return Array.isArray(data) && data.length ? data[0] : null;
   }
+
+  async findLatestForAttachment(attachmentId: string) {
+    const db = supabaseAdminClient();
+    const { data, error } = await db
+      .from('parsing_jobs')
+      .select('*')
+      .eq('inbox_attachment_id', attachmentId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (error) throw error;
+    return Array.isArray(data) && data.length ? data[0] : null;
+  }
 }

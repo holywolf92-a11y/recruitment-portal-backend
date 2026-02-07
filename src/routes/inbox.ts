@@ -143,6 +143,16 @@ router.post(
   '/attachments/:attachmentId/process',
   asyncHandler(async (req: Request, res: Response) => {
     const { attachmentId } = req.params;
+    
+    // Validate attachmentId is a valid UUID
+    if (!attachmentId || attachmentId === 'undefined' || attachmentId === 'null') {
+      console.error(`[AttachmentProcess] Invalid attachmentId received: ${attachmentId}`);
+      return res.status(400).json({ 
+        error: 'Invalid attachment ID',
+        message: 'Attachment ID must be a valid UUID' 
+      });
+    }
+    
     const force = String((req.query as any)?.force ?? '').toLowerCase() === 'true' || String((req.query as any)?.force ?? '') === '1';
     console.log(`[AttachmentProcess] Starting for attachmentId=${attachmentId}`);
     const parsingJobs = new ParsingJobsService();

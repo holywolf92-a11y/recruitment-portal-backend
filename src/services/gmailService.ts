@@ -57,9 +57,56 @@ export interface GmailMessage {
   from?: string;
   to?: string;
   subject?: string;
+  messageIdHeader?: string;
   internalDate?: string;
   attachmentCount?: number;
   attachments?: { id: string; filename: string; mimeType: string; size: number }[];
+  bodyText?: string;
+}
+
+function decodeGmailBody(data?: string): string {
+  if (!data) return '';
+  // Gmail uses base64url (RFC 4648 §5)
+  const normalized = data.replace(/-/g, '+').replace(/_/g, '/');
+  const padLength = (4 - (normalized.length % 4)) % 4;
+  const padded = normalized + '='.repeat(padLength);
+  return Buffer.from(padded, 'base64').toString('utf8');
+}
+
+function extractPlainTextFromPayload(payload: any): string {
+  if (!payload) return '';
+
+  // Prefer text/plain parts; fallback to payload.body.data.
+  const parts: any[] = Array.isArray(payload.parts) ? payload.parts : [];
+
+  const walk = (p: any): string[] => {
+    if (!p) return [];
+    const mt = String(p.mimeType || '').toLowerCase();
+    const filename = String(p.filename || '');
+
+    // Skip attachments
+    if (filename && filename.trim().length > 0) return [];
+
+    const out: string[] = [];
+    if (mt === 'text/plain' && p.body?.data) {
+      out.push(decodeGmailBody(p.body.data));
+    }
+
+    const childParts: any[] = Array.isArray(p.parts) ? p.parts : [];
+    for (const c of childParts) out.push(...walk(c));
+    return out;
+  };
+
+  const plainParts = walk(payload).map((t) => t.trim()).filter(Boolean);
+  if (plainParts.length > 0) return plainParts.join('\n\n');
+
+  if (payload.body?.data) return decodeGmailBody(payload.body.data).trim();
+  return '';
+}
+
+function base64UrlEncode(input: string | Buffer): string {
+  const b64 = (Buffer.isBuffer(input) ? input : Buffer.from(input, 'utf8')).toString('base64');
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
 export async function getMessage(messageId: string): Promise<GmailMessage> {
@@ -77,6 +124,8 @@ export async function getMessage(messageId: string): Promise<GmailMessage> {
     const headers = msg.payload?.headers ?? [];
     const getHeader = (name: string) => headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? undefined;
 
+    const bodyText = extractPlainTextFromPayload(msg.payload);
+
     const attachments = msg.payload?.parts
       ?.filter((part) => part.filename)
       .map((part) => ({
@@ -92,13 +141,58 @@ export async function getMessage(messageId: string): Promise<GmailMessage> {
       from: getHeader('from'),
       to: getHeader('to'),
       subject: getHeader('subject'),
+      messageIdHeader: getHeader('Message-ID'),
       internalDate: msg.internalDate ? new Date(parseInt(msg.internalDate, 10)).toISOString() : undefined,
       attachmentCount: attachments.length,
       attachments,
+      bodyText,
     };
   } catch (err) {
     logger.error('Failed to get message', err);
     throw new AppError('Failed to get Gmail message', ErrorType.EXTERNAL_SERVICE, 502);
+  }
+}
+
+export async function sendThreadReply(args: {
+  toEmail: string;
+  subject: string;
+  bodyText: string;
+  threadId: string;
+  inReplyToMessageId?: string;
+  referencesMessageId?: string;
+}) {
+  const auth = createOAuth2Client();
+  const gmail = google.gmail({ version: 'v1', auth });
+
+  try {
+    const headers: string[] = [];
+    headers.push(`To: ${args.toEmail}`);
+    headers.push(`Subject: ${args.subject}`);
+    headers.push('MIME-Version: 1.0');
+    headers.push('Content-Type: text/plain; charset=utf-8');
+
+    const inReplyTo = args.inReplyToMessageId || args.referencesMessageId;
+    if (inReplyTo) headers.push(`In-Reply-To: ${inReplyTo}`);
+    if (args.referencesMessageId) headers.push(`References: ${args.referencesMessageId}`);
+
+    const rfc822 = `${headers.join('\r\n')}\r\n\r\n${args.bodyText}`;
+    const raw = base64UrlEncode(rfc822);
+
+    const res = await gmail.users.messages.send({
+      userId: 'me',
+      requestBody: {
+        raw,
+        threadId: args.threadId,
+      },
+    });
+
+    return {
+      id: res.data.id,
+      threadId: res.data.threadId,
+    };
+  } catch (err) {
+    logger.error('Failed to send Gmail thread reply', err);
+    throw new AppError('Failed to send Gmail email', ErrorType.EXTERNAL_SERVICE, 502);
   }
 }
 

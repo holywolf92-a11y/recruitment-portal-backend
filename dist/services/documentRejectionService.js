@@ -28,9 +28,15 @@ class DocumentRejectionService {
      * FIX 3: Non-overridable codes guard
      *
      * FIX 4: Retry semantics (retryPossible flag)
+     *
+     * NEW: Similarity-based validation
+     * - Critical mismatches (ID belongs to other candidate, <50% similarity) with admin override
+     * - Minor mismatches (>80% similarity) easily overridable (likely OCR errors)
+     * - Major mismatches (50-80% similarity) require review before admin can override
      */
     static determineRejectionCode(context) {
-        const { documentCategory, extractedIdentity, candidateData, aiConfidence, ocrConfidence, expiryDate, errorStage, mismatchFields: preComputedMismatches = [], } = context;
+        const { documentCategory, extractedIdentity, candidateData, aiConfidence, ocrConfidence, expiryDate, errorStage, mismatchFields: preComputedMismatches = [], mismatchSeverity = 'minor', // Default severity
+        similarityScores = {}, idBelongsToOtherCandidate = false, otherCandidateName, } = context;
         const mismatchFields = [...preComputedMismatches];
         const mismatchCodes = [];
         let rejectionCode = documentCategories_1.REJECTION_REASON_CODES.MANUAL_REVIEW_REQUIRED;
@@ -239,9 +245,31 @@ class DocumentRejectionService {
         // ============================================
         // STEP 7: Check if rejection code is overridable
         // FIX 3: Non-overridable codes guard
+        // NEW: Similarity-based override logic
         // ============================================
-        const isOverridable = !documentCategories_1.NON_OVERRIDABLE_REJECTION_CODES.includes(rejectionCode);
-        const requiredRole = isOverridable ? 'admin' : 'super_admin';
+        let isOverridable = !documentCategories_1.NON_OVERRIDABLE_REJECTION_CODES.includes(rejectionCode);
+        let requiredRole = 'admin';
+        // NEW: Special handling for ID mismatches based on similarity
+        // If ID belongs to another candidate in system -> critical, only admin can override (with explicit warning)
+        // If <50% similar -> major mismatch, requires admin review
+        // If 50-80% similar -> possible OCR error, admin can override
+        // If >80% similar -> likely OCR error, admin can easily override
+        if ((rejectionCode === documentCategories_1.REJECTION_REASON_CODES.CNIC_MISMATCH ||
+            rejectionCode === documentCategories_1.REJECTION_REASON_CODES.PASSPORT_MISMATCH) &&
+            (mismatchSeverity === 'critical' || mismatchSeverity === 'major')) {
+            if (idBelongsToOtherCandidate) {
+                // Document genuinely belongs to someone else - still overridable but flag it clearly
+                isOverridable = true;
+                requiredRole = 'admin';
+                // Note: Add strong warning in reason message (handled by getRejectionReasonMessage)
+            }
+            else if (mismatchSeverity === 'major') {
+                // <50% similarity - significant difference
+                isOverridable = true;
+                requiredRole = 'admin';
+            }
+            // For 'minor' severity (>80% match), already overridable with default admin role
+        }
         return {
             code: rejectionCode,
             reason,

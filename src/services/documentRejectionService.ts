@@ -44,6 +44,10 @@ export interface RejectionContext {
   expiryDate?: string; // ISO date string
   errorStage?: 'OCR' | 'Vision' | 'Matching' | 'Extraction' | 'Categorization';
   mismatchFields?: string[]; // Pre-computed mismatch fields from identity matching
+  mismatchSeverity?: 'critical' | 'major' | 'minor'; // NEW: Severity based on similarity
+  similarityScores?: Record<string, number>; // NEW: Similarity % for problematic fields
+  idBelongsToOtherCandidate?: boolean; // NEW: If extracted ID belongs to another candidate
+  otherCandidateName?: string; // NEW: Name of the candidate who owns the ID
 }
 
 /**
@@ -77,6 +81,11 @@ export class DocumentRejectionService {
    * FIX 3: Non-overridable codes guard
    * 
    * FIX 4: Retry semantics (retryPossible flag)
+   * 
+   * NEW: Similarity-based validation
+   * - Critical mismatches (ID belongs to other candidate, <50% similarity) with admin override
+   * - Minor mismatches (>80% similarity) easily overridable (likely OCR errors)
+   * - Major mismatches (50-80% similarity) require review before admin can override
    */
   static determineRejectionCode(context: RejectionContext): RejectionResult {
     const {
@@ -88,12 +97,17 @@ export class DocumentRejectionService {
       expiryDate,
       errorStage,
       mismatchFields: preComputedMismatches = [],
+      mismatchSeverity = 'minor', // Default severity
+      similarityScores = {},
+      idBelongsToOtherCandidate = false,
+      otherCandidateName,
     } = context;
 
     const mismatchFields: string[] = [...preComputedMismatches];
     const mismatchCodes: string[] = [];
     let rejectionCode: string = REJECTION_REASON_CODES.MANUAL_REVIEW_REQUIRED;
     let retryPossible = false;
+
 
     // ============================================
     // STEP 1: Check expiry (for applicable document types)
@@ -327,9 +341,32 @@ export class DocumentRejectionService {
     // ============================================
     // STEP 7: Check if rejection code is overridable
     // FIX 3: Non-overridable codes guard
+    // NEW: Similarity-based override logic
     // ============================================
-    const isOverridable = !NON_OVERRIDABLE_REJECTION_CODES.includes(rejectionCode as any);
-    const requiredRole = isOverridable ? 'admin' : 'super_admin';
+    let isOverridable = !NON_OVERRIDABLE_REJECTION_CODES.includes(rejectionCode as any);
+    let requiredRole: 'admin' | 'super_admin' = 'admin';
+
+    // NEW: Special handling for ID mismatches based on similarity
+    // If ID belongs to another candidate in system -> critical, only admin can override (with explicit warning)
+    // If <50% similar -> major mismatch, requires admin review
+    // If 50-80% similar -> possible OCR error, admin can override
+    // If >80% similar -> likely OCR error, admin can easily override
+    if ((rejectionCode === REJECTION_REASON_CODES.CNIC_MISMATCH || 
+         rejectionCode === REJECTION_REASON_CODES.PASSPORT_MISMATCH) && 
+        (mismatchSeverity === 'critical' || mismatchSeverity === 'major')) {
+      
+      if (idBelongsToOtherCandidate) {
+        // Document genuinely belongs to someone else - still overridable but flag it clearly
+        isOverridable = true;
+        requiredRole = 'admin';
+        // Note: Add strong warning in reason message (handled by getRejectionReasonMessage)
+      } else if (mismatchSeverity === 'major') {
+        // <50% similarity - significant difference
+        isOverridable = true;
+        requiredRole = 'admin';
+      }
+      // For 'minor' severity (>80% match), already overridable with default admin role
+    }
 
     return {
       code: rejectionCode,

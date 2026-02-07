@@ -3,6 +3,7 @@ import { normalizeCNIC, normalizePassport, normalizePhoneE164 } from './candidat
 import { REJECTION_REASON_CODES } from '../config/documentCategories';
 import { DocumentRejectionService, RejectionContext } from './documentRejectionService';
 import { DocumentCategory } from '../config/documentCategories';
+import { analyzeIdMismatch, classifyMismatchSeverity } from '../utils/similarityUtils';
 
 interface ExtractedIdentity {
   name?: string;
@@ -21,6 +22,8 @@ interface IdentityMatchResult {
   confidence: number;
   reason_code: string;
   mismatch_fields?: string[];
+  mismatch_severity?: 'critical' | 'major' | 'minor'; // NEW: Severity of mismatch based on similarity
+  similarity_scores?: Record<string, number>; // NEW: Similarity % for each mismatched field
   candidate_fields?: {
     name?: string;
     cnic?: string;
@@ -137,6 +140,9 @@ export class IdentityMatchingService {
           };
         } else if (candidate.cnic_normalized && extractedCnic !== candidate.cnic_normalized) {
           // CNIC exists but doesn't match - Check if it belongs to someone else
+          const cnicAnalysis = analyzeIdMismatch(extractedCnic, candidate.cnic_normalized);
+          console.log(`[IdentityMatching] CNIC mismatch for candidate ${candidateId}. Similarity: ${cnicAnalysis.similarity}% (${cnicAnalysis.severity})`);
+
         const { data: otherCandidate } = await db
           .from('candidates')
           .select('id, name')
@@ -146,7 +152,7 @@ export class IdentityMatchingService {
             .maybeSingle();
 
           if (otherCandidate) {
-            // CNIC belongs to a different person - REJECTED
+            // CNIC belongs to a different person - CRITICAL MISMATCH
             mismatchFields.push('cnic');
             
             // Use DocumentRejectionService for detailed rejection if documentCategory provided
@@ -163,6 +169,10 @@ export class IdentityMatchingService {
                 expiryDate,
                 errorStage,
                 mismatchFields,
+                mismatchSeverity: 'critical', // Cross-candidate ID is always critical
+                similarityScores: { cnic: cnicAnalysis.similarity },
+                idBelongsToOtherCandidate: true,
+                otherCandidateName: otherCandidate.name,
               };
               
               const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
@@ -173,10 +183,12 @@ export class IdentityMatchingService {
                 confidence: 0.0,
                 reason_code: REJECTION_REASON_CODES.CNIC_MISMATCH,
                 mismatch_fields: mismatchFields,
+                mismatch_severity: 'critical',
+                similarity_scores: { cnic: cnicAnalysis.similarity },
                 candidate_fields: {
                   name: candidate.name,
                 },
-                notes: `CNIC belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
+                notes: `CNIC belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id}). Similarity: ${cnicAnalysis.similarity}%`,
                 rejection_code: rejectionResult.code,
                 rejection_reason: rejectionResult.reason,
                 retry_possible: rejectionResult.retryPossible,
@@ -190,15 +202,18 @@ export class IdentityMatchingService {
                 confidence: 0.0,
                 reason_code: REJECTION_REASON_CODES.CNIC_MISMATCH,
                 mismatch_fields: mismatchFields,
+                mismatch_severity: 'critical',
+                similarity_scores: { cnic: cnicAnalysis.similarity },
                 candidate_fields: {
                   name: candidate.name,
                 },
-                notes: `CNIC belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
+                notes: `CNIC belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id}). Similarity: ${cnicAnalysis.similarity}%`,
               };
             }
           } else {
-            // CNIC doesn't match, but not found in system - mark as mismatch
+            // CNIC doesn't match candidate's CNIC, but not found in system - mark as mismatch with severity
             mismatchFields.push('cnic');
+            console.log(`[IdentityMatching] CNIC mismatch (not in system). Extracted: ${extractedCnic}, Candidate: ${candidate.cnic_normalized}, Similarity: ${cnicAnalysis.similarity}%`);
           }
         }
       }
@@ -246,6 +261,9 @@ export class IdentityMatchingService {
           };
         } else if (candidate.passport_normalized && extractedPassport !== candidate.passport_normalized) {
           // Passport exists but doesn't match - Check if it belongs to someone else
+          const passportAnalysis = analyzeIdMismatch(extractedPassport, candidate.passport_normalized);
+          console.log(`[IdentityMatching] Passport mismatch for candidate ${candidateId}. Similarity: ${passportAnalysis.similarity}% (${passportAnalysis.severity})`);
+
           const { data: otherCandidate } = await db
             .from('candidates')
             .select('id, name')
@@ -255,7 +273,7 @@ export class IdentityMatchingService {
             .maybeSingle();
 
           if (otherCandidate) {
-            // Passport belongs to a different person - REJECTED
+            // Passport belongs to a different person - CRITICAL MISMATCH
             mismatchFields.push('passport');
             
             // Use DocumentRejectionService for detailed rejection if documentCategory provided
@@ -272,6 +290,10 @@ export class IdentityMatchingService {
                 expiryDate,
                 errorStage,
                 mismatchFields,
+                mismatchSeverity: 'critical', // Cross-candidate ID is always critical
+                similarityScores: { passport: passportAnalysis.similarity },
+                idBelongsToOtherCandidate: true,
+                otherCandidateName: otherCandidate.name,
               };
               
               const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
@@ -282,10 +304,12 @@ export class IdentityMatchingService {
                 confidence: 0.0,
                 reason_code: REJECTION_REASON_CODES.PASSPORT_MISMATCH,
                 mismatch_fields: mismatchFields,
+                mismatch_severity: 'critical',
+                similarity_scores: { passport: passportAnalysis.similarity },
                 candidate_fields: {
                   name: candidate.name,
                 },
-                notes: `Passport belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
+                notes: `Passport belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id}). Similarity: ${passportAnalysis.similarity}%`,
                 rejection_code: rejectionResult.code,
                 rejection_reason: rejectionResult.reason,
                 retry_possible: rejectionResult.retryPossible,
@@ -299,10 +323,12 @@ export class IdentityMatchingService {
                 confidence: 0.0,
                 reason_code: REJECTION_REASON_CODES.PASSPORT_MISMATCH,
                 mismatch_fields: mismatchFields,
+                mismatch_severity: 'critical',
+                similarity_scores: { passport: passportAnalysis.similarity },
                 candidate_fields: {
                   name: candidate.name,
                 },
-                notes: `Passport belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id})`,
+                notes: `Passport belongs to different candidate: ${otherCandidate.name} (ID: ${otherCandidate.id}). Similarity: ${passportAnalysis.similarity}%`,
               };
             }
           } else {
@@ -324,6 +350,9 @@ export class IdentityMatchingService {
                 expiryDate,
                 errorStage,
                 mismatchFields,
+                mismatchSeverity: classifyMismatchSeverity(passportAnalysis.similarity), // Use similarity-based severity
+                similarityScores: { passport: passportAnalysis.similarity },
+                idBelongsToOtherCandidate: false,
               };
               
               const rejectionResult = DocumentRejectionService.determineRejectionCode(rejectionContext);
@@ -334,11 +363,13 @@ export class IdentityMatchingService {
                 confidence: 0.0,
                 reason_code: REJECTION_REASON_CODES.PASSPORT_MISMATCH,
                 mismatch_fields: mismatchFields,
+                mismatch_severity: classifyMismatchSeverity(passportAnalysis.similarity),
+                similarity_scores: { passport: passportAnalysis.similarity },
                 candidate_fields: {
                   name: candidate.name,
-                  passport_no: candidate.passport_normalized, // Map passport_normalized to passport_no for interface
+                  passport_no: candidate.passport_normalized,
                 },
-                notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Passport numbers are unique identifiers.`,
+                notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Similarity: ${passportAnalysis.similarity}%. ${passportAnalysis.description}`,
                 rejection_code: rejectionResult.code,
                 rejection_reason: rejectionResult.reason,
                 retry_possible: rejectionResult.retryPossible,
@@ -352,11 +383,13 @@ export class IdentityMatchingService {
                 confidence: 0.0,
                 reason_code: REJECTION_REASON_CODES.PASSPORT_MISMATCH,
                 mismatch_fields: mismatchFields,
+                mismatch_severity: classifyMismatchSeverity(passportAnalysis.similarity),
+                similarity_scores: { passport: passportAnalysis.similarity },
                 candidate_fields: {
                   name: candidate.name,
-                  passport_no: candidate.passport_normalized, // Map passport_normalized to passport_no for interface
+                  passport_no: candidate.passport_normalized,
                 },
-                notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Passport numbers are unique identifiers.`,
+                notes: `Passport number in document (${extractedPassport}) does not match candidate's passport (${candidate.passport_normalized}). Similarity: ${passportAnalysis.similarity}%. ${passportAnalysis.description}`,
               };
             }
           }

@@ -11,6 +11,7 @@ import { documentVerificationQueue } from '../config/queue';
 import { generateRequestId } from '../services/documentVerificationLogService';
 import { randomUUID } from 'crypto';
 import { processSplitDocument } from '../utils/splitDocumentProcessor';
+import { generateDescriptiveFilename } from '../utils/documentNaming';
 import { isGovernmentEmail } from '../services/progressiveDataCompletionService';
 import { extractProfilePhotoFromPdfUsingAI } from '../services/aiProfilePhotoExtractionService';
 
@@ -695,7 +696,16 @@ export function startCvParserWorker() {
                   confidence: d.confidence ?? null,
                   storage_bucket: STORAGE_BUCKET,
                   storage_path: processed.storagePath,
-                  file_name: `split_${d.doc_type}_${Date.now()}.${processed.fileExtension}`,
+                  file_name: generateDescriptiveFilename(
+                    {
+                      doc_type: d.doc_type,
+                      pages: d.pages,
+                      split_strategy: d.split_strategy,
+                      page_number: d.pages && d.pages.length === 1 ? d.pages[0] : undefined,
+                    },
+                    newCandidate.name,
+                    Date.now()
+                  ),
                   mime_type: processed.mimeType,  // Use detected MIME type (image/jpeg for photos)
                   source: 'web',
                   status: 'received',

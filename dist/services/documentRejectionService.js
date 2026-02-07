@@ -39,7 +39,12 @@ class DocumentRejectionService {
         // STEP 1: Check expiry (for applicable document types)
         // FIX 4: Expiry checks for Passport, Medical, License, Certificate
         // ============================================
-        if (expiryDate && documentCategory !== 'experience_certificates') {
+        const shouldCheckExpiry = documentCategory === 'passport' ||
+            documentCategory === 'medical_reports' ||
+            documentCategory === 'driving_license' ||
+            documentCategory === 'certificates' ||
+            documentCategory === 'police_character_certificate';
+        if (expiryDate && shouldCheckExpiry) {
             const expiry = new Date(expiryDate);
             const now = new Date();
             if (expiry < now) {

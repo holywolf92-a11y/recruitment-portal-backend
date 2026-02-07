@@ -50,6 +50,7 @@ const queue_1 = require("../config/queue");
 const documentVerificationLogService_1 = require("../services/documentVerificationLogService");
 const crypto_2 = require("crypto");
 const splitDocumentProcessor_1 = require("../utils/splitDocumentProcessor");
+const documentNaming_1 = require("../utils/documentNaming");
 const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
 const aiProfilePhotoExtractionService_1 = require("../services/aiProfilePhotoExtractionService");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
@@ -652,7 +653,12 @@ function startCvParserWorker() {
                                 confidence: d.confidence ?? null,
                                 storage_bucket: STORAGE_BUCKET,
                                 storage_path: processed.storagePath,
-                                file_name: `split_${d.doc_type}_${Date.now()}.${processed.fileExtension}`,
+                                file_name: (0, documentNaming_1.generateDescriptiveFilename)({
+                                    doc_type: d.doc_type,
+                                    pages: d.pages,
+                                    split_strategy: d.split_strategy,
+                                    page_number: d.pages && d.pages.length === 1 ? d.pages[0] : undefined,
+                                }, newCandidate.name, Date.now()),
                                 mime_type: processed.mimeType, // Use detected MIME type (image/jpeg for photos)
                                 source: 'web',
                                 status: 'received',

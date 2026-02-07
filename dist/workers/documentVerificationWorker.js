@@ -99,6 +99,37 @@ function parseDateToISO(dateStr) {
     console.warn(`[DateParser] Could not parse date: ${dateStr}`);
     return null;
 }
+function addDaysToISODate(isoDate, days) {
+    if (!isoDate)
+        return null;
+    const d = new Date(`${isoDate}T00:00:00.000Z`);
+    if (isNaN(d.getTime()))
+        return null;
+    d.setUTCDate(d.getUTCDate() + days);
+    const year = d.getUTCFullYear();
+    const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+function deriveExpiryDateForCategory(category, extractedIdentity) {
+    const c = String(category || '').toLowerCase();
+    const passportExpiry = extractedIdentity?.passport_expiry || extractedIdentity?.expiry_date;
+    const expiryISO = parseDateToISO(passportExpiry);
+    if (c === documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT) {
+        return expiryISO || undefined;
+    }
+    if (c === documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS || c === documentCategories_1.DOCUMENT_CATEGORIES.DRIVING_LICENSE || c === documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES) {
+        return expiryISO || undefined;
+    }
+    if (c === documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE) {
+        const issueISO = parseDateToISO(extractedIdentity?.issue_date);
+        if (!issueISO)
+            return undefined;
+        // BUSINESS RULE: Police character certificate expires 3 months after issue date
+        return addDaysToISODate(issueISO, 90) || undefined;
+    }
+    return undefined;
+}
 /**
  * Infer profession/position from certificate filename or category
  * Helps populate missing profession data when certificate is uploaded
@@ -518,7 +549,8 @@ async function processDocumentVerification(job) {
                     candidateId = candidateMatch.candidateId;
                     // Now run identity matching with the correct candidate ID
                     // Pass document category and confidence scores for detailed rejection
-                    matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date, undefined // errorStage - set later if needed
+                    const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
+                    matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined // errorStage - set later if needed
                     );
                     console.log(`[DocumentVerification] Identity matching successful: ${matchResult.matched ? 'VERIFIED' : 'NEEDS_REVIEW'}`);
                 }
@@ -526,7 +558,8 @@ async function processDocumentVerification(job) {
                     // Could not find candidate by extracted identity - try using provided candidate_id as fallback
                     console.log(`[DocumentVerification] Could not find candidate by extracted identity, trying provided candidate_id ${candidateId}...`);
                     try {
-                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date, undefined);
+                        const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
+                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
                     }
                     catch (matchError) {
                         // Provided candidate_id also doesn't exist - needs manual review
@@ -578,7 +611,8 @@ async function processDocumentVerification(job) {
                 // Auto-matching failed - try provided candidate_id as fallback
                 console.error(`[DocumentVerification] Auto-matching failed, trying provided candidate_id:`, autoMatchError);
                 try {
-                    matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date, undefined);
+                    const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
+                    matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
                 }
                 catch (matchError) {
                     // Both failed - needs manual review
@@ -604,6 +638,7 @@ async function processDocumentVerification(job) {
             // Log identity verification result (only if matching succeeded)
             if (matchResult) {
                 // Prepare rejection details from matchResult
+                const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
                 const rejectionDetails = matchResult.rejection_code ? {
                     rejection_code: matchResult.rejection_code,
                     rejection_reason: matchResult.rejection_reason || undefined,
@@ -611,7 +646,7 @@ async function processDocumentVerification(job) {
                     retry_possible: matchResult.retry_possible || false,
                     retry_count: 0, // Initial attempt
                     max_retries: 2,
-                    document_expiry_date: parseDateToISO(aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date) || undefined,
+                    document_expiry_date: derivedExpiryDate,
                     rejection_context: {
                         mismatch_fields: matchResult.mismatch_fields || [],
                         matched: matchResult.matched,
@@ -840,10 +875,10 @@ async function processDocumentVerification(job) {
             updateData.retry_possible = retryPossible;
             updateData.retry_count = 0; // Initialize retry count
             updateData.max_retries = 2; // Default max retries
-            // Set document expiry date if available (parse to ISO format)
-            const expiryDate = parseDateToISO(aiResult.extracted_identity?.passport_expiry || aiResult.extracted_identity?.expiry_date);
-            if (expiryDate) {
-                updateData.document_expiry_date = expiryDate;
+            // Set document expiry date if available (category-aware)
+            const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
+            if (derivedExpiryDate) {
+                updateData.document_expiry_date = derivedExpiryDate;
             }
             // Set rejection context (JSONB) with mismatch fields
             if (mismatchFields.length > 0) {

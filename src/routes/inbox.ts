@@ -106,10 +106,21 @@ router.post(
       storagePath: storage_path,
       candidateId: candidate_id,
     });
+    
+    // Always enqueue CV parsing if attachment_type is 'cv', regardless of classification
+    // This handles cases where filename doesn't contain CV keywords (e.g., "noran.pdf")
     const shouldEnqueue = (attachment?.attachment_type ?? 'cv') === 'cv';
-    const jobInfo = shouldEnqueue
-      ? await enqueueCvParsingJobForAttachment(attachment.id, { force: false, expiresInSeconds: 3600 })
-      : null;
+    let jobInfo = null;
+    
+    if (shouldEnqueue) {
+      try {
+        jobInfo = await enqueueCvParsingJobForAttachment(attachment.id, { force: false, expiresInSeconds: 3600 });
+      } catch (enqueueErr) {
+        console.error(`[InboxAttachment] Failed to enqueue CV parsing for ${attachment.id}:`, enqueueErr);
+        // Don't fail the upload - file is saved, user can retry parsing later
+        jobInfo = null;
+      }
+    }
 
     res.status(200).json({
       attachment,

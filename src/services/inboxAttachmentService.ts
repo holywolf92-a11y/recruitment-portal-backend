@@ -315,19 +315,20 @@ export async function enqueueCvParsingJobForAttachment(
   options?: { force?: boolean; expiresInSeconds?: number }
 ) {
   const parsingJobs = new ParsingJobsService();
-  let jobRow: { id: string } | null = null;
+  let jobRowId: string | null = null;
 
   try {
     const attachment = await getAttachmentById(attachmentId);
     const fileHash = attachment?.sha256 ?? null;
     const signedUrl = await getAttachmentSignedUrl(attachmentId, options?.expiresInSeconds ?? 3600);
 
-    jobRow = await parsingJobs.createJob({ attachmentId, fileHash });
+    const createdJobRow = await parsingJobs.createJob({ attachmentId, fileHash });
+    jobRowId = createdJobRow.id;
 
     await cvParsingQueue.add(
       'parse',
       {
-        jobId: jobRow.id,
+        jobId: createdJobRow.id,
         attachmentId,
         fileUrl: signedUrl,
         fileHash,
@@ -341,13 +342,13 @@ export async function enqueueCvParsingJobForAttachment(
       }
     );
 
-    logger.info('Enqueued CV parsing job', { attachmentId, jobId: jobRow.id });
+    logger.info('Enqueued CV parsing job', { attachmentId, jobId: createdJobRow.id });
 
-    return { jobId: jobRow.id, status: 'queued' as const };
+    return { jobId: createdJobRow.id, status: 'queued' as const };
   } catch (err) {
-    if (jobRow?.id) {
+    if (jobRowId) {
       try {
-        await parsingJobs.setStatus(jobRow.id, 'failed', {
+        await parsingJobs.setStatus(jobRowId, 'failed', {
           result_json: {
             error: 'QUEUE_ENQUEUE_FAILED',
             message: err instanceof Error ? err.message : String(err),

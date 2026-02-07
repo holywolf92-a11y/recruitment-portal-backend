@@ -14,6 +14,56 @@ function slugifyName(name?: string): string {
 }
 
 /**
+ * Test Brevo configuration
+ * POST /api/email/test-brevo
+ */
+emailRouter.post('/test-brevo', async (req: Request, res: Response) => {
+  try {
+    const parsedBody = (() => {
+      if (typeof req.body === 'string') {
+        try {
+          return JSON.parse(req.body);
+        } catch {
+          return {};
+        }
+      }
+      return req.body || {};
+    })();
+
+    const to = parsedBody.to || (req.query.to as string | undefined);
+    const subject = parsedBody.subject || 'Brevo test email';
+    const message = parsedBody.message || 'This is a test email from the recruitment portal.';
+
+    if (!to) {
+      return res.status(400).json({ error: 'Please provide a recipient email via body.to or query ?to=' });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(to)) {
+      return res.status(400).json({ error: 'Please provide a valid recipient email address' });
+    }
+
+    await emailService.sendEmail({
+      to,
+      subject,
+      text: message,
+      html: `<p>${message}</p>`,
+    });
+
+    return res.json({
+      success: true,
+      mode: process.env.BREVO_API_KEY ? 'api' : 'smtp',
+      message: 'Test email sent successfully',
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      error: error?.message || 'Failed to send test email',
+      mode: process.env.BREVO_API_KEY ? 'api' : 'smtp',
+    });
+  }
+});
+
+/**
  * Send candidate profiles to employer via email
  * POST /api/email/send-to-employer
  */

@@ -278,6 +278,31 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
   };
 
   const asArray = <T = any>(value: any): T[] => (Array.isArray(value) ? (value as T[]) : []);
+
+  // parsing_jobs.output is stored by the worker and commonly wraps the parsed CV
+  // inside { candidate: { ... } }. Some older payloads may use { parsed_data: { ... } }.
+  // Normalize so the template always reads from the same shape.
+  const parsed: any = (parsedCv && (parsedCv.candidate || parsedCv.parsed_data))
+    ? (parsedCv.candidate || parsedCv.parsed_data)
+    : (parsedCv || null);
+
+  const toStringArray = (value: any, maxItems = 25): string[] => {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+      return value
+        .map((v) => (typeof v === 'string' ? v : (v?.name || v?.title || v?.text || String(v))))
+        .map((s) => (typeof s === 'string' ? s.trim() : String(s)))
+        .filter((s) => !!s)
+        .slice(0, maxItems);
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return [];
+      return [trimmed];
+    }
+    return [String(value)];
+  };
+
   const formatDateRange = (start: any, end: any): string => {
     const s = (start || '').toString().trim();
     const e = (end || '').toString().trim();
@@ -288,8 +313,8 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
   };
 
   // Prefer structured output from parser when present
-  const parsedSkills = asArray<string>(parsedCv?.skills);
-  const parsedLanguages = asArray<string>(parsedCv?.languages);
+  const parsedSkills = asArray<string>(parsed?.skills);
+  const parsedLanguages = asArray<string>(parsed?.languages);
 
   // Parse skills - handle JSON array or comma-separated string
   let skills: string[] = [];
@@ -312,13 +337,13 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
     ? parsedLanguages
     : (candidate.languages ? candidate.languages.split(',').map((l: string) => l.trim()) : []);
   const initial = (candidate.name || '?').charAt(0).toUpperCase();
-  const professionalSummary = isMeaningfulText(parsedCv?.professional_summary)
-    ? String(parsedCv.professional_summary).trim()
+  const professionalSummary = isMeaningfulText(parsed?.professional_summary)
+    ? String(parsed.professional_summary).trim()
     : (isMeaningfulText(candidate.professional_summary) ? candidate.professional_summary.trim() : '');
 
   const previousEmployment = isMeaningfulText(candidate.previous_employment) ? candidate.previous_employment.trim() : '';
 
-  const parsedExperience = asArray<any>(parsedCv?.experience);
+  const parsedExperience = asArray<any>(parsed?.experience);
   const experienceHtml = parsedExperience.length > 0
     ? `
       <div class="section">
@@ -328,7 +353,7 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
           const company = role?.company || role?.employer || role?.organization || '';
           const location = role?.location || role?.city || role?.country || '';
           const dates = formatDateRange(role?.start_date || role?.from || role?.start, role?.end_date || role?.to || role?.end);
-          const bullets = asArray<string>(role?.responsibilities || role?.achievements || role?.duties || role?.highlights);
+          const bullets = toStringArray(role?.responsibilities || role?.achievements || role?.duties || role?.highlights, 12);
           const description = role?.description || role?.summary || '';
 
           return `
@@ -336,9 +361,9 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
             <div class="entry-title">${escapeHtml([title, company].filter(Boolean).join(' - '))}</div>
             ${(location || dates) ? `<div class="entry-meta">${escapeHtml([location, dates].filter(Boolean).join(' | '))}</div>` : ''}
             ${bullets.length > 0
-              ? `<ul style="margin-top: 4pt; padding-left: 14pt;">${bullets.slice(0, 10).map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>`
+              ? `<ul class="bullet-list">${bullets.map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>`
               : (isMeaningfulText(description)
-                ? `<div class="entry-description" style="white-space: pre-line;">${escapeHtml(description)}</div>`
+                ? `<ul class="bullet-list"><li>${escapeHtml(description)}</li></ul>`
                 : '')}
           </div>`;
         }).join('')}
@@ -353,7 +378,7 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
       </div>
     ` : '');
 
-  const parsedEducation = asArray<any>(parsedCv?.education);
+  const parsedEducation = asArray<any>(parsed?.education);
   const educationHtml = parsedEducation.length > 0
     ? `
       <div class="section">
@@ -382,13 +407,13 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
       </div>
     ` : '');
 
-  const parsedCerts = asArray<any>(parsedCv?.certifications || parsedCv?.certificates);
+  const parsedCerts = asArray<any>(parsed?.certifications || parsed?.certificates);
   const certificationsHtml = parsedCerts.length > 0
     ? `
       <div class="section">
         <h2 class="section-title">Certifications</h2>
         <div class="entry">
-          <ul style="padding-left: 14pt;">
+          <ul class="bullet-list">
             ${parsedCerts.slice(0, 20).map((c: any) => {
               const name = c?.name || c?.title || c;
               const issuer = c?.issuer || c?.authority || '';
@@ -409,7 +434,7 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
       </div>
     ` : '');
 
-  const parsedLicenses = asArray<any>(parsedCv?.licenses);
+  const parsedLicenses = asArray<any>(parsed?.licenses);
   const licensesHtml = parsedLicenses.length > 0
     ? `
       <div class="section">
@@ -649,6 +674,24 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
       color: #1e293b;
       margin-bottom: 2pt;
     }
+
+    .entry-meta {
+      font-size: 8pt;
+      color: #64748b;
+      margin-bottom: 4pt;
+    }
+
+    .bullet-list {
+      margin-top: 4pt;
+      padding-left: 14pt;
+    }
+
+    .bullet-list li {
+      margin-bottom: 3pt;
+      font-size: 8.5pt;
+      color: #475569;
+      line-height: 1.35;
+    }
     
     .entry-subtitle {
       font-size: 8.5pt;
@@ -777,19 +820,11 @@ function generateEmployerSafeCVHTML(candidate: any, documents: any[], parsedCv?:
       ${certificationsHtml}
     </div>
   </div>
-  
+
   <!-- Footer -->
   <div class="cv-footer">
     <p><strong>Privacy Protected:</strong> This employer-safe CV generated by Falisha Manpower. Contact details secured. | ID: ${candidate.id}</p>
-  </div>
-    
-    <!-- Footer - Contact Protection -->
-    <div class="cv-footer">
-      <h3>Contact Information Protected</h3>
-      <p>For privacy and security, direct contact details have been removed from this CV. To connect with this candidate, please contact Falisha Manpower recruitment team.</p>
-      <p><strong>Contact via Agency:</strong> falishamanpower4035@gmail.com | +92330 3333335</p>
-      <p style="margin-top: 4pt; font-size: 6.5pt; color: #9ca3af;">Falisha Manpower AI Recruitment System | Candidate ID: ${candidate.id}</p>
-    </div>
+    <p style="margin-top: 4pt;">To connect with this candidate, contact Falisha Manpower: falishamanpower4035@gmail.com | +92330 3333335</p>
   </div>
 </body>
 </html>

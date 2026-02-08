@@ -16,6 +16,7 @@ import { generateDescriptiveFilename } from '../utils/documentNaming';
 import { processSplitDocument } from '../utils/splitDocumentProcessor';
 import { isGovernmentEmail } from './progressiveDataCompletionService';
 import { extractProfilePhotoHybrid, uploadExtractedPhotoToCandidatePhotos } from './hybridPhotoExtractionService';
+import { CandidateMatcher } from './candidateMatcher';
 
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
@@ -187,6 +188,12 @@ export async function callSplitAndCategorize(
 /**
  * Create candidate from parser identity when no candidate_id. Use name or placeholder.
  * If identity matches existing (cnic/passport), return existing candidate id.
+ * 
+ * DEDUPLICATION FLOW (multi-layer, matches Gmail worker):
+ * Layer 1: CNIC check (highest confidence)
+ * Layer 2: Passport check
+ * Layer 3: Email/Phone check via CandidateMatcher (NEW - prevents manual upload duplicates)
+ * Layer 4: Create new candidate only if no match found
  */
 export async function createCandidateFromIdentity(
   identity: Record<string, unknown> | undefined,
@@ -194,10 +201,7 @@ export async function createCandidateFromIdentity(
 ): Promise<{ id: string }> {
   const cnic = (identity?.cnic as string) || undefined;
   const passport = (identity?.passport_no as string) || undefined;
-  const duplicates = await checkForDuplicates(cnic, passport);
-  if (duplicates.length > 0) {
-    return { id: duplicates[0].id };
-  }
+  const phone = (identity?.phone as string) || undefined;
   const name = (identity?.name as string) || (identity?.father_name as string) || 'Unknown';
   
   // Filter government emails
@@ -207,10 +211,44 @@ export async function createCandidateFromIdentity(
     email = undefined;
   }
   
+  // LAYER 1 & 2: Check for duplicates by CNIC/Passport (existing logic)
+  const duplicates = await checkForDuplicates(cnic, passport);
+  if (duplicates.length > 0) {
+    console.log(`🔗 [Manual Upload] Found existing candidate ${duplicates[0].candidate_code} via ${duplicates[0].matchReason}`);
+    return { id: duplicates[0].id };
+  }
+  
+  // LAYER 3: Pre-create deduplication via CandidateMatcher (email/phone)
+  // CRITICAL: This prevents duplicates when admin manually uploads CV for existing
+  // candidate who doesn't have CNIC/passport filled yet (e.g., pending missing data)
+  if (email || phone) {
+    console.log(`[Manual Upload] Pre-create dedup: checking email=${email?.substring(0, 20)}..., phone=${phone}`);
+    
+    const matchResult = await CandidateMatcher.findCandidate({
+      cnic,
+      email,
+      phone,
+      name,
+    });
+    
+    if (matchResult.candidateId) {
+      console.log(`✅ [Manual Upload] Matched existing candidate via ${matchResult.matchedBy} (confidence: ${matchResult.confidence})`);
+      return { id: matchResult.candidateId };
+    }
+    
+    if (matchResult.needsManualReview) {
+      console.warn(`⚠️  [Manual Upload] Multiple candidates found, creating anyway (admin can merge later):`, matchResult.reviewReasons);
+      // Continue to create - admin will see duplicate warning and can merge
+    }
+  }
+  
+  // LAYER 4: No match found - create new candidate
+  console.log(`➕ [Manual Upload] Creating new candidate: ${name}`);
+  
   const data: CreateCandidateData = {
     name: String(name).trim() || 'Unknown',
     email,
-    phone: (identity?.phone as string) || undefined,
+    phone,
     date_of_birth: (identity?.date_of_birth as string) || undefined,
     cnic,
     passport,

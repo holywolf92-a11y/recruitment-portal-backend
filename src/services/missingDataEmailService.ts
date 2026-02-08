@@ -32,9 +32,12 @@ function escapeHtml(text: string): string {
 }
 
 function getCandidatePreferredEmail(candidate: any): string | null {
-  const gmailFrom = safeString(candidate?.gmail_from_email).trim();
+  // IMPORTANT:
+  // Always prefer the candidate's extracted email.
+  // Do NOT fall back to gmail_from_email because it can be a forwarder/sender
+  // and may not belong to the candidate.
   const email = safeString(candidate?.email).trim();
-  return gmailFrom || email || null;
+  return email || null;
 }
 
 async function maybeBackfillGmailThreadIdentity(candidateId: string): Promise<

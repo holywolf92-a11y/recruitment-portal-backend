@@ -150,11 +150,116 @@ async function pollGmail() {
                     successCount++;
                     continue;
                 }
-                // If this is a reply in an already-seen thread (but candidate isn't mapped yet), do not enqueue CV parsing.
-                if (threadSeen) {
-                    logger.info('Thread already seen; skipping CV parsing enqueue to avoid creating a candidate from a reply', {
+                // If this is a reply in an already-seen thread (but candidate isn't mapped yet), look up the original candidate.
+                if (threadSeen && !threadCandidate?.id) {
+                    logger.info('Thread already seen but no candidate mapped yet; looking up original candidate', {
                         threadId,
                         messageId: fullMessage.id,
+                    });
+                    let resolvedCandidateId = null;
+                    // Strategy 1: Find candidate from thread history by looking up inbox_attachments from this Gmail thread
+                    const { data: threadAttachments } = await db
+                        .from('inbox_attachments')
+                        .select('candidate_id, inbox_message_id')
+                        .not('candidate_id', 'is', null)
+                        .limit(100);
+                    if (threadAttachments && threadAttachments.length > 0) {
+                        const messageIds = threadAttachments.map(a => a.inbox_message_id).filter(Boolean);
+                        const { data: threadMessages } = await db
+                            .from('inbox_messages')
+                            .select('id, payload')
+                            .in('id', messageIds)
+                            .eq('source', 'gmail');
+                        const matchingMessage = threadMessages?.find((m) => {
+                            const payload = m.payload || {};
+                            return payload.threadId === threadId;
+                        });
+                        if (matchingMessage) {
+                            const matchingAttachment = threadAttachments.find(a => a.inbox_message_id === matchingMessage.id);
+                            if (matchingAttachment?.candidate_id) {
+                                resolvedCandidateId = matchingAttachment.candidate_id;
+                                logger.info('Resolved candidate from Gmail thread history', { resolvedCandidateId, threadId });
+                            }
+                        }
+                    }
+                    // Strategy 2: If thread lookup failed, match by email address (common for web uploads that later reply via email)
+                    if (!resolvedCandidateId) {
+                        const fromRaw = fullMessage.from || '';
+                        const emailMatch = fromRaw.match(/<([^>]+)>/) || fromRaw.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+                        const fromEmail = (emailMatch?.[1] || emailMatch?.[0] || '').trim().toLowerCase();
+                        if (fromEmail) {
+                            // Look for candidate with matching email who was recently sent a missing data email
+                            const { data: emailMatch } = await db
+                                .from('candidates')
+                                .select('id, email, missing_data_email_last_sent_at')
+                                .ilike('email', fromEmail)
+                                .not('missing_data_email_last_sent_at', 'is', null)
+                                .order('missing_data_email_last_sent_at', { ascending: false })
+                                .limit(1)
+                                .maybeSingle();
+                            if (emailMatch?.id) {
+                                resolvedCandidateId = emailMatch.id;
+                                logger.info('Resolved candidate by email address match', {
+                                    resolvedCandidateId,
+                                    email: fromEmail,
+                                    threadId
+                                });
+                            }
+                        }
+                    }
+                    // If we found the candidate, link all reply attachments to them
+                    if (resolvedCandidateId) {
+                        for (const attachment of fullMessage.attachments) {
+                            if (!attachment.id)
+                                continue;
+                            try {
+                                const buffer = await (0, gmailService_1.getAttachment)(fullMessage.id, attachment.id);
+                                await (0, candidateDocumentService_1.uploadCandidateDocument)({
+                                    candidate_id: resolvedCandidateId,
+                                    file_name: attachment.filename,
+                                    mime_type: attachment.mimeType,
+                                    buffer,
+                                    source: 'email',
+                                });
+                                logger.debug('Uploaded reply attachment to resolved candidate', {
+                                    candidateId: resolvedCandidateId,
+                                    filename: attachment.filename,
+                                });
+                            }
+                            catch (err) {
+                                logger.error('Failed to upload reply attachment to resolved candidate', err, {
+                                    candidateId: resolvedCandidateId,
+                                    filename: attachment.filename,
+                                });
+                                errorCount++;
+                            }
+                        }
+                        // Process email body for missing data extraction
+                        if (fullMessage.bodyText && fullMessage.bodyText.trim().length > 0) {
+                            await (0, missingDataEmailReplyService_1.processMissingDataEmailReply)({
+                                candidateId: resolvedCandidateId,
+                                emailBodyText: fullMessage.bodyText,
+                                hadAttachments: fullMessage.attachments.length > 0,
+                            });
+                        }
+                        // Update candidate with Gmail tracking info (sets gmail_thread_id for future lookups)
+                        await db
+                            .from('candidates')
+                            .update({
+                            gmail_thread_id: threadId || null,
+                            gmail_last_message_id: fullMessage.messageIdHeader || null,
+                            gmail_last_subject: fullMessage.subject || null,
+                            gmail_from_email: fullMessage.from || null,
+                        })
+                            .eq('id', resolvedCandidateId);
+                        successCount++;
+                        continue;
+                    }
+                    // If we couldn't resolve the candidate, skip to prevent creating duplicates
+                    logger.warn('Thread already seen but could not resolve original candidate; skipping to prevent duplicates', {
+                        threadId,
+                        messageId: fullMessage.id,
+                        from: fullMessage.from,
                     });
                     successCount++;
                     continue;

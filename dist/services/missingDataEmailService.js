@@ -47,6 +47,14 @@ const logger = (0, errorHandling_1.createLogger)('MissingDataEmailService');
 function sha256(text) {
     return crypto_1.default.createHash('sha256').update(text).digest('hex');
 }
+function generateTrackingToken() {
+    // Generate 8-char alphanumeric tracking token (production-grade approach)
+    // Format: 2 letters + 6 digits (e.g., FL123456)
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const prefix = chars[Math.floor(Math.random() * chars.length)] + chars[Math.floor(Math.random() * chars.length)];
+    const numbers = Math.floor(100000 + Math.random() * 900000);
+    return `${prefix}${numbers}`;
+}
 function safeString(value) {
     return typeof value === 'string' ? value : '';
 }
@@ -229,7 +237,11 @@ function renderMissingDataEmail(args) {
         '--- Reference (please keep) ---',
         `RAP_CANDIDATE_ID: ${args.candidateId}`,
     ].join('\n');
-    const subject = 'Action required: reply with missing details';
+    // Embed tracking token in subject for reliable reply matching
+    const trackingToken = args.trackingToken || '';
+    const subject = trackingToken
+        ? `Action required: reply with missing details [#${trackingToken}]`
+        : 'Action required: reply with missing details';
     const bodyText = [
         `Assalam o Alaikum ${name},`,
         '',
@@ -353,11 +365,21 @@ async function maybeSendMissingDataEmail(args) {
                 return { sent: false, reason: 'cooldown' };
             }
         }
+        // Generate or reuse tracking token for reliable email threading
+        let trackingToken = safeString(candidate.email_tracking_token).trim();
+        if (!trackingToken) {
+            trackingToken = generateTrackingToken();
+            await db
+                .from('candidates')
+                .update({ email_tracking_token: trackingToken })
+                .eq('id', args.candidateId);
+        }
         const rendered = renderMissingDataEmail({
             candidateId: args.candidateId,
             candidateName: candidate.name,
             missingFields,
             missingDocs,
+            trackingToken,
         });
         const subject = lastSubject ? `Re: ${lastSubject.replace(/^re:\s*/i, '')}` : rendered.subject;
         await (0, gmailService_1.sendThreadReply)({

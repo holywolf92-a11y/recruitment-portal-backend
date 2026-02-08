@@ -62,10 +62,38 @@ async function pollGmail() {
         const db = supabaseAdminClient();
         const threadId = fullMessage.threadId;
 
-        // Resolve candidate by Gmail thread id (primary key for the email loop)
-        const { data: threadCandidate } = threadId
-          ? await db.from('candidates').select('id').eq('gmail_thread_id', threadId).maybeSingle()
-          : { data: null };
+        // STRATEGY 1 (PRIMARY): Extract tracking token from subject [#ABC12345]
+        // This is the most reliable method for matching email replies to candidates
+        const tokenMatch = (fullMessage.subject || '').match(/\[#([A-Z]{2}\d{6})\]/i);
+        const trackingToken = tokenMatch ? tokenMatch[1].toUpperCase() : null;
+
+        let resolvedCandidate: { id: string } | null = null;
+
+        // Try token-based lookup first (most reliable)
+        if (trackingToken) {
+          const { data: tokenMatch } = await db
+            .from('candidates')
+            .select('id')
+            .ilike('email_tracking_token', trackingToken)
+            .maybeSingle();
+          if (tokenMatch?.id) {
+            resolvedCandidate = { id: tokenMatch.id };
+            logger.info('Resolved candidate by tracking token', { candidateId: tokenMatch.id, trackingToken });
+          }
+        }
+
+        // STRATEGY 2 (FALLBACK): Gmail thread ID lookup
+        if (!resolvedCandidate && threadId) {
+          const { data: threadMatch } = await db
+            .from('candidates')
+            .select('id')
+            .eq('gmail_thread_id', threadId)
+            .maybeSingle();
+          if (threadMatch?.id) {
+            resolvedCandidate = { id: threadMatch.id };
+            logger.info('Resolved candidate by Gmail thread ID', { candidateId: threadMatch.id, threadId });
+          }
+        }
 
         // If we have already seen this thread in inbox, treat subsequent messages as replies
         // even if the candidate mapping isn't written yet (prevents accidental new-candidate creation).
@@ -106,20 +134,21 @@ async function pollGmail() {
 
         if (!inboxMessage) continue;
 
-        // Reply path: known candidate thread => upload attachments as candidate_documents + extract missing fields from reply text.
-        if (threadCandidate?.id) {
+        // Reply path: resolvedCandidate found => upload attachments as candidate_documents + extract missing fields from reply text.
+        if (resolvedCandidate?.id) {
           try {
             await db
               .from('candidates')
               .update({
+                gmail_thread_id: threadId || null,
                 gmail_last_message_id: fullMessage.messageIdHeader || null,
                 gmail_last_subject: fullMessage.subject || null,
                 gmail_from_email: fullMessage.from || null,
               })
-              .eq('id', threadCandidate.id);
+              .eq('id', resolvedCandidate.id);
           } catch (updateErr) {
-            logger.warn('Failed updating candidate Gmail last headers (non-fatal)', {
-              candidateId: threadCandidate.id,
+            logger.warn('Failed updating candidate Gmail headers (non-fatal)', {
+              candidateId: resolvedCandidate.id,
               error: updateErr,
             });
           }
@@ -129,19 +158,19 @@ async function pollGmail() {
             try {
               const buffer = await getAttachment(fullMessage.id, attachment.id);
               await uploadCandidateDocument({
-                candidate_id: threadCandidate.id,
+                candidate_id: resolvedCandidate.id,
                 file_name: attachment.filename,
                 mime_type: attachment.mimeType,
                 buffer,
                 source: 'email',
               });
               logger.debug('Uploaded reply attachment to candidate_documents', {
-                candidateId: threadCandidate.id,
+                candidateId: resolvedCandidate.id,
                 filename: attachment.filename,
               });
             } catch (err) {
               logger.error('Failed to upload reply attachment to candidate_documents', err, {
-                candidateId: threadCandidate.id,
+                candidateId: resolvedCandidate.id,
                 filename: attachment.filename,
               });
               errorCount++;
@@ -150,7 +179,7 @@ async function pollGmail() {
 
           if (fullMessage.bodyText && fullMessage.bodyText.trim().length > 0) {
             await processMissingDataEmailReply({
-              candidateId: threadCandidate.id,
+              candidateId: resolvedCandidate.id,
               emailBodyText: fullMessage.bodyText,
               hadAttachments: fullMessage.attachments.length > 0,
             });
@@ -158,7 +187,7 @@ async function pollGmail() {
 
           // After processing, optionally send the next follow-up if due (cooldown/max-attempts are enforced).
           await maybeSendMissingDataEmail({
-            candidateId: threadCandidate.id,
+            candidateId: resolvedCandidate.id,
             trigger: 'gmail_reply_ingested',
           });
 
@@ -167,7 +196,7 @@ async function pollGmail() {
         }
 
         // If this is a reply in an already-seen thread (but candidate isn't mapped yet), look up the original candidate.
-        if (threadSeen && !threadCandidate?.id) {
+        if (threadSeen && !resolvedCandidate?.id) {
           logger.info('Thread already seen but no candidate mapped yet; looking up original candidate', {
             threadId,
             messageId: fullMessage.id,

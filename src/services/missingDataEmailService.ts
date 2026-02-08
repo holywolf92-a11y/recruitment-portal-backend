@@ -20,6 +20,15 @@ function sha256(text: string): string {
   return crypto.createHash('sha256').update(text).digest('hex');
 }
 
+function generateTrackingToken(): string {
+  // Generate 8-char alphanumeric tracking token (production-grade approach)
+  // Format: 2 letters + 6 digits (e.g., FL123456)
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const prefix = chars[Math.floor(Math.random() * chars.length)] + chars[Math.floor(Math.random() * chars.length)];
+  const numbers = Math.floor(100000 + Math.random() * 900000);
+  return `${prefix}${numbers}`;
+}
+
 function safeString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
@@ -222,6 +231,7 @@ function renderMissingDataEmail(args: {
   candidateName?: string | null;
   missingFields: Array<{ field: string; label: string }>;
   missingDocs: MissingDocKey[];
+  trackingToken?: string;
 }): { subject: string; bodyText: string; bodyHtml: string; snapshotHash: string } {
   const name = (args.candidateName || '').trim() || 'Candidate';
 
@@ -250,7 +260,11 @@ function renderMissingDataEmail(args: {
     `RAP_CANDIDATE_ID: ${args.candidateId}`,
   ].join('\n');
 
-  const subject = 'Action required: reply with missing details';
+  // Embed tracking token in subject for reliable reply matching
+  const trackingToken = args.trackingToken || '';
+  const subject = trackingToken 
+    ? `Action required: reply with missing details [#${trackingToken}]`
+    : 'Action required: reply with missing details';
   const bodyText = [
     `Assalam o Alaikum ${name},`,
     '',
@@ -400,11 +414,22 @@ export async function maybeSendMissingDataEmail(args: {
       }
     }
 
+    // Generate or reuse tracking token for reliable email threading
+    let trackingToken = safeString(candidate.email_tracking_token).trim();
+    if (!trackingToken) {
+      trackingToken = generateTrackingToken();
+      await db
+        .from('candidates')
+        .update({ email_tracking_token: trackingToken })
+        .eq('id', args.candidateId);
+    }
+
     const rendered = renderMissingDataEmail({
       candidateId: args.candidateId,
       candidateName: candidate.name,
       missingFields,
       missingDocs,
+      trackingToken,
     });
 
     const subject = lastSubject ? `Re: ${lastSubject.replace(/^re:\s*/i, '')}` : rendered.subject;

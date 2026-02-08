@@ -17,6 +17,7 @@ import { processSplitDocument } from '../utils/splitDocumentProcessor';
 import { isGovernmentEmail } from './progressiveDataCompletionService';
 import { extractProfilePhotoHybrid, uploadExtractedPhotoToCandidatePhotos } from './hybridPhotoExtractionService';
 import { CandidateMatcher } from './candidateMatcher';
+import { emailService } from './emailService';
 
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
@@ -199,6 +200,12 @@ export async function createCandidateFromIdentity(
   identity: Record<string, unknown> | undefined,
   userId: string
 ): Promise<{ id: string }> {
+  let pendingDuplicateAlert: {
+    matchCount: number;
+    matchedBy: string | null;
+    reviewReasons?: string[];
+  } | null = null;
+
   const cnic = (identity?.cnic as string) || undefined;
   const passport = (identity?.passport_no as string) || undefined;
   const phone = (identity?.phone as string) || undefined;
@@ -238,6 +245,11 @@ export async function createCandidateFromIdentity(
     
     if (matchResult.needsManualReview) {
       console.warn(`⚠️  [Manual Upload] Multiple candidates found, creating anyway (admin can merge later):`, matchResult.reviewReasons);
+      pendingDuplicateAlert = {
+        matchCount: matchResult.matchCount,
+        matchedBy: matchResult.matchedBy,
+        reviewReasons: matchResult.reviewReasons,
+      };
       // Continue to create - admin will see duplicate warning and can merge
     }
   }
@@ -254,7 +266,76 @@ export async function createCandidateFromIdentity(
     passport,
   };
   const candidate = await createCandidate(data, userId);
+
+  if (pendingDuplicateAlert) {
+    await sendHighSimilarityAlert({
+      candidateCode: candidate.candidate_code,
+      candidateId: candidate.id,
+      name: candidate.name,
+      email: candidate.email,
+      phone: candidate.phone,
+      matchCount: pendingDuplicateAlert.matchCount,
+      matchedBy: pendingDuplicateAlert.matchedBy,
+      reviewReasons: pendingDuplicateAlert.reviewReasons,
+    });
+  }
+
   return { id: candidate.id };
+}
+
+async function sendHighSimilarityAlert(details: {
+  candidateCode?: string | null;
+  candidateId: string;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  matchCount: number;
+  matchedBy: string | null;
+  reviewReasons?: string[];
+}) {
+  const alertRecipient = process.env.DUPLICATE_ALERT_EMAIL || 'falishamanpower4035@gmail.com';
+  const subject = `Possible duplicate created (manual upload): ${details.candidateCode || details.candidateId}`;
+  const reasons = details.reviewReasons?.length
+    ? details.reviewReasons.join('; ')
+    : 'Multiple potential matches detected.';
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+      <h2 style="margin: 0 0 12px 0;">Possible duplicate candidate created</h2>
+      <p style="margin: 0 0 12px 0;">A new candidate was created via manual upload with high similarity to existing records.</p>
+      <table style="border-collapse: collapse;">
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Candidate Code:</td><td style="padding: 4px 8px;">${details.candidateCode || 'N/A'}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Candidate ID:</td><td style="padding: 4px 8px;">${details.candidateId}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Name:</td><td style="padding: 4px 8px;">${details.name}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Email:</td><td style="padding: 4px 8px;">${details.email || 'N/A'}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Phone:</td><td style="padding: 4px 8px;">${details.phone || 'N/A'}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Matches Found:</td><td style="padding: 4px 8px;">${details.matchCount}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Matched By:</td><td style="padding: 4px 8px;">${details.matchedBy || 'Multiple'}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Reasons:</td><td style="padding: 4px 8px;">${reasons}</td></tr>
+      </table>
+      <p style="margin: 12px 0 0 0;">Please review and merge if needed.</p>
+    </div>
+  `;
+
+  const text = [
+    'Possible duplicate candidate created (manual upload)',
+    `Candidate Code: ${details.candidateCode || 'N/A'}`,
+    `Candidate ID: ${details.candidateId}`,
+    `Name: ${details.name}`,
+    `Email: ${details.email || 'N/A'}`,
+    `Phone: ${details.phone || 'N/A'}`,
+    `Matches Found: ${details.matchCount}`,
+    `Matched By: ${details.matchedBy || 'Multiple'}`,
+    `Reasons: ${reasons}`,
+    'Please review and merge if needed.',
+  ].join('\n');
+
+  try {
+    await emailService.sendEmail({ to: alertRecipient, subject, html, text });
+    console.log(`[Manual Upload] High-similarity alert sent to ${alertRecipient}`);
+  } catch (error) {
+    console.warn('[Manual Upload] Failed to send high-similarity alert:', error);
+  }
 }
 
 /**

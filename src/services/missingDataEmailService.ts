@@ -8,13 +8,10 @@ const logger = createLogger('MissingDataEmailService');
 type MissingDocKey =
   | 'cv'
   | 'passport'
-  | 'degree'
-  | 'medical'
-  | 'certificate'
-  | 'experience_certificates'
-  | 'navttc_reports'
+  | 'cnic'
+  | 'driving_license'
   | 'police_certificate'
-  | 'contracts';
+  | 'degree';
 
 function sha256(text: string): string {
   return crypto.createHash('sha256').update(text).digest('hex');
@@ -138,9 +135,9 @@ async function computeMissingDocsForCandidate(args: {
   const flags = {
     cv_received: !!candidate?.cv_received,
     passport_received: !!candidate?.passport_received,
+    cnic_received: !!candidate?.cnic_received,
+    driving_license_received: !!candidate?.driving_license_received,
     degree_received: !!candidate?.degree_received,
-    medical_received: !!candidate?.medical_received,
-    certificate_received: !!candidate?.certificate_received,
   };
 
   let docs: Array<{ category?: string | null; document_type?: string | null; file_name?: string | null }> = [];
@@ -174,29 +171,23 @@ async function computeMissingDocsForCandidate(args: {
   const hasCv = flags.cv_received || categories.has('cv_resume') || categories.has('cv');
   const hasPassport =
     flags.passport_received || categories.has('passport') || docTypes.has('passport') || fileNames.some((n) => n.includes('passport'));
+  const hasCnic =
+    flags.cnic_received || categories.has('cnic') || docTypes.has('cnic') || fileNames.some((n) => n.includes('cnic') || n.includes('nic'));
+  const hasDrivingLicense =
+    flags.driving_license_received || categories.has('driving_license') || docTypes.has('driving_license') || fileNames.some((n) => n.includes('driving') || n.includes('license') || n.includes('licence'));
   const hasEducation =
     flags.degree_received || categories.has('educational_documents') || docTypes.has('degree') || fileNames.some((n) => n.includes('degree') || n.includes('diploma') || n.includes('transcript'));
-  const hasExperienceCerts = categories.has('experience_certificates');
-  const hasNavttc = categories.has('navttc_reports') || fileNames.some((n) => n.includes('navttc'));
   const hasPolice = categories.has('police_character_certificate') || fileNames.some((n) => n.includes('police'));
-  const hasProfessionalCerts =
-    flags.certificate_received || categories.has('certificates') || categories.has('certificate') || docTypes.has('certificate');
-  const hasContracts = categories.has('contracts') || fileNames.some((n) => n.includes('contract'));
-  const hasMedical =
-    flags.medical_received || categories.has('medical_reports') || categories.has('medical') || docTypes.has('medical') || fileNames.some((n) => n.includes('medical'));
 
   const missing: MissingDocKey[] = [];
 
-  // Only request what's actually missing (but include all categories you listed).
+  // Only request the core documents requested by the client.
   if (!hasCv) missing.push('cv');
   if (!hasPassport) missing.push('passport');
-  if (!hasEducation) missing.push('degree');
-  if (!hasExperienceCerts) missing.push('experience_certificates');
-  if (!hasNavttc) missing.push('navttc_reports');
+  if (!hasCnic) missing.push('cnic');
+  if (!hasDrivingLicense) missing.push('driving_license');
   if (!hasPolice) missing.push('police_certificate');
-  if (!hasProfessionalCerts) missing.push('certificate');
-  if (!hasContracts) missing.push('contracts');
-  if (!hasMedical) missing.push('medical');
+  if (!hasEducation) missing.push('degree');
 
   return Array.from(new Set(missing));
 }
@@ -207,20 +198,14 @@ function docLabel(doc: MissingDocKey): string {
       return '📄 CV / Resume';
     case 'passport':
       return '🛂 Passport';
+    case 'cnic':
+      return '🪪 CNIC / National ID';
+    case 'driving_license':
+      return '🚗 Driving License';
+    case 'police_certificate':
+      return '👮 Police Character Certificate';
     case 'degree':
       return '🎓 Educational Documents';
-    case 'experience_certificates':
-      return '💼 Experience Certificates';
-    case 'navttc_reports':
-      return '👷 NAVTTC Reports';
-    case 'police_certificate':
-      return '👮 Police Certificate';
-    case 'medical':
-      return '🏥 Medical Reports';
-    case 'certificate':
-      return '📜 Professional Certificates';
-    case 'contracts':
-      return '📋 Contracts';
     default:
       return doc;
   }
@@ -236,7 +221,7 @@ function renderMissingDataEmail(args: {
   const name = (args.candidateName || '').trim() || 'Candidate';
 
   const fieldsLinesText = args.missingFields.map((f) => `${f.label}: `);
-  const fieldsBlockText = fieldsLinesText.length ? fieldsLinesText.join('\n') : '(No fields listed)';
+  const fieldsBlockText = fieldsLinesText.length ? fieldsLinesText.join('\n') : '';
 
   const docsLinesText = args.missingDocs.map((d) => `- ${docLabel(d)}`);
   const docsBlockText = docsLinesText.join('\n');
@@ -263,20 +248,18 @@ function renderMissingDataEmail(args: {
   // Embed tracking token in subject for reliable reply matching
   const trackingToken = args.trackingToken || '';
   const subject = trackingToken 
-    ? `Action required: reply with missing details [#${trackingToken}]`
-    : 'Action required: reply with missing details';
+    ? `Action required: please send missing documents [#${trackingToken}]`
+    : 'Action required: please send missing documents';
   const bodyText = [
     `Assalam o Alaikum ${name},`,
     '',
-    'Thanks for your application. To complete your profile, please reply with the missing details below.',
-    'You can simply type your answers after each ":" on the same line.',
+    'Thanks for your application. To complete your profile, please share the missing details below and send clear photos/scans of the required documents.',
     '',
-    'Reply (copy/paste and fill):',
-    fieldsBlockText,
+    fieldsBlockText ? 'Reply with:' : '',
+    fieldsBlockText || '',
     '',
-    args.missingDocs.length
-      ? 'Please also attach clear photos/scans of these document(s):\n' + docsBlockText
-      : '',
+    args.missingDocs.length ? 'Documents needed:' : '',
+    args.missingDocs.length ? docsBlockText : '',
     '',
     'Notes:',
     '- Please reply to this same email (keep the thread).',
@@ -289,16 +272,16 @@ function renderMissingDataEmail(args: {
 
   const bodyHtml = [
     `<p>Assalam o Alaikum ${escapeHtml(name)},</p>`,
-    `<p>Thanks for your application. To complete your profile, please reply with the missing details below.</p>`,
-    `<p><strong>Tip:</strong> You can type your answers in the right column, or after each “:” in your reply.</p>`,
+    `<p>Thanks for your application. To complete your profile, please share the missing details below and send clear photos/scans of the required documents.</p>`,
     args.missingFields.length
-      ? `<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse; width:100%;">` +
+      ? `<p><strong>Reply with:</strong></p>` +
+        `<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse; width:100%;">` +
         `<thead><tr><th align="left" style="padding:6px;">Field</th><th align="left" style="padding:6px;">Answer</th></tr></thead>` +
         `<tbody>${fieldsTableRowsHtml}</tbody>` +
         `</table>`
-      : `<p>(No fields listed)</p>`,
+      : '',
     args.missingDocs.length
-      ? `<p><strong>Please also attach clear photos/scans of:</strong></p>${docsListHtml}`
+      ? `<p><strong>Please attach:</strong></p>${docsListHtml}`
       : '',
     `<p><strong>Notes:</strong></p>`,
     `<ul><li>Please reply to this same email (keep the thread).</li><li>Do not send passwords/OTPs.</li></ul>`,
@@ -360,8 +343,11 @@ export async function maybeSendMissingDataEmail(args: {
 
     const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await import('./progressiveDataCompletionService');
     const missingFieldsRaw: string[] = Array.from(new Set(calculateMissingFields(candidate)));
+    const importantMissingFieldsRaw = missingFieldsRaw.filter((field) =>
+      ['country_of_interest', 'salary_expectation'].includes(field)
+    );
 
-    const missingFields = missingFieldsRaw.map((field) => ({
+    const missingFields = importantMissingFieldsRaw.map((field) => ({
       field,
       label: (EXCEL_BROWSER_FIELDS as any)[field] || field,
     }));
@@ -464,7 +450,7 @@ export async function maybeSendMissingDataEmail(args: {
         to_email: toEmail,
         subject,
         body_text: rendered.bodyText,
-        missing_fields: missingFieldsRaw,
+        missing_fields: importantMissingFieldsRaw,
         missing_docs: missingDocs,
         attempt_no: newAttempts,
         trigger: args.trigger,
@@ -514,7 +500,10 @@ export async function generateMissingDataEmailContent(args: {
 
   const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await import('./progressiveDataCompletionService');
   const missingFieldsRaw: string[] = Array.from(new Set(calculateMissingFields(candidate)));
-  const missingFields = missingFieldsRaw.map((field) => ({
+  const importantMissingFieldsRaw = missingFieldsRaw.filter((field) =>
+    ['country_of_interest', 'salary_expectation'].includes(field)
+  );
+  const missingFields = importantMissingFieldsRaw.map((field) => ({
     field,
     label: (EXCEL_BROWSER_FIELDS as any)[field] || field,
   }));
@@ -574,8 +563,11 @@ export async function sendStandaloneMissingDataEmail(args: {
       './progressiveDataCompletionService'
     );
     const missingFieldsRaw: string[] = Array.from(new Set(calculateMissingFields(candidate)));
+    const importantMissingFieldsRaw = missingFieldsRaw.filter((field) =>
+      ['country_of_interest', 'salary_expectation'].includes(field)
+    );
 
-    const missingFields = missingFieldsRaw.map((field) => ({
+    const missingFields = importantMissingFieldsRaw.map((field) => ({
       field,
       label: (EXCEL_BROWSER_FIELDS as any)[field] || field,
     }));
@@ -668,7 +660,7 @@ export async function sendStandaloneMissingDataEmail(args: {
         to_email: toEmail,
         subject: rendered.subject,
         body_text: rendered.bodyText,
-        missing_fields: missingFieldsRaw,
+        missing_fields: importantMissingFieldsRaw,
         missing_docs: missingDocs,
         attempt_no: newAttempts,
         trigger: args.trigger,

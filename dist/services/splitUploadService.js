@@ -27,6 +27,8 @@ const documentNaming_1 = require("../utils/documentNaming");
 const splitDocumentProcessor_1 = require("../utils/splitDocumentProcessor");
 const progressiveDataCompletionService_1 = require("./progressiveDataCompletionService");
 const hybridPhotoExtractionService_1 = require("./hybridPhotoExtractionService");
+const candidateMatcher_1 = require("./candidateMatcher");
+const emailService_1 = require("./emailService");
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
 const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
@@ -155,14 +157,18 @@ async function callSplitAndCategorize(fileContentBase64, fileName, mimeType, can
 /**
  * Create candidate from parser identity when no candidate_id. Use name or placeholder.
  * If identity matches existing (cnic/passport), return existing candidate id.
+ *
+ * DEDUPLICATION FLOW (multi-layer, matches Gmail worker):
+ * Layer 1: CNIC check (highest confidence)
+ * Layer 2: Passport check
+ * Layer 3: Email/Phone check via CandidateMatcher (NEW - prevents manual upload duplicates)
+ * Layer 4: Create new candidate only if no match found
  */
 async function createCandidateFromIdentity(identity, userId) {
+    let pendingDuplicateAlert = null;
     const cnic = identity?.cnic || undefined;
     const passport = identity?.passport_no || undefined;
-    const duplicates = await (0, candidateService_1.checkForDuplicates)(cnic, passport);
-    if (duplicates.length > 0) {
-        return { id: duplicates[0].id };
-    }
+    const phone = identity?.phone || undefined;
     const name = identity?.name || identity?.father_name || 'Unknown';
     // Filter government emails
     let email = identity?.email || undefined;
@@ -170,16 +176,104 @@ async function createCandidateFromIdentity(identity, userId) {
         console.log(`🚫 Filtered government email in split upload: ${email}`);
         email = undefined;
     }
+    // LAYER 1 & 2: Check for duplicates by CNIC/Passport (existing logic)
+    const duplicates = await (0, candidateService_1.checkForDuplicates)(cnic, passport);
+    if (duplicates.length > 0) {
+        console.log(`🔗 [Manual Upload] Found existing candidate ${duplicates[0].candidate_code} via ${duplicates[0].matchReason}`);
+        return { id: duplicates[0].id };
+    }
+    // LAYER 3: Pre-create deduplication via CandidateMatcher (email/phone)
+    // CRITICAL: This prevents duplicates when admin manually uploads CV for existing
+    // candidate who doesn't have CNIC/passport filled yet (e.g., pending missing data)
+    if (email || phone) {
+        console.log(`[Manual Upload] Pre-create dedup: checking email=${email?.substring(0, 20)}..., phone=${phone}`);
+        const matchResult = await candidateMatcher_1.CandidateMatcher.findCandidate({
+            cnic,
+            email,
+            phone,
+            name,
+        });
+        if (matchResult.candidateId) {
+            console.log(`✅ [Manual Upload] Matched existing candidate via ${matchResult.matchedBy} (confidence: ${matchResult.confidence})`);
+            return { id: matchResult.candidateId };
+        }
+        if (matchResult.needsManualReview) {
+            console.warn(`⚠️  [Manual Upload] Multiple candidates found, creating anyway (admin can merge later):`, matchResult.reviewReasons);
+            pendingDuplicateAlert = {
+                matchCount: matchResult.matchCount,
+                matchedBy: matchResult.matchedBy,
+                reviewReasons: matchResult.reviewReasons,
+            };
+            // Continue to create - admin will see duplicate warning and can merge
+        }
+    }
+    // LAYER 4: No match found - create new candidate
+    console.log(`➕ [Manual Upload] Creating new candidate: ${name}`);
     const data = {
         name: String(name).trim() || 'Unknown',
         email,
-        phone: identity?.phone || undefined,
+        phone,
         date_of_birth: identity?.date_of_birth || undefined,
         cnic,
         passport,
     };
     const candidate = await (0, candidateService_1.createCandidate)(data, userId);
+    if (pendingDuplicateAlert) {
+        await sendHighSimilarityAlert({
+            candidateCode: candidate.candidate_code,
+            candidateId: candidate.id,
+            name: candidate.name,
+            email: candidate.email,
+            phone: candidate.phone,
+            matchCount: pendingDuplicateAlert.matchCount,
+            matchedBy: pendingDuplicateAlert.matchedBy,
+            reviewReasons: pendingDuplicateAlert.reviewReasons,
+        });
+    }
     return { id: candidate.id };
+}
+async function sendHighSimilarityAlert(details) {
+    const alertRecipient = process.env.DUPLICATE_ALERT_EMAIL || 'falishamanpower4035@gmail.com';
+    const subject = `Possible duplicate created (manual upload): ${details.candidateCode || details.candidateId}`;
+    const reasons = details.reviewReasons?.length
+        ? details.reviewReasons.join('; ')
+        : 'Multiple potential matches detected.';
+    const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+      <h2 style="margin: 0 0 12px 0;">Possible duplicate candidate created</h2>
+      <p style="margin: 0 0 12px 0;">A new candidate was created via manual upload with high similarity to existing records.</p>
+      <table style="border-collapse: collapse;">
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Candidate Code:</td><td style="padding: 4px 8px;">${details.candidateCode || 'N/A'}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Candidate ID:</td><td style="padding: 4px 8px;">${details.candidateId}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Name:</td><td style="padding: 4px 8px;">${details.name}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Email:</td><td style="padding: 4px 8px;">${details.email || 'N/A'}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Phone:</td><td style="padding: 4px 8px;">${details.phone || 'N/A'}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Matches Found:</td><td style="padding: 4px 8px;">${details.matchCount}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Matched By:</td><td style="padding: 4px 8px;">${details.matchedBy || 'Multiple'}</td></tr>
+        <tr><td style="padding: 4px 8px; font-weight: bold;">Reasons:</td><td style="padding: 4px 8px;">${reasons}</td></tr>
+      </table>
+      <p style="margin: 12px 0 0 0;">Please review and merge if needed.</p>
+    </div>
+  `;
+    const text = [
+        'Possible duplicate candidate created (manual upload)',
+        `Candidate Code: ${details.candidateCode || 'N/A'}`,
+        `Candidate ID: ${details.candidateId}`,
+        `Name: ${details.name}`,
+        `Email: ${details.email || 'N/A'}`,
+        `Phone: ${details.phone || 'N/A'}`,
+        `Matches Found: ${details.matchCount}`,
+        `Matched By: ${details.matchedBy || 'Multiple'}`,
+        `Reasons: ${reasons}`,
+        'Please review and merge if needed.',
+    ].join('\n');
+    try {
+        await emailService_1.emailService.sendEmail({ to: alertRecipient, subject, html, text });
+        console.log(`[Manual Upload] High-similarity alert sent to ${alertRecipient}`);
+    }
+    catch (error) {
+        console.warn('[Manual Upload] Failed to send high-similarity alert:', error);
+    }
 }
 /**
  * Ensure we have a candidate_id: use existing (if found) or create from identity.

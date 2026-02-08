@@ -95,6 +95,37 @@ async function pollGmail() {
           }
         }
 
+        // STRATEGY 3 (ADDITIONAL): Match by email address from "From" field
+        // This prevents duplicates BEFORE parsing even starts
+        if (!resolvedCandidate) {
+          const fromRaw = fullMessage.from || '';
+          const emailMatch = fromRaw.match(/<([^>]+)>/) || fromRaw.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+          const fromEmail = (emailMatch?.[1] || emailMatch?.[0] || '').trim().toLowerCase();
+
+          if (fromEmail) {
+            // Check if this email already has a candidate (skip government emails)
+            const isGovEmail = /police|govt|gov\.|government|official|admin@|info@|contact@/i.test(fromEmail);
+            if (!isGovEmail) {
+              const { data: emailCandidateMatch } = await db
+                .from('candidates')
+                .select('id, email')
+                .ilike('email', fromEmail)
+                .neq('status', 'Deleted')
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+              if (emailCandidateMatch?.id) {
+                resolvedCandidate = { id: emailCandidateMatch.id };
+                logger.info('Resolved candidate by email address (pre-parse deduplication)', {
+                  candidateId: emailCandidateMatch.id,
+                  email: fromEmail,
+                });
+              }
+            }
+          }
+        }
+
         // If we have already seen this thread in inbox, treat subsequent messages as replies
         // even if the candidate mapping isn't written yet (prevents accidental new-candidate creation).
         const { data: existingThreadMessages } = threadId
@@ -321,7 +352,58 @@ async function pollGmail() {
           continue;
         }
 
-        // Download and store each attachment
+        // At this point, no candidate was resolved by token/thread/email
+        // Download and store attachments
+        // If resolvedCandidate exists (matched by email in Strategy 3), link attachments directly
+        if (resolvedCandidate?.id) {
+          logger.info('Pre-parse deduplication: linking attachments to existing candidate', {
+            candidateId: resolvedCandidate.id,
+            messageId: fullMessage.id,
+          });
+
+          // Link all attachments directly to the resolved candidate
+          for (const attachment of fullMessage.attachments) {
+            if (!attachment.id) continue;
+            try {
+              const buffer = await getAttachment(fullMessage.id, attachment.id);
+              await uploadCandidateDocument({
+                candidate_id: resolvedCandidate.id,
+                file_name: attachment.filename,
+                mime_type: attachment.mimeType,
+                buffer,
+                source: 'email',
+              });
+              logger.debug('Linked attachment to existing candidate (pre-parse dedup)', {
+                candidateId: resolvedCandidate.id,
+                filename: attachment.filename,
+              });
+            } catch (err) {
+              logger.error('Failed to link attachment to existing candidate', err, {
+                candidateId: resolvedCandidate.id,
+                filename: attachment.filename,
+              });
+              errorCount++;
+            }
+          }
+
+          // Set gmail_thread_id for future lookups
+          await db
+            .from('candidates')
+            .update({
+              gmail_thread_id: threadId || null,
+              gmail_last_message_id: fullMessage.messageIdHeader || null,
+              gmail_last_subject: fullMessage.subject || null,
+              gmail_from_email: fullMessage.from || null,
+            })
+            .eq('id', resolvedCandidate.id);
+
+          successCount++;
+          continue;
+        }
+
+        // No existing candidate found - store attachments and queue parsing (will create new candidate)
+        // NOTE: CV parser worker will perform secondary deduplication check via findExistingCandidate()
+        // using CNIC/passport/phone/name matching after parsing completes
         for (const attachment of fullMessage.attachments) {
           if (!attachment.id) continue;
 

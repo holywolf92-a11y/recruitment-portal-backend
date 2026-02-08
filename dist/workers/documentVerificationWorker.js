@@ -1061,6 +1061,25 @@ async function processDocumentVerification(job) {
                 }
                 // Recalculate missing fields
                 await updateMissingFields(candidateId);
+                // Fetch candidate to check if gmail_thread_id is set
+                const { data: candidateForEmail } = await db
+                    .from('candidates')
+                    .select('gmail_thread_id')
+                    .eq('id', candidateId)
+                    .maybeSingle();
+                // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
+                try {
+                    const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
+                    if (candidateForEmail?.gmail_thread_id) {
+                        await maybeSendMissingDataEmail({ candidateId, trigger: 'document_verified' });
+                    }
+                    else {
+                        await sendStandaloneMissingDataEmail({ candidateId, trigger: 'document_verified_manual' });
+                    }
+                }
+                catch (emailErr) {
+                    console.warn('[DocumentVerification] Missing-data email send failed (non-fatal):', emailErr);
+                }
             }
             catch (enrichmentError) {
                 console.error('[DocumentVerification] ❌ Exception in progressive enrichment:', enrichmentError);

@@ -5,12 +5,15 @@ exports.listAttachmentsForMessage = listAttachmentsForMessage;
 exports.deleteAttachment = deleteAttachment;
 exports.getAttachmentById = getAttachmentById;
 exports.getAttachmentSignedUrl = getAttachmentSignedUrl;
+exports.enqueueCvParsingJobForAttachment = enqueueCvParsingJobForAttachment;
 const database_1 = require("../config/database");
+const queue_1 = require("../config/queue");
 const errorHandling_1 = require("../utils/errorHandling");
 const hashing_1 = require("../utils/hashing");
 const inboxMemory_1 = require("./inboxMemory");
 const documentClassifier_1 = require("./documentClassifier");
 const documentLinkQueue_1 = require("../queues/documentLinkQueue");
+const parsingJobsService_1 = require("./parsingJobsService");
 const logger = (0, errorHandling_1.createLogger)('InboxAttachmentService');
 async function createAttachment(input) {
     if (!input.inboxMessageId)
@@ -260,4 +263,45 @@ async function getAttachmentSignedUrl(id, expiresInSeconds = 300) {
         throw new errorHandling_1.AppError(`Failed to create signed URL: ${error.message}`, errorHandling_1.ErrorType.DATABASE, 500);
     }
     return data.signedUrl;
+}
+async function enqueueCvParsingJobForAttachment(attachmentId, options) {
+    const parsingJobs = new parsingJobsService_1.ParsingJobsService();
+    let jobRowId = null;
+    try {
+        const attachment = await getAttachmentById(attachmentId);
+        const fileHash = attachment?.sha256 ?? null;
+        const signedUrl = await getAttachmentSignedUrl(attachmentId, options?.expiresInSeconds ?? 3600);
+        const createdJobRow = await parsingJobs.createJob({ attachmentId, fileHash });
+        jobRowId = createdJobRow.id;
+        await queue_1.cvParsingQueue.add('parse', {
+            jobId: createdJobRow.id,
+            attachmentId,
+            fileUrl: signedUrl,
+            fileHash,
+            force: options?.force ?? false,
+        }, {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 },
+            removeOnComplete: 200,
+            removeOnFail: 200,
+        });
+        logger.info('Enqueued CV parsing job', { attachmentId, jobId: createdJobRow.id });
+        return { jobId: createdJobRow.id, status: 'queued' };
+    }
+    catch (err) {
+        if (jobRowId) {
+            try {
+                await parsingJobs.setStatus(jobRowId, 'failed', {
+                    result_json: {
+                        error: 'QUEUE_ENQUEUE_FAILED',
+                        message: err instanceof Error ? err.message : String(err),
+                    },
+                });
+            }
+            catch {
+                // Best-effort only; original error still thrown.
+            }
+        }
+        throw err;
+    }
 }

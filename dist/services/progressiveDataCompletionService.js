@@ -27,7 +27,7 @@ exports.EXCEL_BROWSER_FIELDS = {
     position: 'Position',
     age: 'Age', // Calculated from date_of_birth
     nationality: 'Nationality',
-    country_of_interest: 'Country',
+    country_of_interest: 'Country of Interest',
     phone: 'Phone',
     email: 'Email',
     experience_years: 'Experience',
@@ -38,7 +38,7 @@ exports.EXCEL_BROWSER_FIELDS = {
     marital_status: 'Marital',
     salary_expectation: 'Salary Exp.',
     available_from: 'Available',
-    interview_date: 'Interview',
+    interview_date: 'Interview Date',
     passport: 'Passport #',
     passport_expiry: 'Pass. Expiry',
     medical_expiry: 'Medical Exp.',

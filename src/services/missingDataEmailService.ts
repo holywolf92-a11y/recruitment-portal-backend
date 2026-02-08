@@ -8,11 +8,13 @@ const logger = createLogger('MissingDataEmailService');
 type MissingDocKey =
   | 'cv'
   | 'passport'
-  | 'cnic'
-  | 'driving_license'
   | 'degree'
   | 'medical'
-  | 'certificate';
+  | 'certificate'
+  | 'experience_certificates'
+  | 'navttc_reports'
+  | 'police_certificate'
+  | 'contracts';
 
 function sha256(text: string): string {
   return crypto.createHash('sha256').update(text).digest('hex');
@@ -117,42 +119,75 @@ async function maybeBackfillGmailThreadIdentity(candidateId: string): Promise<
   }
 }
 
-function computeMissingDocs(candidate: any, missingFields: string[]): MissingDocKey[] {
+async function computeMissingDocsForCandidate(args: {
+  candidateId: string;
+  candidate: any;
+  missingFields: string[];
+}): Promise<MissingDocKey[]> {
+  const candidate = args.candidate;
+
   const flags = {
     cv_received: !!candidate?.cv_received,
     passport_received: !!candidate?.passport_received,
-    cnic_received: !!candidate?.cnic_received,
-    driving_license_received: !!candidate?.driving_license_received,
     degree_received: !!candidate?.degree_received,
     medical_received: !!candidate?.medical_received,
     certificate_received: !!candidate?.certificate_received,
   };
 
-  const wantsPassport = missingFields.includes('passport') || missingFields.includes('passport_expiry');
-  const wantsCnic = missingFields.includes('cnic');
-  const wantsLicense = missingFields.includes('driving_license');
-  const wantsDegree = missingFields.includes('education');
-  const wantsMedical = missingFields.includes('medical_expiry');
-  const wantsCertificate = missingFields.includes('certifications');
+  let docs: Array<{ category?: string | null; document_type?: string | null; file_name?: string | null }> = [];
+  try {
+    const db = supabaseAdminClient();
+    const { data } = await db
+      .from('candidate_documents')
+      .select('category, document_type, file_name')
+      .eq('candidate_id', args.candidateId)
+      .limit(200);
+    docs = (data as any[]) || [];
+  } catch {
+    // Non-fatal: fallback to flags only.
+    docs = [];
+  }
+
+  const categories = new Set(
+    docs
+      .map((d) => (typeof d?.category === 'string' ? d.category.toLowerCase().trim() : ''))
+      .filter(Boolean)
+  );
+  const docTypes = new Set(
+    docs
+      .map((d) => (typeof d?.document_type === 'string' ? d.document_type.toLowerCase().trim() : ''))
+      .filter(Boolean)
+  );
+  const fileNames = docs
+    .map((d) => (typeof d?.file_name === 'string' ? d.file_name.toLowerCase() : ''))
+    .filter(Boolean);
+
+  const hasCv = flags.cv_received || categories.has('cv_resume') || categories.has('cv');
+  const hasPassport =
+    flags.passport_received || categories.has('passport') || docTypes.has('passport') || fileNames.some((n) => n.includes('passport'));
+  const hasEducation =
+    flags.degree_received || categories.has('educational_documents') || docTypes.has('degree') || fileNames.some((n) => n.includes('degree') || n.includes('diploma') || n.includes('transcript'));
+  const hasExperienceCerts = categories.has('experience_certificates');
+  const hasNavttc = categories.has('navttc_reports') || fileNames.some((n) => n.includes('navttc'));
+  const hasPolice = categories.has('police_character_certificate') || fileNames.some((n) => n.includes('police'));
+  const hasProfessionalCerts =
+    flags.certificate_received || categories.has('certificates') || categories.has('certificate') || docTypes.has('certificate');
+  const hasContracts = categories.has('contracts') || fileNames.some((n) => n.includes('contract'));
+  const hasMedical =
+    flags.medical_received || categories.has('medical_reports') || categories.has('medical') || docTypes.has('medical') || fileNames.some((n) => n.includes('medical'));
 
   const missing: MissingDocKey[] = [];
 
-  // Always-required docs for the loop
-  if (!flags.cv_received) missing.push('cv');
-  if (!flags.passport_received) missing.push('passport');
-
-  // Conditional docs based on what we're missing
-  if (wantsCnic && !flags.cnic_received) missing.push('cnic');
-  if (wantsLicense && !flags.driving_license_received) missing.push('driving_license');
-  if (wantsDegree && !flags.degree_received) missing.push('degree');
-  if (wantsMedical && !flags.medical_received) missing.push('medical');
-  if (wantsCertificate && !flags.certificate_received) missing.push('certificate');
-
-  // If we explicitly need passport info, still request passport even if flag says received.
-  // (Sometimes the doc exists but the field wasn’t extracted.)
-  if (wantsPassport && !missing.includes('passport')) {
-    missing.unshift('passport');
-  }
+  // Only request what's actually missing (but include all categories you listed).
+  if (!hasCv) missing.push('cv');
+  if (!hasPassport) missing.push('passport');
+  if (!hasEducation) missing.push('degree');
+  if (!hasExperienceCerts) missing.push('experience_certificates');
+  if (!hasNavttc) missing.push('navttc_reports');
+  if (!hasPolice) missing.push('police_certificate');
+  if (!hasProfessionalCerts) missing.push('certificate');
+  if (!hasContracts) missing.push('contracts');
+  if (!hasMedical) missing.push('medical');
 
   return Array.from(new Set(missing));
 }
@@ -160,19 +195,23 @@ function computeMissingDocs(candidate: any, missingFields: string[]): MissingDoc
 function docLabel(doc: MissingDocKey): string {
   switch (doc) {
     case 'cv':
-      return 'CV / Resume';
+      return '📄 CV / Resume';
     case 'passport':
-      return 'Passport';
-    case 'cnic':
-      return 'CNIC / National ID';
-    case 'driving_license':
-      return 'Driving License';
+      return '🛂 Passport';
     case 'degree':
-      return 'Education documents (degree/diploma/transcript)';
+      return '🎓 Educational Documents';
+    case 'experience_certificates':
+      return '💼 Experience Certificates';
+    case 'navttc_reports':
+      return '👷 NAVTTC Reports';
+    case 'police_certificate':
+      return '👮 Police Certificate';
     case 'medical':
-      return 'Medical report';
+      return '🏥 Medical Reports';
     case 'certificate':
-      return 'Certificates';
+      return '📜 Professional Certificates';
+    case 'contracts':
+      return '📋 Contracts';
     default:
       return doc;
   }
@@ -313,7 +352,11 @@ export async function maybeSendMissingDataEmail(args: {
       label: (EXCEL_BROWSER_FIELDS as any)[field] || field,
     }));
 
-    const missingDocs = computeMissingDocs(candidate, missingFieldsRaw);
+    const missingDocs = await computeMissingDocsForCandidate({
+      candidateId: args.candidateId,
+      candidate,
+      missingFields: missingFieldsRaw,
+    });
 
     if (missingFields.length === 0 && missingDocs.length === 0) {
       if (candidate.missing_data_email_status !== 'completed') {
@@ -445,12 +488,16 @@ export async function generateMissingDataEmailContent(args: {
   }
 
   const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await import('./progressiveDataCompletionService');
-  const missingFieldsRaw: string[] = calculateMissingFields(candidate);
+  const missingFieldsRaw: string[] = Array.from(new Set(calculateMissingFields(candidate)));
   const missingFields = missingFieldsRaw.map((field) => ({
     field,
     label: (EXCEL_BROWSER_FIELDS as any)[field] || field,
   }));
-  const missingDocs = computeMissingDocs(candidate, missingFieldsRaw);
+  const missingDocs = await computeMissingDocsForCandidate({
+    candidateId: args.candidateId,
+    candidate,
+    missingFields: missingFieldsRaw,
+  });
 
   const rendered = renderMissingDataEmail({
     candidateId: args.candidateId,
@@ -507,7 +554,11 @@ export async function sendStandaloneMissingDataEmail(args: {
       field,
       label: (EXCEL_BROWSER_FIELDS as any)[field] || field,
     }));
-    const missingDocs = computeMissingDocs(candidate, missingFieldsRaw);
+    const missingDocs = await computeMissingDocsForCandidate({
+      candidateId: args.candidateId,
+      candidate,
+      missingFields: missingFieldsRaw,
+    });
 
     if (missingFields.length === 0 && missingDocs.length === 0) {
       if (candidate.missing_data_email_status !== 'completed') {

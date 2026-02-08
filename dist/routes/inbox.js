@@ -65,7 +65,25 @@ router.post('/:id/attachments', (0, errorHandling_1.asyncHandler)(async (req, re
         storagePath: storage_path,
         candidateId: candidate_id,
     });
-    res.status(201).json(attachment);
+    // Always enqueue CV parsing if attachment_type is 'cv', regardless of classification
+    // This handles cases where filename doesn't contain CV keywords (e.g., "noran.pdf")
+    const shouldEnqueue = (attachment?.attachment_type ?? 'cv') === 'cv';
+    let jobInfo = null;
+    if (shouldEnqueue) {
+        try {
+            jobInfo = await (0, inboxAttachmentService_1.enqueueCvParsingJobForAttachment)(attachment.id, { force: false, expiresInSeconds: 3600 });
+        }
+        catch (enqueueErr) {
+            console.error(`[InboxAttachment] Failed to enqueue CV parsing for ${attachment.id}:`, enqueueErr);
+            // Don't fail the upload - file is saved, user can retry parsing later
+            jobInfo = null;
+        }
+    }
+    res.status(200).json({
+        attachment,
+        job_id: jobInfo?.jobId ?? null,
+        status: jobInfo?.status ?? null,
+    });
 }));
 router.delete('/attachments/:attachmentId', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const deleted = await (0, inboxAttachmentService_1.deleteAttachment)(req.params.attachmentId);
@@ -74,6 +92,14 @@ router.delete('/attachments/:attachmentId', (0, errorHandling_1.asyncHandler)(as
 // Trigger parsing job for an attachment
 router.post('/attachments/:attachmentId/process', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const { attachmentId } = req.params;
+    // Validate attachmentId is a valid UUID
+    if (!attachmentId || attachmentId === 'undefined' || attachmentId === 'null') {
+        console.error(`[AttachmentProcess] Invalid attachmentId received: ${attachmentId}`);
+        return res.status(400).json({
+            error: 'Invalid attachment ID',
+            message: 'Attachment ID must be a valid UUID'
+        });
+    }
     const force = String(req.query?.force ?? '').toLowerCase() === 'true' || String(req.query?.force ?? '') === '1';
     console.log(`[AttachmentProcess] Starting for attachmentId=${attachmentId}`);
     const parsingJobs = new parsingJobsService_1.ParsingJobsService();
@@ -136,5 +162,14 @@ router.post('/attachments/:attachmentId/process', (0, errorHandling_1.asyncHandl
         console.error(`[AttachmentProcess] Error:`, err instanceof Error ? err.message : String(err), err);
         throw err; // Let asyncHandler deal with it
     }
+}));
+// Retry parsing job for an attachment (re-enqueue)
+router.post('/attachments/:attachmentId/retry', (0, errorHandling_1.asyncHandler)(async (req, res) => {
+    const { attachmentId } = req.params;
+    const jobInfo = await (0, inboxAttachmentService_1.enqueueCvParsingJobForAttachment)(attachmentId, {
+        force: true,
+        expiresInSeconds: 3600,
+    });
+    res.status(202).json({ job_id: jobInfo.jobId, status: jobInfo.status });
 }));
 exports.default = router;

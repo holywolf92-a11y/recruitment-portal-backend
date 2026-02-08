@@ -22,10 +22,96 @@ function safeString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function getCandidatePreferredEmail(candidate: any): string | null {
   const gmailFrom = safeString(candidate?.gmail_from_email).trim();
   const email = safeString(candidate?.email).trim();
   return gmailFrom || email || null;
+}
+
+async function maybeBackfillGmailThreadIdentity(candidateId: string): Promise<
+  | {
+      ok: true;
+      threadId: string;
+      subject: string | null;
+      messageIdHeader: string | null;
+      fromEmail: string | null;
+    }
+  | { ok: false }
+> {
+  try {
+    const db = supabaseAdminClient();
+
+    const { data: candidate } = await db
+      .from('candidates')
+      .select('id,email,gmail_thread_id,gmail_from_email')
+      .eq('id', candidateId)
+      .maybeSingle();
+
+    if (!candidate) return { ok: false };
+    if (safeString((candidate as any).gmail_thread_id).trim()) return { ok: false };
+
+    const { data: rows, error } = await db
+      .from('inbox_attachments')
+      .select('inbox_message_id, created_at, inbox_messages (source, payload)')
+      .eq('candidate_id', candidateId)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (error || !rows || rows.length === 0) return { ok: false };
+
+    for (const row of rows as any[]) {
+      const msg = row?.inbox_messages;
+      if (!msg || msg.source !== 'gmail') continue;
+
+      const payload: any = msg.payload || {};
+      const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : '';
+      if (!threadId) continue;
+
+      const subject = typeof payload.subject === 'string' ? payload.subject : null;
+
+      const messageIdHeader =
+        typeof payload.messageIdHeader === 'string'
+          ? payload.messageIdHeader
+          : typeof payload.messageId === 'string'
+            ? payload.messageId
+            : null;
+
+      const fromRaw = typeof payload.from === 'string' ? payload.from : '';
+      const emailMatch = fromRaw.match(/<([^>]+)>/) || fromRaw.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+      const fromEmail = (emailMatch?.[1] || emailMatch?.[0] || '').trim() || null;
+
+      const candidateEmail = safeString((candidate as any).email).trim();
+
+      const update: any = {
+        gmail_thread_id: threadId,
+        gmail_last_subject: subject,
+        gmail_last_message_id: messageIdHeader,
+      };
+
+      // Only set gmail_from_email if candidate has no real email.
+      // This avoids accidentally preferring a forwarding sender over the candidate's actual email.
+      if (!candidateEmail && fromEmail) {
+        update.gmail_from_email = fromEmail;
+      }
+
+      await db.from('candidates').update(update).eq('id', candidateId);
+
+      return { ok: true, threadId, subject, messageIdHeader, fromEmail };
+    }
+
+    return { ok: false };
+  } catch {
+    return { ok: false };
+  }
 }
 
 function computeMissingDocs(candidate: any, missingFields: string[]): MissingDocKey[] {
@@ -94,47 +180,75 @@ function renderMissingDataEmail(args: {
   candidateName?: string | null;
   missingFields: Array<{ field: string; label: string }>;
   missingDocs: MissingDocKey[];
-}): { subject: string; bodyText: string; snapshotHash: string } {
+}): { subject: string; bodyText: string; bodyHtml: string; snapshotHash: string } {
   const name = (args.candidateName || '').trim() || 'Candidate';
 
-  const fieldsBlock = args.missingFields
-    .map((f) => `- ${f.label}:`)
-    .join('\n');
+  const fieldsLinesText = args.missingFields.map((f) => `${f.label}: `);
+  const fieldsBlockText = fieldsLinesText.length ? fieldsLinesText.join('\n') : '(No fields listed)';
 
-  const docsBlock = args.missingDocs.length
-    ? args.missingDocs.map((d) => `- ${docLabel(d)}`).join('\n')
+  const docsLinesText = args.missingDocs.map((d) => `- ${docLabel(d)}`);
+  const docsBlockText = docsLinesText.join('\n');
+
+  const fieldsTableRowsHtml = args.missingFields
+    .map(
+      (f) =>
+        `<tr>` +
+        `<td style="padding:6px; vertical-align:top;"><strong>${escapeHtml(f.label)}</strong></td>` +
+        `<td style="padding:6px; vertical-align:top;">&nbsp;</td>` +
+        `</tr>`
+    )
+    .join('');
+
+  const docsListHtml = args.missingDocs.length
+    ? `<ul>${args.missingDocs.map((d) => `<li>${escapeHtml(docLabel(d))}</li>`).join('')}</ul>`
     : '';
 
-  const machineReadable = [
-    'BEGIN_RAP_MISSING_DATA_V1',
-    `candidate_id: ${args.candidateId}`,
-    'fields:',
-    ...args.missingFields.map((f) => `- ${f.field}`),
-    'docs:',
-    ...args.missingDocs.map((d) => `- ${d}`),
-    'END_RAP_MISSING_DATA_V1',
+  const referenceBlockText = [
+    '--- Reference (please keep) ---',
+    `RAP_CANDIDATE_ID: ${args.candidateId}`,
   ].join('\n');
 
-  const subject = 'Missing information for your application';
+  const subject = 'Action required: reply with missing details';
   const bodyText = [
     `Assalam o Alaikum ${name},`,
     '',
-    'Thanks for your application. To complete your profile, please reply to this email with the missing details below (you can type the answers directly in your reply):',
+    'Thanks for your application. To complete your profile, please reply with the missing details below.',
+    'You can simply type your answers after each ":" on the same line.',
     '',
-    fieldsBlock || '- (No fields listed)',
+    'Reply (copy/paste and fill):',
+    fieldsBlockText,
     '',
     args.missingDocs.length
-      ? 'Also, please attach clear photos/scans of the following document(s):\n' + docsBlock
-      : 'If you have any documents to share (passport/CV), please attach them in your reply.',
+      ? 'Please also attach clear photos/scans of these document(s):\n' + docsBlockText
+      : '',
     '',
     'Notes:',
-    '- Please keep this email thread (reply here).',
+    '- Please reply to this same email (keep the thread).',
     '- Do not send passwords/OTPs.',
     '',
-    machineReadable,
+    referenceBlockText,
     '',
     'JazakAllah.',
   ].join('\n');
+
+  const bodyHtml = [
+    `<p>Assalam o Alaikum ${escapeHtml(name)},</p>`,
+    `<p>Thanks for your application. To complete your profile, please reply with the missing details below.</p>`,
+    `<p><strong>Tip:</strong> You can type your answers in the right column, or after each “:” in your reply.</p>`,
+    args.missingFields.length
+      ? `<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse; width:100%;">` +
+        `<thead><tr><th align="left" style="padding:6px;">Field</th><th align="left" style="padding:6px;">Answer</th></tr></thead>` +
+        `<tbody>${fieldsTableRowsHtml}</tbody>` +
+        `</table>`
+      : `<p>(No fields listed)</p>`,
+    args.missingDocs.length
+      ? `<p><strong>Please also attach clear photos/scans of:</strong></p>${docsListHtml}`
+      : '',
+    `<p><strong>Notes:</strong></p>`,
+    `<ul><li>Please reply to this same email (keep the thread).</li><li>Do not send passwords/OTPs.</li></ul>`,
+    `<!-- ${escapeHtml(`RAP_CANDIDATE_ID: ${args.candidateId}`)} -->`,
+    `<p>JazakAllah.</p>`,
+  ].join('');
 
   const snapshotHash = sha256(
     JSON.stringify({
@@ -144,14 +258,18 @@ function renderMissingDataEmail(args: {
     })
   );
 
-  return { subject, bodyText, snapshotHash };
+  return { subject, bodyText, bodyHtml, snapshotHash };
 }
 
 function addHours(date: Date, hours: number): Date {
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
 }
 
-export async function maybeSendMissingDataEmail(args: { candidateId: string; trigger: string }) {
+export async function maybeSendMissingDataEmail(args: {
+  candidateId: string;
+  trigger: string;
+  force?: boolean;
+}) {
   const db = supabaseAdminClient();
 
   try {
@@ -167,7 +285,7 @@ export async function maybeSendMissingDataEmail(args: { candidateId: string; tri
     }
 
     const toEmail = getCandidatePreferredEmail(candidate);
-    const threadId = safeString(candidate.gmail_thread_id).trim();
+    let threadId = safeString(candidate.gmail_thread_id).trim();
     const inReplyTo = safeString(candidate.gmail_last_message_id).trim();
     const lastSubject = safeString(candidate.gmail_last_subject).trim();
 
@@ -176,11 +294,16 @@ export async function maybeSendMissingDataEmail(args: { candidateId: string; tri
     }
 
     if (!threadId) {
-      return { sent: false, reason: 'missing_thread' } as const;
+      const backfill = await maybeBackfillGmailThreadIdentity(args.candidateId);
+      if (backfill.ok) {
+        threadId = backfill.threadId;
+      }
     }
 
+    if (!threadId) return { sent: false, reason: 'missing_thread' } as const;
+
     const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await import('./progressiveDataCompletionService');
-    const missingFieldsRaw: string[] = calculateMissingFields(candidate);
+    const missingFieldsRaw: string[] = Array.from(new Set(calculateMissingFields(candidate)));
 
     const missingFields = missingFieldsRaw.map((field) => ({
       field,
@@ -225,8 +348,10 @@ export async function maybeSendMissingDataEmail(args: { candidateId: string; tri
       ? new Date(String(candidate.missing_data_email_next_send_at))
       : null;
 
-    if (nextSendAt && nextSendAt.getTime() > now.getTime()) {
-      return { sent: false, reason: 'cooldown' } as const;
+    if (!args.force) {
+      if (nextSendAt && nextSendAt.getTime() > now.getTime()) {
+        return { sent: false, reason: 'cooldown' } as const;
+      }
     }
 
     const rendered = renderMissingDataEmail({
@@ -292,6 +417,7 @@ export async function generateMissingDataEmailContent(args: {
       toEmail: string;
       subject: string;
       bodyText: string;
+      bodyHtml: string;
       missingFields: Array<{ field: string; label: string }>;
       missingDocs: MissingDocKey[];
       snapshotHash: string;
@@ -335,6 +461,7 @@ export async function generateMissingDataEmailContent(args: {
     toEmail,
     subject: rendered.subject,
     bodyText: rendered.bodyText,
+    bodyHtml: rendered.bodyHtml,
     missingFields,
     missingDocs,
     snapshotHash: rendered.snapshotHash,
@@ -348,6 +475,7 @@ export async function generateMissingDataEmailContent(args: {
 export async function sendStandaloneMissingDataEmail(args: {
   candidateId: string;
   trigger: string;
+  force?: boolean;
 }): Promise<{ sent: boolean; reason?: string; attempt?: number }> {
   const db = supabaseAdminClient();
 
@@ -370,7 +498,7 @@ export async function sendStandaloneMissingDataEmail(args: {
     const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await import(
       './progressiveDataCompletionService'
     );
-    const missingFieldsRaw: string[] = calculateMissingFields(candidate);
+    const missingFieldsRaw: string[] = Array.from(new Set(calculateMissingFields(candidate)));
 
     const missingFields = missingFieldsRaw.map((field) => ({
       field,
@@ -414,8 +542,10 @@ export async function sendStandaloneMissingDataEmail(args: {
       ? new Date(String(candidate.missing_data_email_next_send_at))
       : null;
 
-    if (nextSendAt && nextSendAt.getTime() > now.getTime()) {
-      return { sent: false, reason: 'cooldown' };
+    if (!args.force) {
+      if (nextSendAt && nextSendAt.getTime() > now.getTime()) {
+        return { sent: false, reason: 'cooldown' };
+      }
     }
 
     const rendered = renderMissingDataEmail({
@@ -430,7 +560,7 @@ export async function sendStandaloneMissingDataEmail(args: {
     const brevoResult = await emailSvc.sendEmail({
       to: toEmail,
       subject: rendered.subject,
-      html: rendered.bodyText,
+      html: rendered.bodyHtml,
       text: rendered.bodyText,
     });
 

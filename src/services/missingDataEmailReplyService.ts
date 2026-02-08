@@ -16,7 +16,14 @@ function stripQuotedReply(text: string): string {
     if (/^from:\s/i.test(trimmed) && out.length > 0) break;
     if (/^sent:\s/i.test(trimmed) && out.length > 0) break;
     if (/^begin_rap_missing_data_v1$/i.test(trimmed)) {
-      // Stop before the machine-readable request block is quoted back.
+      // Legacy marker (older emails).
+      break;
+    }
+    if (/^---\s*reference\s*\(please keep\)\s*---$/i.test(trimmed)) {
+      // New marker (client-friendly emails).
+      break;
+    }
+    if (/^rap_candidate_id\s*:/i.test(trimmed)) {
       break;
     }
 

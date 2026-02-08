@@ -244,6 +244,43 @@ async function createCandidateFromParsedData(parsed, attachmentId, identityField
 }
 function startCvParserWorker() {
     const parsingJobs = new parsingJobsService_1.ParsingJobsService();
+    async function maybeAttachGmailThreadToCandidate(candidateId, attachmentId) {
+        try {
+            const db2 = (0, database_1.supabaseAdminClient)();
+            const { data: att } = await db2
+                .from('inbox_attachments')
+                .select('inbox_message_id')
+                .eq('id', attachmentId)
+                .maybeSingle();
+            const inboxMessageId = att?.inbox_message_id;
+            if (!inboxMessageId)
+                return;
+            const { data: msg } = await db2
+                .from('inbox_messages')
+                .select('source, payload')
+                .eq('id', inboxMessageId)
+                .maybeSingle();
+            if (!msg || msg.source !== 'gmail')
+                return;
+            const payload = msg.payload || {};
+            const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : '';
+            if (!threadId)
+                return;
+            const fromRaw = typeof payload.from === 'string' ? payload.from : '';
+            const emailMatch = fromRaw.match(/<([^>]+)>/) || fromRaw.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+            const fromEmail = (emailMatch?.[1] || emailMatch?.[0] || '').trim();
+            const update = {
+                gmail_thread_id: threadId,
+                gmail_from_email: fromEmail || null,
+                gmail_last_subject: typeof payload.subject === 'string' ? payload.subject : null,
+                gmail_last_message_id: typeof payload.messageIdHeader === 'string' ? payload.messageIdHeader : null,
+            };
+            await db2.from('candidates').update(update).eq('id', candidateId);
+        }
+        catch (err) {
+            console.warn('[CVParser] Failed to attach Gmail thread to candidate (non-fatal):', err?.message || err);
+        }
+    }
     function buildPreviousEmploymentFromExperience(experience) {
         if (!Array.isArray(experience) || experience.length === 0)
             return undefined;
@@ -508,6 +545,44 @@ function startCvParserWorker() {
                     .from('inbox_attachments')
                     .update({ candidate_id: existingCandidateId })
                     .eq('id', attachmentId);
+                // Persist Gmail thread identity (if this CV came via Gmail)
+                await maybeAttachGmailThreadToCandidate(existingCandidateId, attachmentId);
+                // Fetch updated candidate to check if gmail_thread_id was set
+                const { data: updatedCandidateForEmail } = await db
+                    .from('candidates')
+                    .select('gmail_thread_id')
+                    .eq('id', existingCandidateId)
+                    .maybeSingle();
+                // Ensure CV is marked received before sending missing-data email.
+                // This avoids asking the candidate to attach the CV we just ingested.
+                try {
+                    await db
+                        .from('candidates')
+                        .update({
+                        cv_received: true,
+                        cv_received_at: new Date().toISOString(),
+                    })
+                        .eq('id', existingCandidateId);
+                }
+                catch (flagErr) {
+                    console.warn('[CVParser] Failed to set cv_received before email (non-fatal):', flagErr?.message || flagErr);
+                }
+                // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
+                try {
+                    const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
+                    if (updatedCandidateForEmail?.gmail_thread_id) {
+                        await maybeSendMissingDataEmail({ candidateId: existingCandidateId, trigger: 'cv_parsed_existing' });
+                    }
+                    else {
+                        await sendStandaloneMissingDataEmail({
+                            candidateId: existingCandidateId,
+                            trigger: 'cv_parsed_existing_manual',
+                        });
+                    }
+                }
+                catch (emailErr) {
+                    console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
+                }
                 console.log(`[CVParser] ✅ Enriched existing candidate ${existingCandidateId} with CV data`);
             }
             else {
@@ -518,6 +593,44 @@ function startCvParserWorker() {
                     try {
                         await enrichCandidateData(candidate.id, combinedData, 'cv', attachmentId, 'cv');
                         await updateMissingFields(candidate.id);
+                        // Persist Gmail thread identity (if this CV came via Gmail)
+                        await maybeAttachGmailThreadToCandidate(candidate.id, attachmentId);
+                        // Fetch updated candidate to check if gmail_thread_id was set
+                        const { data: updatedCandidateNew } = await db
+                            .from('candidates')
+                            .select('gmail_thread_id')
+                            .eq('id', candidate.id)
+                            .maybeSingle();
+                        // Ensure CV is marked received before sending missing-data email.
+                        // This avoids asking the candidate to attach the CV we just ingested.
+                        try {
+                            await db
+                                .from('candidates')
+                                .update({
+                                cv_received: true,
+                                cv_received_at: new Date().toISOString(),
+                            })
+                                .eq('id', candidate.id);
+                        }
+                        catch (flagErr) {
+                            console.warn('[CVParser] Failed to set cv_received before email (non-fatal):', flagErr?.message || flagErr);
+                        }
+                        // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
+                        try {
+                            const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
+                            if (updatedCandidateNew?.gmail_thread_id) {
+                                await maybeSendMissingDataEmail({ candidateId: candidate.id, trigger: 'cv_parsed_new' });
+                            }
+                            else {
+                                await sendStandaloneMissingDataEmail({
+                                    candidateId: candidate.id,
+                                    trigger: 'cv_parsed_new_manual',
+                                });
+                            }
+                        }
+                        catch (emailErr) {
+                            console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
+                        }
                     }
                     catch (enrichError) {
                         console.warn(`[CVParser] Failed to enrich newly created candidate:`, enrichError);

@@ -1,7 +1,10 @@
 "use strict";
 /**
  * Progressive Candidate Data Completion Service
- *
+ * 1. Only fill missing fields (NULL, empty string, undefined, or "Unknown")
+ * 2. Never overwrite existing values - simple fallback chain
+ *    - Nationality extraction order: CV → CNIC → Passport → Driving License → Education docs
+ *    - First source that has the field wins, no overrides
  * Core Principle: Any document can enrich a candidate, only fill missing fields, never overwrite.
  * Priority: Manual > Any Document (CV/Passport/License/Medical/Certificate)
  *
@@ -126,36 +129,12 @@ async function enrichCandidateData(candidateId, extractedData, source, documentI
             skipped.push(field);
             continue;
         }
-        // Special precedence for nationality: CNIC/Passport should override CV
-        // CNIC and Passport are authoritative identity documents, CV may have incorrect nationality
-        if (field === 'nationality' && currentValue && typeof currentValue === 'string') {
-            const currentNationality = currentValue.trim().toLowerCase();
-            const extractedNationality = typeof extractedValue === 'string' ? extractedValue.trim().toLowerCase() : '';
-            // Check if current nationality is from CV (less authoritative)
-            const isFromCV = currentSource?.source === 'cv';
-            // Check if new source is authoritative (CNIC, Passport, Driving License)
-            const isAuthoritativeSource = source === 'passport' ||
-                source === 'driving_license' ||
-                documentType === 'cnic' ||
-                documentType === 'passport' ||
-                documentType === 'driving_license';
-            // If current nationality is from CV and new source is authoritative, override
-            if (isFromCV && isAuthoritativeSource) {
-                console.log(`[ProgressiveCompletion] Overriding nationality from CV (${currentNationality}) with authoritative source ${source}/${documentType} nationality (${extractedNationality})`);
-                // Continue to update below (bypass the isMissing check)
-            }
-            else if (!isMissing && !isFromCV) {
-                // Field exists and not from CV, don't overwrite (unless manual)
-                skipped.push(field);
-                continue;
-            }
-        }
-        // Only update if field is missing OR nationality override case above
-        const shouldUpdate = isMissing ||
-            (field === 'nationality' &&
-                currentSource?.source === 'cv' &&
-                (source === 'passport' || source === 'driving_license' || documentType === 'cnic' || documentType === 'passport' || documentType === 'driving_license'));
-        if (shouldUpdate) {
+        // Simple fallback chain: only fill missing fields, never override
+        // Priority order: CV → CNIC → Passport → Driving License → Education documents
+        // This respects user's preference: check CV first, only fallback if not found
+        const isMissingOrUnknown = isMissing ||
+            (field === 'nationality' && currentValue === 'Unknown');
+        if (isMissingOrUnknown) {
             // Normalize special fields
             let normalizedValue = extractedValue;
             if (field === 'cnic' && typeof extractedValue === 'string') {
@@ -266,16 +245,23 @@ async function enrichCandidateData(candidateId, extractedData, source, documentI
  * Based on Excel Browser fields (the "bible")
  */
 function calculateMissingFields(candidate) {
-    const missing = [];
+    const missingSet = new Set();
     const placeholderValues = new Set(['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided']);
+    const internalOrComputedFields = new Set([
+        // Computed internally (should not be requested from the candidate)
+        'ai_score',
+    ]);
     // Check each Excel Browser field
     for (const [field, label] of Object.entries(exports.EXCEL_BROWSER_FIELDS)) {
+        if (internalOrComputedFields.has(field)) {
+            continue;
+        }
         const value = candidate[field];
         // Special handling for calculated fields
         if (field === 'age') {
             // Age is calculated from date_of_birth
             if (!candidate.date_of_birth) {
-                missing.push('date_of_birth');
+                missingSet.add('date_of_birth');
             }
             continue;
         }
@@ -288,10 +274,10 @@ function calculateMissingFields(candidate) {
         // Also check for placeholder strings (which might be stored as defaults or bad extraction values)
         if (value === null || value === undefined || value === '' ||
             (typeof value === 'string' && (value.trim() === '' || placeholderValues.has(value.trim().toLowerCase())))) {
-            missing.push(field);
+            missingSet.add(field);
         }
     }
-    return missing;
+    return Array.from(missingSet);
 }
 /**
  * Update missing_fields JSON column

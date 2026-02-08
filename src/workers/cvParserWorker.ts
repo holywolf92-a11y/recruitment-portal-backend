@@ -581,6 +581,20 @@ export function startCvParserWorker() {
             .eq('id', existingCandidateId)
             .maybeSingle();
 
+          // Ensure CV is marked received before sending missing-data email.
+          // This avoids asking the candidate to attach the CV we just ingested.
+          try {
+            await db
+              .from('candidates')
+              .update({
+                cv_received: true,
+                cv_received_at: new Date().toISOString(),
+              })
+              .eq('id', existingCandidateId);
+          } catch (flagErr: any) {
+            console.warn('[CVParser] Failed to set cv_received before email (non-fatal):', flagErr?.message || flagErr);
+          }
+
           // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
           try {
             const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await import(
@@ -624,6 +638,20 @@ export function startCvParserWorker() {
                 .select('gmail_thread_id')
                 .eq('id', candidate.id)
                 .maybeSingle();
+
+              // Ensure CV is marked received before sending missing-data email.
+              // This avoids asking the candidate to attach the CV we just ingested.
+              try {
+                await db
+                  .from('candidates')
+                  .update({
+                    cv_received: true,
+                    cv_received_at: new Date().toISOString(),
+                  })
+                  .eq('id', candidate.id);
+              } catch (flagErr: any) {
+                console.warn('[CVParser] Failed to set cv_received before email (non-fatal):', flagErr?.message || flagErr);
+              }
 
               // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
               try {

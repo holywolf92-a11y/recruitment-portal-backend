@@ -299,18 +299,26 @@ export async function enrichCandidateData(
  * Based on Excel Browser fields (the "bible")
  */
 export function calculateMissingFields(candidate: any): string[] {
-  const missing: string[] = [];
+  const missingSet = new Set<string>();
   const placeholderValues = new Set(['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided']);
+  const internalOrComputedFields = new Set<string>([
+    // Computed internally (should not be requested from the candidate)
+    'ai_score',
+  ]);
 
   // Check each Excel Browser field
   for (const [field, label] of Object.entries(EXCEL_BROWSER_FIELDS)) {
+    if (internalOrComputedFields.has(field)) {
+      continue;
+    }
+
     const value = candidate[field];
 
     // Special handling for calculated fields
     if (field === 'age') {
       // Age is calculated from date_of_birth
       if (!candidate.date_of_birth) {
-        missing.push('date_of_birth');
+        missingSet.add('date_of_birth');
       }
       continue;
     }
@@ -325,11 +333,11 @@ export function calculateMissingFields(candidate: any): string[] {
     // Also check for placeholder strings (which might be stored as defaults or bad extraction values)
     if (value === null || value === undefined || value === '' ||
       (typeof value === 'string' && (value.trim() === '' || placeholderValues.has(value.trim().toLowerCase())))) {
-      missing.push(field);
+      missingSet.add(field);
     }
   }
 
-  return missing;
+  return Array.from(missingSet);
 }
 
 /**

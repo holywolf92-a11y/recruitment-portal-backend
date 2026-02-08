@@ -1116,34 +1116,49 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       .eq('id', documentId);
 
     // Update candidate document flags based on final category
-    // This ensures the candidate card shows correct document status
+    // IMPORTANT: Receipt flags must be evidence-driven (verified docs only).
+    // Do NOT use filename keywords or CV text mentions to satisfy certificate receipt.
     try {
+      if (finalStatus !== VERIFICATION_STATUS.VERIFIED) {
+        // Avoid marking documents received for rejected/failed/needs_review.
+        // Candidate receipt flags should reflect verified evidence.
+        return;
+      }
+
       const updateFlags: any = {};
       const category = finalCategory?.toLowerCase() || '';
-      const fileNameLower = (fileName || '').toLowerCase();
       const now = new Date().toISOString();
 
-      // STRICT CERTIFICATE DETECTION: Check filename for certificate keywords FIRST
-      // This prevents AI misclassification from marking certificates as CVs
-      const isCertificate = CERTIFICATE_CORE_KEYWORDS.some(keyword => fileNameLower.includes(keyword));
-      
-      // STRICT CV DETECTION: Filename should contain cv, resume, or cv_resume pattern
-      const cvKeywords = ['cv', 'resume', 'curriculum'];
-      const isCV = cvKeywords.some(keyword => fileNameLower.includes(keyword)) && !isCertificate;
-
-      // Priority: Use filename as override if clear category indicators exist
-      if (isCertificate) {
-        updateFlags.certificate_received = true;
-        updateFlags.certificate_received_at = now;
-      } else if (isCV && (category === 'cv_resume' || category === 'cv')) {
+      if (category === 'cv_resume' || category === 'cv') {
         updateFlags.cv_received = true;
         updateFlags.cv_received_at = now;
       } else if (category === 'passport') {
         updateFlags.passport_received = true;
         updateFlags.passport_received_at = now;
+      } else if (category === 'cnic') {
+        updateFlags.cnic_received = true;
+        updateFlags.cnic_received_at = now;
+      } else if (category === 'driving_license') {
+        updateFlags.driving_license_received = true;
+        updateFlags.driving_license_received_at = now;
+      } else if (category === 'police_character_certificate') {
+        updateFlags.police_character_certificate_received = true;
+        updateFlags.police_character_certificate_received_at = now;
+      } else if (category === 'educational_documents') {
+        updateFlags.educational_documents_received = true;
+        updateFlags.educational_documents_received_at = now;
+      } else if (category === 'experience_certificates') {
+        updateFlags.experience_certificates_received = true;
+        updateFlags.experience_certificates_received_at = now;
+      } else if (category === 'navttc_reports') {
+        updateFlags.navttc_received = true;
+        updateFlags.navttc_received_at = now;
       } else if (category === 'certificates' || category === 'certificate') {
         updateFlags.certificate_received = true;
         updateFlags.certificate_received_at = now;
+      } else if (category === 'contracts') {
+        updateFlags.contract_received = true;
+        updateFlags.contract_received_at = now;
       } else if (category === 'photos' || category === 'photo') {
         updateFlags.photo_received = true;
         updateFlags.photo_received_at = now;
@@ -1157,7 +1172,7 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           .from('candidates')
           .update(updateFlags)
           .eq('id', candidateId);
-        
+
         console.log(`[DocumentVerification] Updated candidate flags for ${candidateId}:`, Object.keys(updateFlags));
       }
     } catch (flagError: any) {

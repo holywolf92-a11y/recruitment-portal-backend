@@ -12,11 +12,45 @@ const candidateDocumentService_1 = require("./candidateDocumentService");
 const puppeteer_1 = __importDefault(require("puppeteer"));
 const crypto_1 = __importDefault(require("crypto"));
 const cvTemplateConfig_1 = require("../config/cvTemplateConfig");
+const documentCategories_1 = require("../config/documentCategories");
 const STORAGE_BUCKET = 'documents';
+async function fetchLatestParsedCVFromParsingJobs(documents) {
+    try {
+        const attachmentId = documents?.find((d) => d?.category === documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME && d?.inbox_attachment_id)?.inbox_attachment_id ||
+            documents?.find((d) => d?.inbox_attachment_id)?.inbox_attachment_id;
+        if (!attachmentId)
+            return null;
+        const db = (0, database_1.supabaseAdminClient)();
+        const { data, error } = await db
+            .from('parsing_jobs')
+            .select('output, created_at')
+            .eq('inbox_attachment_id', attachmentId)
+            .eq('status', 'extracted')
+            .order('created_at', { ascending: false })
+            .limit(1);
+        if (error || !data || data.length === 0)
+            return null;
+        const output = data[0]?.output;
+        if (!output)
+            return null;
+        if (typeof output === 'string') {
+            try {
+                return JSON.parse(output);
+            }
+            catch {
+                return null;
+            }
+        }
+        return output;
+    }
+    catch {
+        return null;
+    }
+}
 /**
  * Calculate SHA256 hash of candidate data for cache invalidation
  */
-async function calculateCandidateVersionHash(candidateId) {
+async function calculateCandidateVersionHash(candidateId, format) {
     const db = (0, database_1.supabaseAdminClient)();
     const { data: candidate, error } = await db
         .from('candidates')
@@ -25,6 +59,41 @@ async function calculateCandidateVersionHash(candidateId) {
         .single();
     if (error || !candidate) {
         throw new Error(`Candidate not found: ${candidateId}`);
+    }
+    // Include latest extracted parsing output (employer-safe only) so cache busts when the parser improves.
+    // This avoids stale employer-safe PDFs when we render directly from parsing_jobs.output.
+    let parsingOutputHash = '';
+    try {
+        if (format === 'employer-safe') {
+            const { data: cvDoc } = await db
+                .from('candidate_documents')
+                .select('inbox_attachment_id, created_at')
+                .eq('candidate_id', candidateId)
+                .eq('category', documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            const attachmentId = cvDoc?.inbox_attachment_id;
+            if (attachmentId) {
+                const { data: job } = await db
+                    .from('parsing_jobs')
+                    .select('output, created_at')
+                    .eq('inbox_attachment_id', attachmentId)
+                    .eq('status', 'extracted')
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+                if (job) {
+                    const output = job.output;
+                    const outputString = typeof output === 'string' ? output : JSON.stringify(output ?? '');
+                    parsingOutputHash = crypto_1.default.createHash('sha256').update(outputString).digest('hex');
+                }
+            }
+        }
+    }
+    catch (e) {
+        // Non-fatal: cache hash falls back to candidate fields.
+        parsingOutputHash = '';
     }
     const dataString = [
         (0, cvTemplateConfig_1.getTemplateVersion)(), // Include template version to bust cache when design changes
@@ -40,6 +109,7 @@ async function calculateCandidateVersionHash(candidateId) {
         candidate.professional_summary || '',
         candidate.country_of_interest || '',
         candidate.updated_at || '',
+        parsingOutputHash,
     ].join('|');
     return crypto_1.default.createHash('sha256').update(dataString).digest('hex');
 }
@@ -49,7 +119,7 @@ async function calculateCandidateVersionHash(candidateId) {
 async function checkCache(options) {
     const db = (0, database_1.supabaseAdminClient)();
     // Calculate current version hash
-    const currentVersionHash = await calculateCandidateVersionHash(options.candidateId);
+    const currentVersionHash = await calculateCandidateVersionHash(options.candidateId, options.format);
     // Check if cached CV exists with matching version hash
     const { data: cached, error } = await db
         .from('generated_cvs')
@@ -138,7 +208,7 @@ async function generateProfilePhotoSignedUrl(candidate) {
 /**
  * Generate HTML template for employer-safe CV
  */
-function generateEmployerSafeCVHTML(candidate, documents) {
+function generateEmployerSafeCVHTML(candidate, documents, parsedCv) {
     const isMeaningfulText = (value) => {
         if (typeof value !== 'string')
             return false;
@@ -148,9 +218,38 @@ function generateEmployerSafeCVHTML(candidate, documents) {
         const lower = trimmed.toLowerCase();
         return !['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(lower);
     };
+    const escapeHtml = (value) => {
+        if (value === null || value === undefined)
+            return '';
+        const str = typeof value === 'string' ? value : String(value);
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    };
+    const asArray = (value) => (Array.isArray(value) ? value : []);
+    const formatDateRange = (start, end) => {
+        const s = (start || '').toString().trim();
+        const e = (end || '').toString().trim();
+        if (!s && !e)
+            return '';
+        if (s && !e)
+            return `${s} - Present`;
+        if (!s && e)
+            return e;
+        return `${s} - ${e}`;
+    };
+    // Prefer structured output from parser when present
+    const parsedSkills = asArray(parsedCv?.skills);
+    const parsedLanguages = asArray(parsedCv?.languages);
     // Parse skills - handle JSON array or comma-separated string
     let skills = [];
-    if (candidate.skills) {
+    if (parsedSkills.length > 0) {
+        skills = parsedSkills;
+    }
+    else if (candidate.skills) {
         try {
             const parsed = JSON.parse(candidate.skills);
             if (Array.isArray(parsed)) {
@@ -164,10 +263,124 @@ function generateEmployerSafeCVHTML(candidate, documents) {
             skills = candidate.skills.split(',').map((s) => s.trim());
         }
     }
-    const languages = candidate.languages ? candidate.languages.split(',').map((l) => l.trim()) : [];
+    const languages = parsedLanguages.length > 0
+        ? parsedLanguages
+        : (candidate.languages ? candidate.languages.split(',').map((l) => l.trim()) : []);
     const initial = (candidate.name || '?').charAt(0).toUpperCase();
-    const professionalSummary = isMeaningfulText(candidate.professional_summary) ? candidate.professional_summary.trim() : '';
+    const professionalSummary = isMeaningfulText(parsedCv?.professional_summary)
+        ? String(parsedCv.professional_summary).trim()
+        : (isMeaningfulText(candidate.professional_summary) ? candidate.professional_summary.trim() : '');
     const previousEmployment = isMeaningfulText(candidate.previous_employment) ? candidate.previous_employment.trim() : '';
+    const parsedExperience = asArray(parsedCv?.experience);
+    const experienceHtml = parsedExperience.length > 0
+        ? `
+      <div class="section">
+        <h2 class="section-title">Work Experience</h2>
+        ${parsedExperience.map((role) => {
+            const title = role?.job_title || role?.title || role?.position || '';
+            const company = role?.company || role?.employer || role?.organization || '';
+            const location = role?.location || role?.city || role?.country || '';
+            const dates = formatDateRange(role?.start_date || role?.from || role?.start, role?.end_date || role?.to || role?.end);
+            const bullets = asArray(role?.responsibilities || role?.achievements || role?.duties || role?.highlights);
+            const description = role?.description || role?.summary || '';
+            return `
+          <div class="entry">
+            <div class="entry-title">${escapeHtml([title, company].filter(Boolean).join(' - '))}</div>
+            ${(location || dates) ? `<div class="entry-meta">${escapeHtml([location, dates].filter(Boolean).join(' | '))}</div>` : ''}
+            ${bullets.length > 0
+                ? `<ul style="margin-top: 4pt; padding-left: 14pt;">${bullets.slice(0, 10).map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>`
+                : (isMeaningfulText(description)
+                    ? `<div class="entry-description" style="white-space: pre-line;">${escapeHtml(description)}</div>`
+                    : '')}
+          </div>`;
+        }).join('')}
+      </div>
+    `
+        : (previousEmployment ? `
+      <div class="section">
+        <h2 class="section-title">Work Experience</h2>
+        <div class="entry">
+          <div class="entry-description" style="white-space: pre-line;">${previousEmployment}</div>
+        </div>
+      </div>
+    ` : '');
+    const parsedEducation = asArray(parsedCv?.education);
+    const educationHtml = parsedEducation.length > 0
+        ? `
+      <div class="section">
+        <h2 class="section-title">Education</h2>
+        ${parsedEducation.map((ed) => {
+            const degree = ed?.degree || ed?.qualification || ed?.title || '';
+            const institution = ed?.institution || ed?.university || ed?.school || '';
+            const location = ed?.location || ed?.city || ed?.country || '';
+            const dates = formatDateRange(ed?.start_year || ed?.start_date || ed?.from, ed?.end_year || ed?.end_date || ed?.to);
+            const thesis = ed?.thesis || '';
+            return `
+          <div class="entry">
+            <div class="entry-title">${escapeHtml([degree, institution].filter(Boolean).join(' - '))}</div>
+            ${(location || dates) ? `<div class="entry-meta">${escapeHtml([location, dates].filter(Boolean).join(' | '))}</div>` : ''}
+            ${isMeaningfulText(thesis) ? `<div class="entry-description" style="white-space: pre-line;">Thesis: ${escapeHtml(thesis)}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+    `
+        : (candidate.education ? `
+      <div class="section">
+        <h2 class="section-title">Education</h2>
+        <div class="entry">
+          <div class="entry-description" style="white-space: pre-line;">${candidate.education}</div>
+        </div>
+      </div>
+    ` : '');
+    const parsedCerts = asArray(parsedCv?.certifications || parsedCv?.certificates);
+    const certificationsHtml = parsedCerts.length > 0
+        ? `
+      <div class="section">
+        <h2 class="section-title">Certifications</h2>
+        <div class="entry">
+          <ul style="padding-left: 14pt;">
+            ${parsedCerts.slice(0, 20).map((c) => {
+            const name = c?.name || c?.title || c;
+            const issuer = c?.issuer || c?.authority || '';
+            const date = c?.date || c?.year || '';
+            const parts = [name, issuer, date].filter(Boolean);
+            return `<li>${escapeHtml(parts.join(' - '))}</li>`;
+        }).join('')}
+          </ul>
+        </div>
+      </div>
+    `
+        : (candidate.certifications ? `
+      <div class="section">
+        <h2 class="section-title">Certifications</h2>
+        <div class="entry">
+          <div class="entry-description" style="white-space: pre-line;">${candidate.certifications}</div>
+        </div>
+      </div>
+    ` : '');
+    const parsedLicenses = asArray(parsedCv?.licenses);
+    const licensesHtml = parsedLicenses.length > 0
+        ? `
+      <div class="section">
+        <h2 class="section-title">Licenses</h2>
+        ${parsedLicenses.slice(0, 20).map((lic) => {
+            const name = lic?.name || lic?.title || '';
+            const authority = lic?.authority || '';
+            const reg = lic?.registration_no || lic?.registration_number || '';
+            const country = lic?.country || '';
+            const expiry = lic?.expiry_date || lic?.expiry || '';
+            const notes = lic?.notes || '';
+            const meta = [authority, country, reg ? `Reg#: ${reg}` : '', expiry ? `Expiry: ${expiry}` : ''].filter(Boolean).join(' | ');
+            return `
+          <div class="entry">
+            <div class="entry-title">${escapeHtml(name)}</div>
+            ${meta ? `<div class="entry-meta">${escapeHtml(meta)}</div>` : ''}
+            ${isMeaningfulText(notes) ? `<div class="entry-description" style="white-space: pre-line;">${escapeHtml(notes)}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+    `
+        : '';
     return `
 <!DOCTYPE html>
 <html lang="en">
@@ -506,35 +719,10 @@ function generateEmployerSafeCVHTML(candidate, documents) {
         </div>
       </div>
       
-      <!-- Work Experience -->
-      ${previousEmployment ? `
-      <div class="section">
-        <h2 class="section-title">Work Experience</h2>
-        <div class="entry">
-          <div class="entry-description" style="white-space: pre-line;">${previousEmployment}</div>
-        </div>
-      </div>
-      ` : ''}
-      
-      <!-- Education -->
-      ${candidate.education ? `
-      <div class="section">
-        <h2 class="section-title">Education</h2>
-        <div class="entry">
-          <div class="entry-description" style="white-space: pre-line;">${candidate.education}</div>
-        </div>
-      </div>
-      ` : ''}
-      
-      <!-- Certifications -->
-      ${candidate.certifications ? `
-      <div class="section">
-        <h2 class="section-title">Certifications</h2>
-        <div class="entry">
-          <div class="entry-description" style="white-space: pre-line;">${candidate.certifications}</div>
-        </div>
-      </div>
-      ` : ''}
+      ${experienceHtml}
+      ${educationHtml}
+      ${licensesHtml}
+      ${certificationsHtml}
     </div>
   </div>
   
@@ -698,7 +886,7 @@ async function generateCV(options) {
         console.log(`[CVGenerator] Documents fetched: ${documents.length} documents`);
         // 4. Calculate version hash
         console.log(`[CVGenerator] Step 4/9: Calculating version hash...`);
-        const versionHash = await calculateCandidateVersionHash(options.candidateId);
+        const versionHash = await calculateCandidateVersionHash(options.candidateId, options.format);
         console.log(`[CVGenerator] Version hash: ${versionHash}`);
         // 4b. Generate signed URL for profile photo if it exists
         console.log(`[CVGenerator] Step 4b/9: Generating profile photo signed URL...`);
@@ -711,7 +899,8 @@ async function generateCV(options) {
         console.log(`[CVGenerator] Step 5/9: Generating HTML template...`);
         let html;
         if (options.format === 'employer-safe') {
-            html = generateEmployerSafeCVHTML(candidate, documents);
+            const parsedCv = await fetchLatestParsedCVFromParsingJobs(documents);
+            html = generateEmployerSafeCVHTML(candidate, documents, parsedCv);
         }
         else {
             // For internal/standard format, include contact info (to be implemented)

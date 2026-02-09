@@ -8,6 +8,7 @@ const webhookLogger_1 = require("../middleware/webhookLogger");
 const inboxService_1 = require("../services/inboxService");
 const inboxAttachmentService_1 = require("../services/inboxAttachmentService");
 const whatsappService_1 = require("../services/whatsappService");
+const whatsappAIService_1 = require("../services/whatsappAIService");
 const router = (0, express_1.Router)();
 const logger = (0, errorHandling_1.createLogger)('WhatsAppRoute');
 // Apply logging and error monitoring
@@ -81,6 +82,30 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, idempotency_1
                 storageBucket: 'documents',
                 storagePath,
                 candidateId: undefined,
+            });
+        }
+    }
+    // Generate AI reply for text messages (but not for CV/document uploads)
+    if ((0, whatsappAIService_1.shouldReplyWithAI)(messageData)) {
+        try {
+            const aiReply = await (0, whatsappAIService_1.generateWhatsAppReply)({
+                from: messageData.from || '',
+                text: messageData.text || '',
+            });
+            // Send the AI-generated reply
+            if (messageData.from && aiReply) {
+                await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, messageData.from, aiReply);
+                logger.info('Sent AI reply', {
+                    to: messageData.from,
+                    replyLength: aiReply.length
+                });
+            }
+        }
+        catch (error) {
+            // Don't fail the webhook if AI reply fails - just log it
+            logger.error('Failed to send AI reply', {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                from: messageData.from
             });
         }
     }

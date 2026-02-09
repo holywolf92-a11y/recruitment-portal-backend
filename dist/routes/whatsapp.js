@@ -23,11 +23,17 @@ function getWamid(body) {
     }
 }
 function verifySignature(req, res, next) {
+    // Allow disabling signature validation for testing
+    if (process.env.WHATSAPP_SKIP_SIGNATURE_VALIDATION === 'true') {
+        logger.warn('Signature validation DISABLED - this should only be used for testing!');
+        return next();
+    }
     const signature = req.headers['x-hub-signature-256'];
     const appSecret = process.env.WHATSAPP_APP_SECRET;
     const rawBody = req.rawBody;
     const ok = (0, whatsappService_1.validateWebhookSignature)(rawBody, signature, appSecret);
     if (!ok) {
+        logger.warn('Invalid webhook signature', { hasSignature: !!signature, hasAppSecret: !!appSecret, hasRawBody: !!rawBody });
         return res.status(401).json({ error: 'Invalid signature' });
     }
     next();

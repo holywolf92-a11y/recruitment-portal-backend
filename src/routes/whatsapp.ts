@@ -10,8 +10,10 @@ import {
   fetchMediaMetadata,
   downloadMedia,
   validateWebhookSignature,
-  validateWebhookToken
+  validateWebhookToken,
+  sendMessage
 } from '../services/whatsappService';
+import { generateWhatsAppReply, shouldReplyWithAI } from '../services/whatsappAIService';
 
 const router = Router();
 const logger = createLogger('WhatsAppRoute');
@@ -104,6 +106,31 @@ router.post(
           storageBucket: 'documents',
           storagePath,
           candidateId: undefined,
+        });
+      }
+    }
+
+    // Generate AI reply for text messages (but not for CV/document uploads)
+    if (shouldReplyWithAI(messageData)) {
+      try {
+        const aiReply = await generateWhatsAppReply({
+          from: messageData.from || '',
+          text: messageData.text || '',
+        });
+
+        // Send the AI-generated reply
+        if (messageData.from && aiReply) {
+          await sendMessage(phoneNumberId, accessToken, messageData.from, aiReply);
+          logger.info('Sent AI reply', { 
+            to: messageData.from, 
+            replyLength: aiReply.length 
+          });
+        }
+      } catch (error) {
+        // Don't fail the webhook if AI reply fails - just log it
+        logger.error('Failed to send AI reply', { 
+          error: error instanceof Error ? error.message : 'Unknown error',
+          from: messageData.from 
         });
       }
     }

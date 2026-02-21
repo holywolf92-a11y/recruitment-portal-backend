@@ -20,6 +20,8 @@ export interface InboxAttachmentCreateInput {
   candidateId?: string;
   messageSubject?: string; // For classification
   messageSource?: string; // gmail, whatsapp, web
+  whatsappWamid?: string;
+  whatsappMediaId?: string;
 }
 
 export async function createAttachment(input: InboxAttachmentCreateInput) {
@@ -44,13 +46,21 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
   // Determine storage path based on classification
   let finalStoragePath = input.storagePath;
   if (classification.attachmentKind === 'document' || classification.attachmentKind === 'unknown') {
-    // Use unmatched path for documents (will be moved on link)
+    // WhatsApp identity-first rule: preserve explicit raw storage paths.
+    // For other sources, default to unmatched_documents for later linking.
     const source = input.messageSource || 'web';
-    finalStoragePath = DocumentClassifier.generateUnmatchedPath(
-      source,
-      input.inboxMessageId,
-      input.fileName
-    );
+    const shouldPreserveProvidedPath =
+      source === 'whatsapp' &&
+      typeof input.storagePath === 'string' &&
+      input.storagePath.startsWith('whatsapp/raw/');
+
+    if (!shouldPreserveProvidedPath) {
+      finalStoragePath = DocumentClassifier.generateUnmatchedPath(
+        source,
+        input.inboxMessageId,
+        input.fileName
+      );
+    }
   }
   
   try {
@@ -128,6 +138,8 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
         file_name: input.fileName,
         mime_type: input.mimeType ?? null,
         sha256,
+        whatsapp_wamid: input.whatsappWamid ?? null,
+        whatsapp_media_id: input.whatsappMediaId ?? null,
         attachment_type: input.attachmentType ?? 'cv',
         attachment_kind: classification.attachmentKind,
         document_type: classification.documentType,
@@ -141,6 +153,9 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
       const code = (error as any).code || '';
       // Robust duplicate detection for Postgres unique violations
       if (code === '23505' || /duplicate key|unique constraint|already exists/i.test(msg)) {
+        if (/inbox_attachments_unique_whatsapp_media/i.test(msg)) {
+          throw new AppError('Duplicate WhatsApp media attachment (wamid + media_id)', ErrorType.DUPLICATE, 409);
+        }
         throw new AppError('Duplicate attachment (sha256 + type)', ErrorType.DUPLICATE, 409);
       }
       throw error;
@@ -153,8 +168,11 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
       extractedMetadata: metadata
     });
     
-    // Auto-enqueue for document linking if it's a document or unknown type
-    if (classification.attachmentKind === 'document' || classification.attachmentKind === 'unknown') {
+    // Auto-enqueue for document linking if it's a document or unknown type.
+    // IMPORTANT: WhatsApp runs identity extraction first, so we do NOT enqueue linking here.
+    const source = input.messageSource || 'web';
+    const shouldAutoEnqueueLinking = source !== 'whatsapp';
+    if (shouldAutoEnqueueLinking && (classification.attachmentKind === 'document' || classification.attachmentKind === 'unknown')) {
       try {
         await enqueueDocumentLink(data.id);
         logger.info(`Enqueued document for linking`, { attachmentId: data.id });
@@ -173,6 +191,9 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
 
     // Try robust duplicate detection on raw error blob
     const raw = JSON.stringify(err || {});
+    if (/inbox_attachments_unique_whatsapp_media/i.test(raw)) {
+      throw new AppError('Duplicate WhatsApp media attachment (wamid + media_id)', ErrorType.DUPLICATE, 409);
+    }
     if (/23505|duplicate key|unique constraint|uq_inboxattachments_sha256_type/i.test(raw)) {
       throw new AppError('Duplicate attachment (sha256 + type)', ErrorType.DUPLICATE, 409);
     }

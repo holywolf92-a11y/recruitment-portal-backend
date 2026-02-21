@@ -9,6 +9,7 @@ exports.extractMessageData = extractMessageData;
 exports.fetchMediaMetadata = fetchMediaMetadata;
 exports.downloadMedia = downloadMedia;
 exports.sendMessage = sendMessage;
+exports.sendTemplateMessage = sendTemplateMessage;
 const crypto_1 = __importDefault(require("crypto"));
 const errorHandling_1 = require("../utils/errorHandling");
 const logger = (0, errorHandling_1.createLogger)('WhatsAppService');
@@ -94,6 +95,31 @@ async function sendMessage(phoneNumberId, accessToken, to, text) {
         const textRes = await res.text();
         logger.error('Failed to send message', { status: res.status, text: textRes });
         throw new errorHandling_1.AppError('Failed to send WhatsApp message', errorHandling_1.ErrorType.EXTERNAL_SERVICE, res.status);
+    }
+    return res.json();
+}
+async function sendTemplateMessage(phoneNumberId, accessToken, to, template) {
+    const res = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to,
+            type: 'template',
+            template: {
+                name: template.name,
+                language: { code: template.language },
+                ...(template.components ? { components: template.components } : {}),
+            },
+        }),
+    });
+    if (!res.ok) {
+        const textRes = await res.text();
+        logger.error('Failed to send template message', { status: res.status, text: textRes });
+        throw new errorHandling_1.AppError('Failed to send WhatsApp template message', errorHandling_1.ErrorType.EXTERNAL_SERVICE, res.status);
     }
     return res.json();
 }

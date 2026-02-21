@@ -2,6 +2,8 @@ import { supabaseAdminClient } from '../config/database';
 import { AppError, ErrorType, createLogger } from '../utils/errorHandling';
 import { DocumentClassifier, DocumentType } from './documentClassifier';
 import { CandidateMatcher } from './candidateMatcher';
+import crypto from 'crypto';
+import { documentVerificationQueue } from '../config/queue';
 
 const logger = createLogger('DocumentLinkService');
 
@@ -37,6 +39,13 @@ export class DocumentLinkService {
     }
 
     logger.info(`Processing document: ${attachment.file_name}`, { attachmentId: input.attachmentId });
+
+    // If the attachment already has a known candidate (e.g. WhatsApp conversation-bound), link deterministically.
+    if (attachment.candidate_id) {
+      await this.linkDocumentToCandidate(attachment, attachment.candidate_id);
+      logger.info(`Document linked using attachment.candidate_id`, { attachmentId: input.attachmentId, candidateId: attachment.candidate_id });
+      return;
+    }
 
     // Try to match candidate
     const matchResult = await CandidateMatcher.findCandidate({
@@ -74,6 +83,21 @@ export class DocumentLinkService {
   private async linkDocumentToCandidate(attachment: any, candidateId: string): Promise<void> {
     const db = supabaseAdminClient();
 
+    // Idempotency: if already linked once, do nothing.
+    const { data: existingDoc } = await db
+      .from('candidate_documents')
+      .select('id')
+      .eq('inbox_attachment_id', attachment.id)
+      .limit(1);
+    if (Array.isArray(existingDoc) && existingDoc.length > 0) {
+      logger.info('Attachment already linked to candidate_documents (idempotent skip)', {
+        attachmentId: attachment.id,
+        candidateId,
+        documentId: existingDoc[0]?.id,
+      });
+      return;
+    }
+
     // Get inbox message for source info
     const { data: message } = await db
       .from('inbox_messages')
@@ -82,7 +106,8 @@ export class DocumentLinkService {
       .single();
 
     const source = message?.source || 'unknown';
-    const documentType = attachment.document_type || 'other';
+    const rawDocType = (attachment.document_type || '').toString().toLowerCase();
+    const documentType = (rawDocType && rawDocType !== 'unknown' ? rawDocType : 'other') as DocumentType;
 
     // Generate new storage path
     const newStoragePath = DocumentClassifier.generateStoragePath(
@@ -91,7 +116,7 @@ export class DocumentLinkService {
       attachment.file_name
     );
 
-    // Move file in storage
+    // Move file in storage (copy; preserve original raw upload for audit)
     await this.moveFileInStorage(
       attachment.storage_bucket,
       attachment.storage_path,
@@ -99,7 +124,7 @@ export class DocumentLinkService {
     );
 
     // Create candidate_documents record
-    const { error: docError } = await db
+    const { data: createdDoc, error: docError } = await db
       .from('candidate_documents')
       .insert({
         candidate_id: candidateId,
@@ -111,7 +136,9 @@ export class DocumentLinkService {
         mime_type: attachment.mime_type,
         source: source,
         received_at: attachment.received_at || new Date().toISOString()
-      });
+      })
+      .select('id,candidate_id,storage_bucket,storage_path,file_name,mime_type')
+      .single();
 
     if (docError) {
       logger.error('Failed to create candidate_documents record', docError);
@@ -122,10 +149,41 @@ export class DocumentLinkService {
     await db
       .from('inbox_attachments')
       .update({ 
-        linked_candidate_id: candidateId,
-        storage_path: newStoragePath
+        linked_candidate_id: candidateId
       })
       .eq('id', attachment.id);
+
+    // Enqueue AI verification for the linked document
+    try {
+      if (createdDoc?.id) {
+        const requestId = crypto.randomUUID();
+        await documentVerificationQueue.add(
+          'verify',
+          {
+            requestId,
+            documentId: createdDoc.id,
+            candidateId: createdDoc.candidate_id,
+            storageBucket: createdDoc.storage_bucket,
+            storagePath: createdDoc.storage_path,
+            fileName: createdDoc.file_name,
+            mimeType: createdDoc.mime_type,
+          },
+          {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 },
+            removeOnComplete: 200,
+            removeOnFail: 200,
+          }
+        );
+        logger.info('Enqueued document verification job', { documentId: createdDoc.id, candidateId: createdDoc.candidate_id });
+      }
+    } catch (enqueueErr) {
+      logger.error('Failed to enqueue document verification (non-fatal)', {
+        attachmentId: attachment.id,
+        candidateId,
+        error: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr),
+      });
+    }
 
     logger.info(`Document linked successfully: ${attachment.id} → candidate ${candidateId}`);
   }
@@ -224,17 +282,8 @@ export class DocumentLinkService {
       throw new AppError('Failed to move file', ErrorType.DATABASE, 500);
     }
 
-    // Delete old file
-    const { error: deleteError } = await db.storage
-      .from(bucket)
-      .remove([oldPath]);
-
-    if (deleteError) {
-      logger.warn('Failed to delete old file after move', deleteError);
-      // Non-fatal - file was copied successfully
-    }
-
-    logger.info(`File moved: ${oldPath} → ${newPath}`);
+    // Preserve original uploads for auditability (do not delete the old path).
+    logger.info(`File copied (original preserved): ${oldPath} → ${newPath}`);
   }
 
   /**

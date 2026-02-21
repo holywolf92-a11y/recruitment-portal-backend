@@ -3,7 +3,7 @@ import { createLogger } from '../utils/errorHandling';
 const logger = createLogger('DocumentClassifier');
 
 export type AttachmentKind = 'cv' | 'document' | 'unknown';
-export type DocumentType = 'passport' | 'cnic' | 'degree' | 'medical' | 'visa' | 'certificate' | 'unknown';
+export type DocumentType = 'passport' | 'cnic' | 'degree' | 'medical' | 'visa' | 'certificate' | 'unknown' | 'other';
 
 interface ClassificationResult {
   attachmentKind: AttachmentKind;
@@ -140,9 +140,10 @@ export class DocumentClassifier {
     documentType: DocumentType, 
     fileName: string
   ): string {
-    const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    // Include a full timestamp to avoid overwriting same-day same-name uploads.
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    return `candidates/${candidateId}/documents/${documentType}/${date}_${sanitizedFileName}`;
+    return `candidates/${candidateId}/documents/${documentType}/${ts}_${sanitizedFileName}`;
   }
 
   /**

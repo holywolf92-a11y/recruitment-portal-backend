@@ -23,6 +23,15 @@ function startDocumentLinkWorker() {
             if (error || !attachment) {
                 throw new Error(`Attachment not found: ${attachmentId}`);
             }
+            // Identity-first rule (defense-in-depth): never link WhatsApp documents before a candidate is known.
+            const messageSource = attachment?.inbox_messages?.source;
+            if (messageSource === 'whatsapp' && !attachment.linked_candidate_id) {
+                logger.info('Skipping WhatsApp attachment link job (candidate not yet determined)', {
+                    attachmentId,
+                    jobId: job.id,
+                });
+                return { skipped: true, reason: 'WhatsApp requires pre-verification before linking' };
+            }
             // Skip if it's a CV (handled by CV parsing flow)
             if (attachment.attachment_kind === 'cv') {
                 logger.info(`Skipping CV attachment`, { attachmentId });
@@ -36,8 +45,12 @@ function startDocumentLinkWorker() {
                 .single();
             const payload = message?.payload || {};
             const extractedEmail = payload.from?.email || payload.email;
-            const extractedPhone = payload.from?.phone || payload.phone;
-            const extractedName = payload.from?.name || payload.sender_name;
+            const extractedPhone = (typeof payload.from === 'string' ? payload.from : payload.from?.phone) ||
+                payload.phone ||
+                payload.sender_phone;
+            const extractedName = (typeof payload.from === 'object' ? payload.from?.name : undefined) ||
+                payload.sender_name ||
+                payload.name;
             // Get extracted metadata from filename (CNIC, etc.)
             const fileMetadata = attachment.extractedMetadata || {};
             // Process the document

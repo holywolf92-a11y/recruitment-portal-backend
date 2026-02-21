@@ -1,14 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { asyncHandler, createLogger } from '../utils/errorHandling';
-import { idempotencyMiddleware } from '../middleware/idempotency';
 import { whatsappLimiter } from '../middleware/rateLimit';
 import { webhookLoggingMiddleware, webhookErrorMonitor } from '../middleware/webhookLogger';
 import { createInboxMessage } from '../services/inboxService';
-import { createAttachment } from '../services/inboxAttachmentService';
 import {
   extractMessageData,
-  fetchMediaMetadata,
-  downloadMedia,
   validateWebhookSignature,
   validateWebhookToken,
   sendMessage
@@ -20,6 +16,7 @@ import {
   recordOutboundMessage,
   updateMessageStatus,
 } from '../services/whatsappInboxService';
+import { whatsappMediaQueue } from '../config/queue';
 
 const router = Router();
 const logger = createLogger('WhatsAppRoute');
@@ -190,25 +187,35 @@ router.post(
       logger.warn('WhatsApp webhook message missing from number (skip storing conversation)', { wamid: messageData.wamid });
     }
 
-    // Handle media if present
-    if (messageData.mediaId) {
-      const meta = await fetchMediaMetadata(messageData.mediaId, accessToken);
-      if (meta?.url) {
-        const buffer = await downloadMedia(meta.url, accessToken);
-        const fileName = meta?.file_name || meta?.id || `${messageData.mediaId}.bin`;
-        const storagePath = `whatsapp/${messageData.wamid}/${fileName}`;
-        if (inboxMessage?.id) {
-          await createAttachment({
+    // Handle media asynchronously (webhook must ACK quickly)
+    if (messageData.mediaId && inboxMessage?.id && messageData.from) {
+      try {
+        const mediaJobId = `whatsapp-media:${messageData.wamid}:${messageData.mediaId}`;
+        await whatsappMediaQueue.add(
+          'process',
+          {
             inboxMessageId: inboxMessage.id,
-            fileBuffer: buffer,
-            fileName,
-            mimeType: meta?.mime_type,
-            attachmentType: 'cv',
-            storageBucket: 'documents',
-            storagePath,
-            candidateId: undefined,
-          });
-        }
+            wamid: messageData.wamid,
+            fromPhone: messageData.from,
+            mediaId: messageData.mediaId,
+            mimeType: messageData.mimeType,
+            fileName: messageData.fileName,
+            receivedAt: receivedAt.toISOString(),
+          },
+          {
+            jobId: mediaJobId,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 },
+            removeOnComplete: 200,
+            removeOnFail: 200,
+          }
+        );
+      } catch (err) {
+        logger.error('Failed to enqueue WhatsApp media processing (fail-open)', {
+          err: err instanceof Error ? err.message : String(err),
+          wamid: messageData.wamid,
+          mediaId: messageData.mediaId,
+        });
       }
     }
 

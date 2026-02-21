@@ -10,6 +10,8 @@ import { startGmailPolling } from './workers/gmailPollingWorker';
 import { startCvParserWorker } from './workers/cvParserWorker';
 import { startDocumentLinkWorker } from './workers/documentLinkWorker';
 import { startDocumentVerificationWorker } from './workers/documentVerificationWorker';
+import { startWhatsAppMediaWorker } from './workers/whatsappMediaWorker';
+import { startWhatsAppAttachmentVerificationWorker } from './workers/whatsappAttachmentVerificationWorker';
 
 dotenv.config();
 validateEnv();
@@ -127,6 +129,30 @@ try {
           logger.info('Document Link worker started');
         } catch (linkErr: any) {
           logger.error('Failed to start Document Link worker:', linkErr);
+        }
+
+        // Start WhatsApp media worker (requires WhatsApp access token)
+        if (process.env.WHATSAPP_ACCESS_TOKEN) {
+          try {
+            startWhatsAppMediaWorker();
+            logger.info('WhatsApp Media worker started');
+          } catch (waErr: any) {
+            logger.error('Failed to start WhatsApp Media worker:', waErr);
+          }
+        } else {
+          logger.warn('WhatsApp Media worker not started (WHATSAPP_ACCESS_TOKEN missing)');
+        }
+
+        // Start WhatsApp attachment verification worker (requires Python service)
+        if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
+          try {
+            startWhatsAppAttachmentVerificationWorker();
+            logger.info('WhatsApp Attachment Verification worker started');
+          } catch (waVerifyErr: any) {
+            logger.error('Failed to start WhatsApp Attachment Verification worker:', waVerifyErr);
+          }
+        } else {
+          logger.warn('WhatsApp Attachment Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
         }
         
         // Start Document Verification worker (requires Python service)

@@ -15,6 +15,8 @@ const gmailPollingWorker_1 = require("./workers/gmailPollingWorker");
 const cvParserWorker_1 = require("./workers/cvParserWorker");
 const documentLinkWorker_1 = require("./workers/documentLinkWorker");
 const documentVerificationWorker_1 = require("./workers/documentVerificationWorker");
+const whatsappMediaWorker_1 = require("./workers/whatsappMediaWorker");
+const whatsappAttachmentVerificationWorker_1 = require("./workers/whatsappAttachmentVerificationWorker");
 dotenv_1.default.config();
 (0, env_1.validateEnv)();
 const logger = (0, errorHandling_1.createLogger)('Server');
@@ -118,6 +120,32 @@ try {
                 }
                 catch (linkErr) {
                     logger.error('Failed to start Document Link worker:', linkErr);
+                }
+                // Start WhatsApp media worker (requires WhatsApp access token)
+                if (process.env.WHATSAPP_ACCESS_TOKEN) {
+                    try {
+                        (0, whatsappMediaWorker_1.startWhatsAppMediaWorker)();
+                        logger.info('WhatsApp Media worker started');
+                    }
+                    catch (waErr) {
+                        logger.error('Failed to start WhatsApp Media worker:', waErr);
+                    }
+                }
+                else {
+                    logger.warn('WhatsApp Media worker not started (WHATSAPP_ACCESS_TOKEN missing)');
+                }
+                // Start WhatsApp attachment verification worker (requires Python service)
+                if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
+                    try {
+                        (0, whatsappAttachmentVerificationWorker_1.startWhatsAppAttachmentVerificationWorker)();
+                        logger.info('WhatsApp Attachment Verification worker started');
+                    }
+                    catch (waVerifyErr) {
+                        logger.error('Failed to start WhatsApp Attachment Verification worker:', waVerifyErr);
+                    }
+                }
+                else {
+                    logger.warn('WhatsApp Attachment Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
                 }
                 // Start Document Verification worker (requires Python service)
                 if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {

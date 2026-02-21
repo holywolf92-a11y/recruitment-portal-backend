@@ -105,9 +105,10 @@ class DocumentClassifier {
      * Generate storage path for matched document
      */
     static generateStoragePath(candidateId, documentType, fileName) {
-        const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        // Include a full timestamp to avoid overwriting same-day same-name uploads.
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
         const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-        return `candidates/${candidateId}/documents/${documentType}/${date}_${sanitizedFileName}`;
+        return `candidates/${candidateId}/documents/${documentType}/${ts}_${sanitizedFileName}`;
     }
     /**
      * Generate storage path for unmatched document

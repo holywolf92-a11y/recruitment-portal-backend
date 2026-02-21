@@ -108,3 +108,40 @@ export async function sendMessage(phoneNumberId: string, accessToken: string, to
 
   return res.json();
 }
+
+export async function sendTemplateMessage(
+  phoneNumberId: string,
+  accessToken: string,
+  to: string,
+  template: {
+    name: string;
+    language: string;
+    components?: any[];
+  }
+) {
+  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: template.name,
+        language: { code: template.language },
+        ...(template.components ? { components: template.components } : {}),
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const textRes = await res.text();
+    logger.error('Failed to send template message', { status: res.status, text: textRes });
+    throw new AppError('Failed to send WhatsApp template message', ErrorType.EXTERNAL_SERVICE, res.status);
+  }
+
+  return res.json();
+}

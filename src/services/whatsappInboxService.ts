@@ -22,6 +22,11 @@ export interface WhatsAppConversation {
   updated_at: string;
 }
 
+export interface WhatsAppConversationView extends WhatsAppConversation {
+  candidate_name?: string | null;
+  taken_over_by_name?: string | null;
+}
+
 export interface WhatsAppMessage {
   id: string;
   conversation_id: string;
@@ -47,6 +52,66 @@ function isDuplicateKeyError(error: any): boolean {
   return msg.toLowerCase().includes('duplicate key') || String(error?.code || '') === '23505';
 }
 
+function normalizePhoneDigits(value: string): string {
+  return String(value || '').replace(/\D/g, '');
+}
+
+async function findCandidateByPhone(phoneNumber: string): Promise<{ id: string; name: string; phone: string | null } | null> {
+  const digits = normalizePhoneDigits(phoneNumber);
+  if (!digits || digits.length < 7) return null;
+
+  const key = digits.length > 10 ? digits.slice(-10) : digits;
+
+  const db = supabaseAdminClient();
+  const { data, error } = await db
+    .from('candidates')
+    .select('id,name,phone')
+    .ilike('phone', `%${key}%`)
+    .limit(1);
+
+  if (error) return null;
+  const row = (data ?? [])[0] as any;
+  if (!row?.id) return null;
+  return { id: String(row.id), name: String(row.name), phone: row.phone ?? null };
+}
+
+async function hydrateConversations(conversations: WhatsAppConversation[]): Promise<WhatsAppConversationView[]> {
+  if (!conversations.length) return [];
+
+  const candidateIds = Array.from(new Set(conversations.map((c) => c.candidate_id).filter(Boolean) as string[]));
+  const userIds = Array.from(new Set(conversations.map((c) => c.taken_over_by).filter(Boolean) as string[]));
+
+  const db = supabaseAdminClient();
+
+  const [candidatesRes, usersRes] = await Promise.all([
+    candidateIds.length ? db.from('candidates').select('id,name').in('id', candidateIds) : Promise.resolve({ data: [], error: null } as any),
+    userIds.length ? db.from('users').select('id,name,email').in('id', userIds) : Promise.resolve({ data: [], error: null } as any),
+  ]);
+
+  const candidateNameById = new Map<string, string>();
+  if (!candidatesRes.error) {
+    for (const row of candidatesRes.data ?? []) {
+      if (row?.id && row?.name) candidateNameById.set(String(row.id), String(row.name));
+    }
+  }
+
+  const userNameById = new Map<string, string>();
+  if (!usersRes.error) {
+    for (const row of usersRes.data ?? []) {
+      const id = row?.id ? String(row.id) : null;
+      if (!id) continue;
+      const name = (row?.name && String(row.name).trim()) || (row?.email && String(row.email).trim()) || '';
+      if (name) userNameById.set(id, name);
+    }
+  }
+
+  return conversations.map((c) => ({
+    ...c,
+    candidate_name: c.candidate_id ? candidateNameById.get(c.candidate_id) ?? null : null,
+    taken_over_by_name: c.taken_over_by ? userNameById.get(c.taken_over_by) ?? null : null,
+  }));
+}
+
 export async function listConversations(params?: { limit?: number; offset?: number }) {
   const limit = params?.limit ?? 50;
   const offset = params?.offset ?? 0;
@@ -63,7 +128,8 @@ export async function listConversations(params?: { limit?: number; offset?: numb
     throw new AppError('Failed to list conversations', ErrorType.DATABASE, 500);
   }
 
-  return { conversations: (data ?? []) as WhatsAppConversation[], total: count ?? 0, limit, offset };
+  const hydrated = await hydrateConversations((data ?? []) as WhatsAppConversation[]);
+  return { conversations: hydrated, total: count ?? 0, limit, offset };
 }
 
 export async function getConversation(conversationId: string) {
@@ -78,7 +144,8 @@ export async function getConversation(conversationId: string) {
     throw new NotFoundError('Conversation');
   }
 
-  return data as WhatsAppConversation;
+  const [hydrated] = await hydrateConversations([data as WhatsAppConversation]);
+  return (hydrated ?? (data as WhatsAppConversation)) as WhatsAppConversationView;
 }
 
 export async function listMessages(conversationId: string, params?: { limit?: number }) {
@@ -167,7 +234,22 @@ export async function ensureConversationForPhone(phoneNumber: string) {
     throw new AppError('Failed to load conversation', ErrorType.DATABASE, 500);
   }
 
-  if (existing) return existing as WhatsAppConversation;
+  if (existing) {
+    const existingConversation = existing as WhatsAppConversation;
+    if (!existingConversation.candidate_id) {
+      const candidate = await findCandidateByPhone(phoneNumber);
+      if (candidate) {
+        const { data: updated } = await db
+          .from('whatsapp_conversations')
+          .update({ candidate_id: candidate.id, display_name: existingConversation.display_name ?? candidate.name })
+          .eq('id', existingConversation.id)
+          .select('*')
+          .single();
+        if (updated) return updated as WhatsAppConversation;
+      }
+    }
+    return existingConversation;
+  }
 
   const { data: created, error: createError } = await db
     .from('whatsapp_conversations')
@@ -179,7 +261,19 @@ export async function ensureConversationForPhone(phoneNumber: string) {
     throw new AppError('Failed to create conversation', ErrorType.DATABASE, 500);
   }
 
-  return created as WhatsAppConversation;
+  const createdConversation = created as WhatsAppConversation;
+  const candidate = await findCandidateByPhone(phoneNumber);
+  if (candidate) {
+    const { data: updated } = await db
+      .from('whatsapp_conversations')
+      .update({ candidate_id: candidate.id, display_name: createdConversation.display_name ?? candidate.name })
+      .eq('id', createdConversation.id)
+      .select('*')
+      .single();
+    if (updated) return updated as WhatsAppConversation;
+  }
+
+  return createdConversation;
 }
 
 export async function recordInboundMessage(params: {

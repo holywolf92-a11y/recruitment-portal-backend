@@ -7,6 +7,7 @@ const express_1 = require("express");
 const multer_1 = __importDefault(require("multer"));
 const errorHandling_1 = require("../utils/errorHandling");
 const database_1 = require("../config/database");
+const database_2 = require("../config/database");
 // import { authenticate } from '../middleware/auth';
 // Old document controllers removed - using unified candidate-documents system
 const documentController_1 = require("../controllers/documentController");
@@ -22,23 +23,73 @@ const router = (0, express_1.Router)();
 // Body: { candidate_ids: string[] }
 router.post('/processing-status', async (req, res) => {
     try {
-        const candidateIds = (req.body?.candidate_ids || req.body?.candidateIds);
-        if (!candidateIds || !Array.isArray(candidateIds) || candidateIds.length === 0) {
-            return res.status(400).json({ error: 'candidate_ids array is required and must not be empty' });
+        const candidateIdsRaw = (req.body?.candidate_ids || req.body?.candidateIds);
+        const candidateIds = Array.isArray(candidateIdsRaw) ? candidateIdsRaw : [];
+        // Always return a 200 to avoid noisy console/network errors from background polling.
+        if (candidateIds.length === 0) {
+            return res.json({ statuses: {} });
         }
         if (candidateIds.length > 500) {
-            return res.status(400).json({ error: 'Maximum 500 candidates allowed per request' });
+            return res.json({ statuses: {} });
         }
-        const db = (0, database_1.supabaseAdminClient)();
-        // Only fetch minimal columns; aggregate on server.
-        const { data, error } = await db
-            .from('candidate_documents')
-            .select('candidate_id, verification_status')
-            .in('candidate_id', candidateIds)
-            .in('verification_status', ['pending_ai', 'pending']);
-        if (error)
-            throw error;
+        // Filter out invalid UUIDs to avoid DB errors like "invalid input syntax for type uuid".
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        const candidateIdsFiltered = candidateIds.filter((id) => typeof id === 'string' && uuidRegex.test(id));
+        if (candidateIdsFiltered.length === 0) {
+            const statuses = {};
+            for (const id of candidateIds) {
+                statuses[id] = { isProcessing: false, pendingCount: 0 };
+            }
+            return res.json({ statuses });
+        }
+        // Prefer service-role client, but fall back to user JWT if present.
+        // This avoids 500s when SUPABASE_SERVICE_ROLE_KEY isn't configured in the backend.
+        const authHeader = String(req.headers.authorization || '');
+        const bearerToken = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
+        const db = process.env.SUPABASE_SERVICE_ROLE_KEY
+            ? (0, database_1.supabaseAdminClient)()
+            : bearerToken
+                ? (0, database_2.supabaseUserClient)(bearerToken)
+                : (0, database_1.supabaseAdminClient)();
         const pendingCounts = new Map();
+        // Try the newer schema first: candidate_documents.verification_status
+        let data = null;
+        let queryError = null;
+        {
+            const result = await db
+                .from('candidate_documents')
+                .select('candidate_id, verification_status')
+                .in('candidate_id', candidateIdsFiltered)
+                .in('verification_status', ['pending_ai', 'pending']);
+            data = result.data || null;
+            queryError = result.error || null;
+        }
+        // Fallback: older schema uses candidate_documents.status (e.g., 'received')
+        if (queryError) {
+            const msg = String(queryError?.message || queryError);
+            const isMissingColumn = /column\s+"?verification_status"?\s+does\s+not\s+exist/i.test(msg);
+            if (isMissingColumn) {
+                const result = await db
+                    .from('candidate_documents')
+                    .select('candidate_id, status')
+                    .in('candidate_id', candidateIdsFiltered)
+                    // In the older schema, "received" is the closest approximation to "pending verification".
+                    .in('status', ['received']);
+                if (result.error) {
+                    logger.warn('Failed to fetch processing status via fallback status column', result.error);
+                    data = [];
+                }
+                else {
+                    data = (result.data || []).map((row) => ({ candidate_id: row.candidate_id }));
+                }
+            }
+            else {
+                // Common production misconfig: missing service role key or RLS policy blocks anon access.
+                // Don't 500; log and return "not processing" to keep UI stable.
+                logger.warn('Failed to fetch processing status (returning safe defaults)', queryError);
+                data = [];
+            }
+        }
         for (const row of data || []) {
             const id = row.candidate_id;
             pendingCounts.set(id, (pendingCounts.get(id) || 0) + 1);
@@ -55,7 +106,8 @@ router.post('/processing-status', async (req, res) => {
     }
     catch (err) {
         logger.error('Failed to fetch processing status', err);
-        return res.status(500).json({ error: 'Failed to fetch processing status' });
+        // Never 500 for background polling; return safe defaults.
+        return res.json({ statuses: {} });
     }
 });
 // Configure multer for memory storage

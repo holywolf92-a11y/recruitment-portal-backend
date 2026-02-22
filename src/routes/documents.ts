@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { createLogger, asyncHandler } from '../utils/errorHandling';
 import { supabaseAdminClient } from '../config/database';
-import { supabaseUserClient } from '../config/database';
 // import { authenticate } from '../middleware/auth';
 // Old document controllers removed - using unified candidate-documents system
 import {
@@ -28,86 +27,57 @@ const router = Router();
 // Bulk processing status (reduces per-candidate polling)
 // POST /api/documents/processing-status
 // Body: { candidate_ids: string[] }
+//
+// Root cause of previous 500 errors:
+// Supabase-JS sends .select().in('candidate_id', [...N ids...]) as a GET request with URL parameters.
+// With 200+ candidates, the URL exceeds the HTTP server's URL size limit (~8 KB), causing PostgREST
+// to return a 414/400 error which Supabase-JS puts in `error`, then `throw error` produced a 500.
+//
+// Correct fix: NEVER pass candidate IDs into a .in() filter on this endpoint.
+// Instead, query ALL currently-pending documents system-wide (a small transient set — processed in
+// seconds) and filter to the requested candidates in JavaScript.  This keeps the DB query URL tiny.
 router.post('/processing-status', async (req: Request, res: Response) => {
   try {
     const candidateIdsRaw = (req.body?.candidate_ids || req.body?.candidateIds) as unknown;
     const candidateIds = Array.isArray(candidateIdsRaw) ? (candidateIdsRaw as string[]) : [];
 
-    // Always return a 200 to avoid noisy console/network errors from background polling.
     if (candidateIds.length === 0) {
       return res.json({ statuses: {} });
     }
 
-    if (candidateIds.length > 500) {
+    // Build a Set for O(1) membership lookup when filtering query results.
+    const candidateIdSet = new Set(candidateIds);
+
+    const db = supabaseAdminClient();
+
+    // KEY DESIGN: Do NOT include candidate_id in the DB filter.
+    // Pending documents are transient (they exist for seconds to minutes while being processed).
+    // Querying all pending docs across the whole system prevents the URL-length 500 that occurs
+    // when 200+ candidate UUIDs are stuffed into a PostgREST GET query parameter.
+    const { data, error } = await db
+      .from('candidate_documents')
+      .select('candidate_id')
+      .eq('verification_status', 'pending_ai');
+
+    if (error) {
+      // Log full error details to Railway so we can diagnose if it ever happens again.
+      logger.error('Processing-status DB query failed', {
+        code: (error as any).code,
+        message: (error as any).message,
+        details: (error as any).details,
+        hint: (error as any).hint,
+      });
+      // Return empty statuses so the UI stays stable; do NOT 500 for polling.
       return res.json({ statuses: {} });
     }
 
-    // Filter out invalid UUIDs to avoid DB errors like "invalid input syntax for type uuid".
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    const candidateIdsFiltered = candidateIds.filter((id) => typeof id === 'string' && uuidRegex.test(id));
-    if (candidateIdsFiltered.length === 0) {
-      const statuses: Record<string, { isProcessing: boolean; pendingCount: number }> = {};
-      for (const id of candidateIds) {
-        statuses[id] = { isProcessing: false, pendingCount: 0 };
-      }
-      return res.json({ statuses });
-    }
-
-    // Prefer service-role client, but fall back to user JWT if present.
-    // This avoids 500s when SUPABASE_SERVICE_ROLE_KEY isn't configured in the backend.
-    const authHeader = String(req.headers.authorization || '');
-    const bearerToken = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
-
-    const db = process.env.SUPABASE_SERVICE_ROLE_KEY
-      ? supabaseAdminClient()
-      : bearerToken
-        ? supabaseUserClient(bearerToken)
-        : supabaseAdminClient();
-
+    // Aggregate pending counts per candidate, filtered to only the requested candidates.
     const pendingCounts = new Map<string, number>();
-
-    // Try the newer schema first: candidate_documents.verification_status
-    let data: any[] | null = null;
-    let queryError: any = null;
-    {
-      const result = await db
-        .from('candidate_documents')
-        .select('candidate_id, verification_status')
-        .in('candidate_id', candidateIdsFiltered)
-        .in('verification_status', ['pending_ai', 'pending']);
-      data = (result as any).data || null;
-      queryError = (result as any).error || null;
-    }
-
-    // Fallback: older schema uses candidate_documents.status (e.g., 'received')
-    if (queryError) {
-      const msg = String(queryError?.message || queryError);
-      const isMissingColumn = /column\s+"?verification_status"?\s+does\s+not\s+exist/i.test(msg);
-      if (isMissingColumn) {
-        const result = await db
-          .from('candidate_documents')
-          .select('candidate_id, status')
-          .in('candidate_id', candidateIdsFiltered)
-          // In the older schema, "received" is the closest approximation to "pending verification".
-          .in('status', ['received']);
-
-        if ((result as any).error) {
-          logger.warn('Failed to fetch processing status via fallback status column', (result as any).error);
-          data = [];
-        } else {
-          data = ((result as any).data || []).map((row: any) => ({ candidate_id: row.candidate_id }));
-        }
-      } else {
-        // Common production misconfig: missing service role key or RLS policy blocks anon access.
-        // Don't 500; log and return "not processing" to keep UI stable.
-        logger.warn('Failed to fetch processing status (returning safe defaults)', queryError);
-        data = [];
-      }
-    }
-
     for (const row of data || []) {
       const id = (row as any).candidate_id as string;
-      pendingCounts.set(id, (pendingCounts.get(id) || 0) + 1);
+      if (candidateIdSet.has(id)) {
+        pendingCounts.set(id, (pendingCounts.get(id) || 0) + 1);
+      }
     }
 
     const statuses: Record<string, { isProcessing: boolean; pendingCount: number }> = {};
@@ -121,8 +91,7 @@ router.post('/processing-status', async (req: Request, res: Response) => {
 
     return res.json({ statuses });
   } catch (err: any) {
-    logger.error('Failed to fetch processing status', err);
-    // Never 500 for background polling; return safe defaults.
+    logger.error('Unexpected error in processing-status', { message: err?.message, stack: err?.stack });
     return res.json({ statuses: {} });
   }
 });

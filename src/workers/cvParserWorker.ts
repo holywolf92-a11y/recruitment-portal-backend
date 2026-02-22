@@ -1322,6 +1322,11 @@ export function startCvParserWorker() {
         }
 
         // If no profile photo exists yet, try extracting it directly from the CV PDF.
+        // Strategy (in order):
+        //   1. Hybrid extraction: Python parser /extract-photo on the full CV buffer (fast, reliable face detection)
+        //   2. Fallback: OpenAI Vision page scan via Puppeteer (extractProfilePhotoFromPdfUsingAI)
+        // This ensures WhatsApp-ingested CVs where the photo is embedded in the CV pages (no separate
+        // 'photos' split section) still get a profile photo extracted reliably.
         if (newCandidate?.id && mimeType === 'application/pdf') {
           try {
             const { data: freshCandidate } = await db
@@ -1331,15 +1336,28 @@ export function startCvParserWorker() {
               .maybeSingle();
 
             if (!hasProfilePhoto(freshCandidate)) {
-              console.log(`[CVParser] No profile photo found for candidate ${newCandidate.id}. Extracting from CV PDF...`);
-              const extraction = await extractProfilePhotoFromPdfUsingAI({
-                candidateId: newCandidate.id,
-              });
-              console.log(`[CVParser] ✅ Extracted profile photo from CV PDF`, {
-                candidateId: newCandidate.id,
-                pageUsed: extraction.pageUsed,
-                confidence: extraction.confidence,
-              });
+              console.log(`[CVParser] No profile photo found for candidate ${newCandidate.id}. Attempting hybrid extraction from full CV PDF...`);
+
+              // Primary: Python parser /extract-photo + AI buffer fallback (no Puppeteer needed)
+              const hybridResult = await extractProfilePhotoHybrid(newCandidate.id, attachmentId, fileBytes);
+              if (hybridResult.success && hybridResult.photoBuffer) {
+                await uploadExtractedPhotoToCandidatePhotos(newCandidate.id, attachmentId, hybridResult.photoBuffer);
+                console.log(`[CVParser] ✅ Hybrid extraction from full CV succeeded (method=${hybridResult.method}).`, {
+                  candidateId: newCandidate.id,
+                  attachmentId,
+                });
+              } else {
+                // Secondary fallback: OpenAI Vision scan of rendered PDF pages via Puppeteer
+                console.log(`[CVParser] Hybrid extraction produced no photo for candidate ${newCandidate.id}. Falling back to AI page scan...`);
+                const extraction = await extractProfilePhotoFromPdfUsingAI({
+                  candidateId: newCandidate.id,
+                });
+                console.log(`[CVParser] ✅ AI page scan extracted photo from CV PDF`, {
+                  candidateId: newCandidate.id,
+                  pageUsed: extraction.pageUsed,
+                  confidence: extraction.confidence,
+                });
+              }
             } else {
               console.log(`[CVParser] Profile photo already present for candidate ${newCandidate.id}. Skipping CV photo extraction.`);
             }

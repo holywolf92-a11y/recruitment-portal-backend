@@ -395,13 +395,17 @@ export function startCvParserWorker() {
         return;
       }
 
-      const isWhatsApp = await isWhatsAppOriginAttachment(params.attachmentId);
-      if (!isWhatsApp) return;
-
-      const to =
-        normalizeWhatsAppTo(params.cvExtractedPhone) ??
-        normalizeWhatsAppTo(params.candidatePhone);
-      if (!to) return;
+      // Always notify the candidate using the phone number extracted from their CV.
+      // Do NOT use the sender's number as a fallback – the sender can be a partner,
+      // referral, or employee forwarding the CV on behalf of the candidate.
+      // We intentionally skip the isWhatsAppOriginAttachment() guard:
+      //   • WhatsApp CVs sent by a third party still need the candidate notified.
+      //   • Non-WhatsApp CVs (Gmail/web) with an extracted phone should also be reached.
+      const to = normalizeWhatsAppTo(params.cvExtractedPhone);
+      if (!to) {
+        console.log(`[CVParser] No CV-extracted phone number available for WhatsApp notification (candidateId=${params.candidateId}). Skipping.`);
+        return;
+      }
 
       const conversation = await ensureConversationForPhone(to);
 

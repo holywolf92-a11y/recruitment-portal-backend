@@ -14,7 +14,7 @@ import { processSplitDocument } from '../utils/splitDocumentProcessor';
 import { generateDescriptiveFilename } from '../utils/documentNaming';
 import { isGovernmentEmail } from '../services/progressiveDataCompletionService';
 import { extractProfilePhotoFromPdfUsingAI } from '../services/aiProfilePhotoExtractionService';
-import { sendMessage } from '../services/whatsappService';
+import { sendMessage, sendTemplateMessage } from '../services/whatsappService';
 import { ensureConversationForPhone, recordOutboundMessage } from '../services/whatsappInboxService';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
@@ -391,16 +391,11 @@ export function startCvParserWorker() {
       const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
       const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
-      if (!accessToken || !phoneNumberId) {
-        return;
-      }
+      if (!accessToken || !phoneNumberId) return;
 
-      // Always notify the candidate using the phone number extracted from their CV.
-      // Do NOT use the sender's number as a fallback – the sender can be a partner,
+      // Always use the phone number extracted from the CV itself.
+      // Never fall back to the sender's phone – the sender can be a partner,
       // referral, or employee forwarding the CV on behalf of the candidate.
-      // We intentionally skip the isWhatsAppOriginAttachment() guard:
-      //   • WhatsApp CVs sent by a third party still need the candidate notified.
-      //   • Non-WhatsApp CVs (Gmail/web) with an extracted phone should also be reached.
       const to = normalizeWhatsAppTo(params.cvExtractedPhone);
       if (!to) {
         console.log(`[CVParser] No CV-extracted phone number available for WhatsApp notification (candidateId=${params.candidateId}). Skipping.`);
@@ -422,15 +417,8 @@ export function startCvParserWorker() {
           .limit(1);
         if (Array.isArray(existing) && existing.length > 0) return;
       } catch (dedupeErr) {
-        // Fail open: don't block the pipeline if the dedupe query fails.
         console.warn('[CVParser] WhatsApp CV notification dedupe check failed (non-fatal):', dedupeErr);
       }
-
-      const text = buildCvReceivedWhatsAppText({
-        candidateName: params.candidateName,
-        candidateEmail: params.candidateEmail,
-        missingDataEmailSent: params.missingDataEmailSent,
-      });
 
       // Best-effort: attach candidate to conversation if missing
       if (!conversation.candidate_id) {
@@ -448,16 +436,102 @@ export function startCvParserWorker() {
         }
       }
 
-      try {
-        const sendRes = await sendMessage(phoneNumberId, accessToken, to, text);
-        const metaMessageId = sendRes?.messages?.[0]?.id ?? null;
+      // ─────────────────────────────────────────────────────────────────────────
+      // Determine send strategy:
+      //   1. If WHATSAPP_MISSING_DOCS_TEMPLATE_NAME is configured AND the candidate
+      //      is missing documents → use Template 2 (missing_documents_request).
+      //      This bypasses the 24-hour window restriction that blocks free-form text
+      //      to candidates who haven't messaged us first.
+      //   2. Otherwise fall back to free-form text (works only within 24h window).
+      // ─────────────────────────────────────────────────────────────────────────
+      const templateName = (process.env.WHATSAPP_MISSING_DOCS_TEMPLATE_NAME || '').trim();
 
+      // Compute which documents are still missing for this candidate.
+      let missingDocsList: string[] = [];
+      if (templateName) {
+        try {
+          const db = supabaseAdminClient();
+          const [candRes, docsRes] = await Promise.all([
+            db
+              .from('candidates')
+              .select('cv_received,passport_received,cnic_received,driving_license_received,degree_received')
+              .eq('id', params.candidateId)
+              .maybeSingle(),
+            db
+              .from('candidate_documents')
+              .select('category,document_type,file_name')
+              .eq('candidate_id', params.candidateId)
+              .limit(100),
+          ]);
+          const cand = candRes.data as any;
+          const categories = new Set(
+            ((docsRes.data as any[]) || []).map((d: any) => String(d?.category || '').toLowerCase()).filter(Boolean)
+          );
+          const fileNames = ((docsRes.data as any[]) || []).map((d: any) => String(d?.file_name || '').toLowerCase());
+
+          if (!cand?.cv_received && !categories.has('cv_resume') && !categories.has('cv'))
+            missingDocsList.push('CV / Resume');
+          if (!cand?.passport_received && !categories.has('passport') && !fileNames.some((n: string) => n.includes('passport')))
+            missingDocsList.push('Passport (clear scan, all pages)');
+          if (!cand?.cnic_received && !categories.has('cnic') && !categories.has('national_id') && !fileNames.some((n: string) => n.includes('cnic') || n.includes('nic')))
+            missingDocsList.push('CNIC (front & back)');
+          if (!cand?.driving_license_received && !categories.has('driving_license') && !fileNames.some((n: string) => n.includes('driving') || n.includes('license')))
+            missingDocsList.push('Driving License');
+          if (!cand?.degree_received && !categories.has('educational_documents') && !fileNames.some((n: string) => n.includes('degree') || n.includes('diploma')))
+            missingDocsList.push('Educational Degree / Certificate');
+        } catch (mdErr) {
+          console.warn('[CVParser] Failed to compute missing docs for WhatsApp template (non-fatal):', mdErr);
+        }
+      }
+
+      const useTemplate = !!templateName && missingDocsList.length > 0;
+
+      // Build body text (used for free-form fallback and for audit recording)
+      const fallbackText = buildCvReceivedWhatsAppText({
+        candidateName: params.candidateName,
+        candidateEmail: params.candidateEmail,
+        missingDataEmailSent: params.missingDataEmailSent,
+      });
+
+      const candidateName = (params.candidateName || 'Candidate').trim();
+      const candidateCode = (params.candidateCode || 'N/A').trim();
+      const bulletList = missingDocsList.map((d) => `• ${d}`).join('\n');
+
+      // Body text to store in whatsapp_messages for visibility in inbox UI
+      const recordBody = useTemplate
+        ? `[Template: ${templateName}]\n\nAssalam o Alaikum ${candidateName},\n\nThank you for submitting your CV (Ref: ${candidateCode}).\n\nTo complete your application, we still need:\n${bulletList}\n\nPlease reply or send them to our WhatsApp at your earliest convenience.\n\n— Falisha Manpower Team`
+        : fallbackText;
+
+      try {
+        let sendRes: any;
+        if (useTemplate) {
+          console.log(`[CVParser] Sending Template 2 (${templateName}) to ${to} – ${missingDocsList.length} missing doc(s)`);
+          sendRes = await sendTemplateMessage(phoneNumberId, accessToken, to, {
+            name: templateName,
+            language: 'en',
+            components: [
+              {
+                type: 'body',
+                parameters: [
+                  { type: 'text', text: candidateName },   // {{1}} candidate name
+                  { type: 'text', text: candidateCode },   // {{2}} application reference
+                  { type: 'text', text: bulletList },       // {{3}} missing docs bullet list
+                ],
+              },
+            ],
+          });
+        } else {
+          console.log(`[CVParser] Template not configured or no missing docs – sending free-form CV received message to ${to}`);
+          sendRes = await sendMessage(phoneNumberId, accessToken, to, fallbackText);
+        }
+
+        const metaMessageId = sendRes?.messages?.[0]?.id ?? null;
         await recordOutboundMessage({
           conversationId: conversation.id,
           direction: 'outbound',
           fromNumberId: phoneNumberId,
           toPhoneNumber: to,
-          body: text,
+          body: recordBody,
           metaMessageId: metaMessageId ?? undefined,
           status: 'sent',
           raw: {
@@ -467,26 +541,30 @@ export function startCvParserWorker() {
             candidate_code: params.candidateCode ?? null,
             email: params.candidateEmail ?? null,
             missing_data_email_sent: !!params.missingDataEmailSent,
+            template_used: useTemplate ? templateName : null,
+            missing_docs: useTemplate ? missingDocsList : null,
             whatsapp_send: sendRes,
           },
         });
 
-        console.log('[CVParser] ✅ WhatsApp CV received notification sent', {
+        console.log(`[CVParser] ✅ WhatsApp notification sent (${useTemplate ? 'template' : 'free-form'})`, {
           attachmentId: params.attachmentId,
           candidateId: params.candidateId,
           to,
+          templateName: useTemplate ? templateName : null,
+          missingDocs: missingDocsList,
         });
       } catch (sendErr: any) {
-        console.warn('[CVParser] WhatsApp CV notification send failed (non-fatal):', sendErr?.message || sendErr);
+        console.warn('[CVParser] WhatsApp notification send failed (non-fatal):', sendErr?.message || sendErr);
 
-        // Still record an outbound attempt for audit/visibility
+        // Still record the attempt for audit/visibility
         try {
           await recordOutboundMessage({
             conversationId: conversation.id,
             direction: 'outbound',
             fromNumberId: phoneNumberId,
             toPhoneNumber: to,
-            body: text,
+            body: recordBody,
             status: 'failed',
             raw: {
               kind: 'cv_received_notification',
@@ -495,6 +573,8 @@ export function startCvParserWorker() {
               candidate_code: params.candidateCode ?? null,
               email: params.candidateEmail ?? null,
               missing_data_email_sent: !!params.missingDataEmailSent,
+              template_used: useTemplate ? templateName : null,
+              missing_docs: useTemplate ? missingDocsList : null,
               error: String(sendErr?.message || sendErr),
             },
           });

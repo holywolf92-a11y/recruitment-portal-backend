@@ -12,7 +12,6 @@ import {
   deleteAttachment,
   listAttachmentsForMessage,
   getAttachmentById,
-  getAttachmentSignedUrl,
   enqueueCvParsingJobForAttachment,
 } from '../services/inboxAttachmentService';
 import { cvParsingQueue } from '../config/queue';
@@ -163,9 +162,7 @@ router.post(
       // 1) Get attachment and generate signed URL
       console.log(`[AttachmentProcess] Fetching attachment ${attachmentId}...`);
       const attachment = await getAttachmentById(attachmentId);
-      console.log(`[AttachmentProcess] Got attachment, generating signed URL...`);
-      const signedUrl = await getAttachmentSignedUrl(attachmentId, 300);
-      console.log(`[AttachmentProcess] Got signed URL, creating job...`);
+      console.log(`[AttachmentProcess] Got attachment, creating job...`);
       const fileHash = attachment?.sha256 ?? null;
 
       // 2) Idempotency: if same attachment+hash already extracted, reuse job (unless forced)
@@ -191,7 +188,6 @@ router.post(
         {
           jobId: createdJobRow.id,
           attachmentId,
-          fileUrl: signedUrl,
           fileHash,
           force,
         },

@@ -207,10 +207,17 @@ async function deleteAttachment(id) {
             .single();
         const candidateId = attachment?.candidate_id;
         // Clean up orphaned parsing_jobs (no foreign key, manual cleanup needed)
-        await db
-            .from('parsing_jobs')
-            .delete()
-            .eq('attachment_id', id);
+        // parsing_jobs schema varies across deployments (inbox_attachment_id vs attachment_id)
+        const attempt1 = await db.from('parsing_jobs').delete().eq('inbox_attachment_id', id);
+        if (attempt1?.error) {
+            const attempt2 = await db.from('parsing_jobs').delete().eq('attachment_id', id);
+            if (attempt2?.error) {
+                logger.warn('Failed to delete parsing jobs for attachment (non-fatal)', {
+                    attachmentId: id,
+                    error: attempt2?.error?.message || attempt2?.error,
+                });
+            }
+        }
         logger.info(`Deleted parsing jobs for attachment ${id}`);
         // Delete the attachment (this will CASCADE to unmatched_documents if exists)
         const { data, error } = await db
@@ -287,13 +294,11 @@ async function enqueueCvParsingJobForAttachment(attachmentId, options) {
     try {
         const attachment = await getAttachmentById(attachmentId);
         const fileHash = attachment?.sha256 ?? null;
-        const signedUrl = await getAttachmentSignedUrl(attachmentId, options?.expiresInSeconds ?? 3600);
         const createdJobRow = await parsingJobs.createJob({ attachmentId, fileHash });
         jobRowId = createdJobRow.id;
         await queue_1.cvParsingQueue.add('parse', {
             jobId: createdJobRow.id,
             attachmentId,
-            fileUrl: signedUrl,
             fileHash,
             force: options?.force ?? false,
         }, {

@@ -108,9 +108,7 @@ router.post('/attachments/:attachmentId/process', (0, errorHandling_1.asyncHandl
         // 1) Get attachment and generate signed URL
         console.log(`[AttachmentProcess] Fetching attachment ${attachmentId}...`);
         const attachment = await (0, inboxAttachmentService_1.getAttachmentById)(attachmentId);
-        console.log(`[AttachmentProcess] Got attachment, generating signed URL...`);
-        const signedUrl = await (0, inboxAttachmentService_1.getAttachmentSignedUrl)(attachmentId, 300);
-        console.log(`[AttachmentProcess] Got signed URL, creating job...`);
+        console.log(`[AttachmentProcess] Got attachment, creating job...`);
         const fileHash = attachment?.sha256 ?? null;
         // 2) Idempotency: if same attachment+hash already extracted, reuse job (unless forced)
         if (!force && fileHash) {
@@ -131,7 +129,6 @@ router.post('/attachments/:attachmentId/process', (0, errorHandling_1.asyncHandl
         await queue_1.cvParsingQueue.add('parse', {
             jobId: createdJobRow.id,
             attachmentId,
-            fileUrl: signedUrl,
             fileHash,
             force,
         }, {

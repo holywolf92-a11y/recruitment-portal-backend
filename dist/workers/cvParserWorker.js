@@ -53,6 +53,8 @@ const splitDocumentProcessor_1 = require("../utils/splitDocumentProcessor");
 const documentNaming_1 = require("../utils/documentNaming");
 const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
 const aiProfilePhotoExtractionService_1 = require("../services/aiProfilePhotoExtractionService");
+const whatsappService_1 = require("../services/whatsappService");
+const whatsappInboxService_1 = require("../services/whatsappInboxService");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 const STORAGE_BUCKET = 'documents';
@@ -80,6 +82,43 @@ function hasProfilePhoto(candidate) {
         candidate?.profile_photo_bucket ||
         candidate?.profile_photo_path ||
         candidate?.profile_photo_url);
+}
+function normalizeWhatsAppTo(phoneRaw) {
+    if (!phoneRaw)
+        return null;
+    let digits = String(phoneRaw).replace(/\D/g, '');
+    if (!digits)
+        return null;
+    // Handle 00-prefixed international format (e.g. 0092...)
+    if (digits.startsWith('00'))
+        digits = digits.slice(2);
+    // Pakistan-focused normalization (most common in this system)
+    // 03XXXXXXXXX -> 92XXXXXXXXXX
+    if (digits.startsWith('0') && digits.length === 11) {
+        digits = `92${digits.slice(1)}`;
+    }
+    // 3XXXXXXXXX -> 92XXXXXXXXXX
+    if (digits.length === 10 && digits.startsWith('3')) {
+        digits = `92${digits}`;
+    }
+    // WhatsApp expects E.164 digits without +
+    if (digits.startsWith('0'))
+        return null;
+    if (digits.length < 10 || digits.length > 15)
+        return null;
+    return digits;
+}
+function buildCvReceivedWhatsAppText(params) {
+    const name = (params.candidateName || '').trim();
+    const email = (params.candidateEmail || '').trim();
+    const emailSent = !!params.missingDataEmailSent;
+    const greeting = name ? `Assalam o Alaikum ${name}` : 'Assalam o Alaikum';
+    const emailLine = email
+        ? emailSent
+            ? `We have sent an email to ${email} requesting the missing documents. Please check your inbox/spam and reply to that email with the required documents.`
+            : `We will contact you via email at ${email} if any documents are missing.`
+        : `If any documents are missing, our team will contact you.`;
+    return `${greeting},\n\nFalisha Manpower: We have received your CV.\n${emailLine}\n\nThank you.`;
 }
 // Helper to parse and validate dates from various formats
 function parseDate(dateStr, fieldName) {
@@ -317,6 +356,137 @@ function startCvParserWorker() {
         if (lines.length === 0)
             return undefined;
         return lines.slice(0, 12).join('\n\n');
+    }
+    async function isWhatsAppOriginAttachment(attachmentId) {
+        const db = (0, database_1.supabaseAdminClient)();
+        const { data: att } = await db
+            .from('inbox_attachments')
+            .select('inbox_message_id, whatsapp_wamid, whatsapp_media_id')
+            .eq('id', attachmentId)
+            .maybeSingle();
+        if (att?.whatsapp_wamid || att?.whatsapp_media_id)
+            return true;
+        const inboxMessageId = att?.inbox_message_id;
+        if (!inboxMessageId)
+            return false;
+        const { data: msg } = await db
+            .from('inbox_messages')
+            .select('source')
+            .eq('id', inboxMessageId)
+            .maybeSingle();
+        return msg?.source === 'whatsapp';
+    }
+    async function maybeSendCvReceivedWhatsAppNotification(params) {
+        try {
+            const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+            const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+            if (!accessToken || !phoneNumberId) {
+                return;
+            }
+            const isWhatsApp = await isWhatsAppOriginAttachment(params.attachmentId);
+            if (!isWhatsApp)
+                return;
+            const to = normalizeWhatsAppTo(params.cvExtractedPhone) ??
+                normalizeWhatsAppTo(params.candidatePhone);
+            if (!to)
+                return;
+            const conversation = await (0, whatsappInboxService_1.ensureConversationForPhone)(to);
+            // Idempotency: do not send twice for the same attachment
+            try {
+                const db = (0, database_1.supabaseAdminClient)();
+                const { data: existing } = await db
+                    .from('whatsapp_messages')
+                    .select('id')
+                    .eq('conversation_id', conversation.id)
+                    .eq('direction', 'outbound')
+                    .eq('raw->>kind', 'cv_received_notification')
+                    .eq('raw->>inbox_attachment_id', params.attachmentId)
+                    .limit(1);
+                if (Array.isArray(existing) && existing.length > 0)
+                    return;
+            }
+            catch (dedupeErr) {
+                // Fail open: don't block the pipeline if the dedupe query fails.
+                console.warn('[CVParser] WhatsApp CV notification dedupe check failed (non-fatal):', dedupeErr);
+            }
+            const text = buildCvReceivedWhatsAppText({
+                candidateName: params.candidateName,
+                candidateEmail: params.candidateEmail,
+                missingDataEmailSent: params.missingDataEmailSent,
+            });
+            // Best-effort: attach candidate to conversation if missing
+            if (!conversation.candidate_id) {
+                try {
+                    const db = (0, database_1.supabaseAdminClient)();
+                    await db
+                        .from('whatsapp_conversations')
+                        .update({
+                        candidate_id: params.candidateId,
+                        display_name: params.candidateName || conversation.display_name,
+                    })
+                        .eq('id', conversation.id);
+                }
+                catch (linkErr) {
+                    console.warn('[CVParser] Failed to link candidate to WhatsApp conversation (non-fatal):', linkErr);
+                }
+            }
+            try {
+                const sendRes = await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, to, text);
+                const metaMessageId = sendRes?.messages?.[0]?.id ?? null;
+                await (0, whatsappInboxService_1.recordOutboundMessage)({
+                    conversationId: conversation.id,
+                    direction: 'outbound',
+                    fromNumberId: phoneNumberId,
+                    toPhoneNumber: to,
+                    body: text,
+                    metaMessageId: metaMessageId ?? undefined,
+                    status: 'sent',
+                    raw: {
+                        kind: 'cv_received_notification',
+                        inbox_attachment_id: params.attachmentId,
+                        candidate_id: params.candidateId,
+                        candidate_code: params.candidateCode ?? null,
+                        email: params.candidateEmail ?? null,
+                        missing_data_email_sent: !!params.missingDataEmailSent,
+                        whatsapp_send: sendRes,
+                    },
+                });
+                console.log('[CVParser] ✅ WhatsApp CV received notification sent', {
+                    attachmentId: params.attachmentId,
+                    candidateId: params.candidateId,
+                    to,
+                });
+            }
+            catch (sendErr) {
+                console.warn('[CVParser] WhatsApp CV notification send failed (non-fatal):', sendErr?.message || sendErr);
+                // Still record an outbound attempt for audit/visibility
+                try {
+                    await (0, whatsappInboxService_1.recordOutboundMessage)({
+                        conversationId: conversation.id,
+                        direction: 'outbound',
+                        fromNumberId: phoneNumberId,
+                        toPhoneNumber: to,
+                        body: text,
+                        status: 'failed',
+                        raw: {
+                            kind: 'cv_received_notification',
+                            inbox_attachment_id: params.attachmentId,
+                            candidate_id: params.candidateId,
+                            candidate_code: params.candidateCode ?? null,
+                            email: params.candidateEmail ?? null,
+                            missing_data_email_sent: !!params.missingDataEmailSent,
+                            error: String(sendErr?.message || sendErr),
+                        },
+                    });
+                }
+                catch (recordErr) {
+                    console.warn('[CVParser] Failed to record failed WhatsApp notification (non-fatal):', recordErr);
+                }
+            }
+        }
+        catch (err) {
+            console.warn('[CVParser] WhatsApp CV notification failed (non-fatal):', err);
+        }
     }
     function parseYear(value) {
         if (!value || typeof value !== 'string')
@@ -568,6 +738,7 @@ function startCvParserWorker() {
                     console.warn('[CVParser] Failed to set cv_received before email (non-fatal):', flagErr?.message || flagErr);
                 }
                 // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
+                let missingDataEmailSent = false;
                 try {
                     const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
                     if (updatedCandidateForEmail?.gmail_thread_id) {
@@ -579,10 +750,22 @@ function startCvParserWorker() {
                             trigger: 'cv_parsed_existing_manual',
                         });
                     }
+                    missingDataEmailSent = true;
                 }
                 catch (emailErr) {
                     console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
                 }
+                // Notify candidate on CV-extracted phone (WhatsApp-origin CVs only)
+                await maybeSendCvReceivedWhatsAppNotification({
+                    attachmentId,
+                    candidateId: existingCandidateId,
+                    candidateName: candidate?.name ?? null,
+                    candidateCode: candidate?.candidate_code ?? null,
+                    cvExtractedPhone: combinedData?.phone ?? null,
+                    candidatePhone: candidate?.phone ?? null,
+                    candidateEmail: (combinedData?.email ?? candidate?.email) ?? null,
+                    missingDataEmailSent,
+                });
                 console.log(`[CVParser] ✅ Enriched existing candidate ${existingCandidateId} with CV data`);
             }
             else {
@@ -616,6 +799,7 @@ function startCvParserWorker() {
                             console.warn('[CVParser] Failed to set cv_received before email (non-fatal):', flagErr?.message || flagErr);
                         }
                         // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
+                        let missingDataEmailSent = false;
                         try {
                             const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
                             if (updatedCandidateNew?.gmail_thread_id) {
@@ -627,10 +811,22 @@ function startCvParserWorker() {
                                     trigger: 'cv_parsed_new_manual',
                                 });
                             }
+                            missingDataEmailSent = true;
                         }
                         catch (emailErr) {
                             console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
                         }
+                        // Notify candidate on CV-extracted phone (WhatsApp-origin CVs only)
+                        await maybeSendCvReceivedWhatsAppNotification({
+                            attachmentId,
+                            candidateId: candidate.id,
+                            candidateName: candidate?.name ?? null,
+                            candidateCode: candidate?.candidate_code ?? null,
+                            cvExtractedPhone: combinedData?.phone ?? null,
+                            candidatePhone: candidate?.phone ?? null,
+                            candidateEmail: (combinedData?.email ?? candidate?.email) ?? null,
+                            missingDataEmailSent,
+                        });
                     }
                     catch (enrichError) {
                         console.warn(`[CVParser] Failed to enrich newly created candidate:`, enrichError);

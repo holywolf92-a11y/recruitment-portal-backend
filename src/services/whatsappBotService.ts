@@ -136,9 +136,12 @@ async function showMainMenu(
   accessToken: string,
   to: string,
   convId: string | null,
+  state: BotState,
 ): Promise<void> {
-  // Optional welcome image
-  if (WELCOME_IMG_URL) {
+  // Send welcome image only ONCE per user (idempotent regardless of webhook retries).
+  // Write the flag to DB BEFORE sending so any retry sees it already set.
+  if (WELCOME_IMG_URL && !state.data?.welcomed) {
+    await patchBotData(to, { welcomed: true });
     await sendImage(phoneNumberId, accessToken, to, WELCOME_IMG_URL, 'Falisha Manpower').catch(() => { /* non-fatal */ });
   }
 
@@ -405,7 +408,7 @@ async function handleCandidateFlow(
   // ── Step: confirmed ───────────────────────────────────────────────────────
   if (step === 'confirmed') {
     // They replied after confirmation — show menu
-    await showMainMenu(phoneNumberId, accessToken, phoneNumber, convId);
+    await showMainMenu(phoneNumberId, accessToken, phoneNumber, convId, state);
     await resetBotState(phoneNumber);
     return;
   }
@@ -881,7 +884,7 @@ export async function handleBotMessageFrom(params: {
     // ── Global overrides (work from any step) ────────────────────────────────
     if (isMainMenuRequest(text, id)) {
       await resetBotState(from);
-      await showMainMenu(phoneNumberId, accessToken, from, state.conversationId);
+      await showMainMenu(phoneNumberId, accessToken, from, state.conversationId, state);
       return true;
     }
 
@@ -894,7 +897,7 @@ export async function handleBotMessageFrom(params: {
     if (!state.flow) {
       // Greeting or menu tap triggers main menu
       if (isGreeting(text) || id.startsWith('menu_')) {
-        await showMainMenu(phoneNumberId, accessToken, from, state.conversationId);
+        await showMainMenu(phoneNumberId, accessToken, from, state.conversationId, state);
         if (id.startsWith('menu_')) {
           // Fall through immediately to route the selected menu item
           // (processed in the block below after a fresh state read isn't needed
@@ -977,7 +980,7 @@ async function routeActiveFlow(
       break;
     case 'menu':
     default:
-      await showMainMenu(phoneNumberId, accessToken, state.phoneNumber, state.conversationId);
+      await showMainMenu(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, state);
       await resetBotState(state.phoneNumber);
   }
 }

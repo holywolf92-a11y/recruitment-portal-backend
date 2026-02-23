@@ -106,5 +106,14 @@ export async function patchBotData(
 }
 
 export async function resetBotState(phoneNumber: string): Promise<void> {
-  return setBotState(phoneNumber, null, null, {});
+  // Preserve the `welcomed` flag so the welcome image is never sent twice
+  // even after a flow completes and state is cleared.
+  const db = supabaseAdminClient();
+  const { data } = await db
+    .from('whatsapp_conversations')
+    .select('bot_data')
+    .eq('phone_number', phoneNumber)
+    .maybeSingle();
+  const welcomed = (data as any)?.bot_data?.welcomed ?? false;
+  return setBotState(phoneNumber, null, null, welcomed ? { welcomed: true } : {});
 }

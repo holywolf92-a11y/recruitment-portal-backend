@@ -80,14 +80,56 @@ export class Logger {
     this.context = context;
   }
 
+  private safeStringify(value: any): string {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '[unserializable meta]';
+    }
+  }
+
   private formatMessage(level: LogLevel, message: string, meta?: any): string {
     const timestamp = new Date().toISOString();
-    const metaStr = meta ? ` | ${JSON.stringify(meta)}` : '';
+    const metaStr = meta ? ` | ${this.safeStringify(meta)}` : '';
     return `[${timestamp}] [${level.toUpperCase()}] [${this.context}] ${message}${metaStr}`;
   }
 
-  error(message: string, error?: Error | any, meta?: any): void {
-    console.error(this.formatMessage(LogLevel.ERROR, message, { ...meta, error: error?.message, stack: error?.stack }));
+  error(message: string, errorOrMeta?: unknown, meta?: any): void {
+    const baseMeta = meta && typeof meta === 'object' ? meta : {};
+
+    // Backward-compatible overload:
+    // - error(message, err, meta)
+    // - error(message, meta)
+    let errMessage: string | undefined;
+    let errStack: string | undefined;
+    let mergedMeta: any = { ...baseMeta };
+
+    if (errorOrMeta instanceof Error) {
+      errMessage = errorOrMeta.message;
+      errStack = errorOrMeta.stack;
+    } else if (typeof errorOrMeta === 'string') {
+      errMessage = errorOrMeta;
+    } else if (errorOrMeta && typeof errorOrMeta === 'object') {
+      const maybeMessage = (errorOrMeta as any).message;
+      const maybeStack = (errorOrMeta as any).stack;
+      const looksLikeError = typeof maybeMessage === 'string' || typeof maybeStack === 'string';
+      if (looksLikeError) {
+        errMessage = typeof maybeMessage === 'string' ? maybeMessage : undefined;
+        errStack = typeof maybeStack === 'string' ? maybeStack : undefined;
+      } else {
+        mergedMeta = { ...(errorOrMeta as any), ...mergedMeta };
+      }
+    } else if (errorOrMeta != null) {
+      errMessage = String(errorOrMeta);
+    }
+
+    console.error(
+      this.formatMessage(LogLevel.ERROR, message, {
+        ...mergedMeta,
+        error: errMessage,
+        stack: errStack,
+      })
+    );
   }
 
   warn(message: string, meta?: any): void {

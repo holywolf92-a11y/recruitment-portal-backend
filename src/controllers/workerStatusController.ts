@@ -1,7 +1,11 @@
 import { Request, Response } from 'express';
 import { supabaseAdminClient } from '../config/database';
-import { cvParsingQueue, documentVerificationQueue } from '../config/queue';
-import { Queue } from 'bullmq';
+import {
+  cvParsingQueue,
+  documentVerificationQueue,
+  whatsappMediaQueue,
+  whatsappAttachmentVerificationQueue,
+} from '../config/queue';
 
 /**
  * Get worker status and queue health
@@ -35,15 +39,19 @@ export async function getWorkerStatus(req: Request, res: Response) {
     // Try to get queue stats if Redis is available
     if (process.env.REDIS_URL) {
       try {
-        const [cvCounts, docVerifCounts] = await Promise.all([
+        const [cvCounts, docVerifCounts, waMediaCounts, waVerifyCounts] = await Promise.all([
           cvParsingQueue.getJobCounts(),
           documentVerificationQueue.getJobCounts(),
+          whatsappMediaQueue.getJobCounts(),
+          whatsappAttachmentVerificationQueue.getJobCounts(),
         ]);
 
         status.queues.available = true;
         status.queues.jobs = {
           cvParsing: cvCounts,
           documentVerification: docVerifCounts,
+          whatsappMedia: waMediaCounts,
+          whatsappAttachmentVerification: waVerifyCounts,
         };
       } catch (queueError: any) {
         status.queues.error = queueError.message;

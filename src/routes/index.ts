@@ -21,6 +21,7 @@ import verificationLogsRoutes from './verificationLogs';
 import extractPhotoRoutes from './extractPhoto';
 import employeeLogsRoutes from './employeeLogs';
 import { emailRouter } from './emailRoutes';
+import gmailAdminRoutes from './gmailAdmin';
 import { getWorkerStatus } from '../controllers/workerStatusController';
 
 const router = Router();
@@ -47,6 +48,7 @@ router.use('/health/storage', storageHealthRoutes);
 router.use('/verification-logs', verificationLogsRoutes);
 router.use('/employee-logs', employeeLogsRoutes);
 router.use('/email', emailRouter);
+router.use('/gmail-admin', gmailAdminRoutes);
 router.get('/worker-status', getWorkerStatus);
 
 export default router;

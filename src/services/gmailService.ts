@@ -30,10 +30,52 @@ function createOAuth2Client() {
   return oauth2Client;
 }
 
+/** CV-relevant Gmail query — includes all document and image attachment types */
+export const GMAIL_CV_QUERY =
+  'has:attachment (filename:pdf OR filename:doc OR filename:docx OR ' +
+  'filename:jpg OR filename:jpeg OR filename:png OR filename:gif OR filename:webp OR ' +
+  'filename:bmp OR filename:txt)';
+
+/** MIME types we accept for CV processing */
+export const ACCEPTED_CV_MIMES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/plain',
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/bmp',
+]);
+
+/** MIME types we explicitly reject */
+export const REJECTED_MIMES = new Set([
+  'application/zip',
+  'application/x-rar-compressed',
+  'application/x-zip-compressed',
+  'application/rar',
+  'application/x-7z-compressed',
+  'application/x-tar',
+  'application/x-executable',
+  'application/x-msdownload',
+]);
+
+export function isAcceptedCvMime(mimeType: string): boolean {
+  const m = mimeType.toLowerCase().split(';')[0].trim();
+  if (REJECTED_MIMES.has(m)) return false;
+  if (ACCEPTED_CV_MIMES.has(m)) return true;
+  // Accept any image/*
+  if (m.startsWith('image/')) return true;
+  return false;
+}
+
 export async function listMessages(
-  query: string = 'filename:pdf OR filename:doc OR filename:docx',
-  maxResults: number = 10
-) {
+  query: string = GMAIL_CV_QUERY,
+  maxResults: number = 10,
+  pageToken?: string
+): Promise<{ messages: Array<{ id: string; threadId: string }>; nextPageToken?: string }> {
   const auth = createOAuth2Client();
   const gmail = google.gmail({ version: 'v1', auth });
 
@@ -42,13 +84,64 @@ export async function listMessages(
       userId: 'me',
       q: query,
       maxResults,
+      ...(pageToken ? { pageToken } : {}),
     });
 
-    return res.data.messages ?? [];
+    return {
+      messages: (res.data.messages ?? []) as Array<{ id: string; threadId: string }>,
+      nextPageToken: res.data.nextPageToken ?? undefined,
+    };
   } catch (err) {
     logger.error('Failed to list messages', err);
     throw new AppError('Failed to list Gmail messages', ErrorType.EXTERNAL_SERVICE, 502);
   }
+}
+
+/**
+ * Paginate through ALL matching Gmail messages.
+ * Calls onBatch for each page so callers can process incrementally.
+ */
+export async function listAllMessages(
+  query: string = GMAIL_CV_QUERY,
+  options?: {
+    batchSize?: number;
+    afterDate?: Date;   // only messages after this date
+    beforeDate?: Date;  // only messages before this date
+    onBatch?: (ids: string[], pageNum: number, totalSoFar: number) => Promise<void>;
+    maxTotal?: number;  // safety cap
+  }
+): Promise<{ total: number; pageCount: number }> {
+  let q = query;
+  if (options?.afterDate) {
+    const d = options.afterDate;
+    q += ` after:${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+  }
+  if (options?.beforeDate) {
+    const d = options.beforeDate;
+    q += ` before:${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+  }
+
+  const batchSize = options?.batchSize ?? 100;
+  const maxTotal = options?.maxTotal ?? 10_000;
+  let pageToken: string | undefined;
+  let pageNum = 0;
+  let total = 0;
+
+  while (true) {
+    const page = await listMessages(q, Math.min(batchSize, maxTotal - total), pageToken);
+    const ids = page.messages.map((m) => m.id).filter(Boolean);
+
+    if (ids.length > 0) {
+      pageNum++;
+      total += ids.length;
+      if (options?.onBatch) await options.onBatch(ids, pageNum, total);
+    }
+
+    if (!page.nextPageToken || total >= maxTotal || ids.length === 0) break;
+    pageToken = page.nextPageToken;
+  }
+
+  return { total, pageCount: pageNum };
 }
 
 export interface GmailMessage {

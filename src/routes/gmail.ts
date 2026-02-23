@@ -4,7 +4,7 @@ import { gmailLimiter } from '../middleware/rateLimit';
 import { webhookLoggingMiddleware, webhookErrorMonitor } from '../middleware/webhookLogger';
 import { createInboxMessage } from '../services/inboxService';
 import { createAttachment } from '../services/inboxAttachmentService';
-import { listMessages, getMessage, getAttachment } from '../services/gmailService';
+import { listMessages, getMessage, getAttachment, GMAIL_CV_QUERY } from '../services/gmailService';
 
 const router = Router();
 const logger = createLogger('GmailRoute');
@@ -46,7 +46,7 @@ router.post(
 async function processGmailNotification(emailAddress: string, historyId: string) {
   try {
     // List recent messages with attachments
-    const messages = await listMessages('filename:pdf OR filename:doc OR filename:docx', 5);
+    const { messages } = await listMessages(GMAIL_CV_QUERY, 5);
     if (!messages || messages.length === 0) {
       logger.info('No new Gmail messages with attachments');
       return;

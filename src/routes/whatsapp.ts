@@ -17,6 +17,23 @@ import {
   updateMessageStatus,
 } from '../services/whatsappInboxService';
 import { whatsappMediaQueue } from '../config/queue';
+import { handleBotMessageFrom, BotIncoming } from '../services/whatsappBotService';
+
+/** Extract interactive button/list selection from the raw webhook payload. */
+function extractInteractiveData(body: any): { id: string; title: string } {
+  try {
+    const msg = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    if (msg?.type !== 'interactive') return { id: '', title: '' };
+    const ia = msg.interactive;
+    if (ia?.type === 'button_reply') {
+      return { id: ia.button_reply?.id ?? '', title: ia.button_reply?.title ?? '' };
+    }
+    if (ia?.type === 'list_reply') {
+      return { id: ia.list_reply?.id ?? '', title: ia.list_reply?.title ?? '' };
+    }
+  } catch { /* ignore */ }
+  return { id: '', title: '' };
+}
 
 const router = Router();
 const logger = createLogger('WhatsAppRoute');
@@ -219,9 +236,58 @@ router.post(
       }
     }
 
+    // ── WhatsApp Bot intercept (text, interactive buttons/lists, and media in active flows) ──
+    // Called BEFORE the AI reply so the bot can handle any message type.
+    // Returns true → skip AI reply entirely.
+    let botHandledMessage = false;
+    if (messageData.from && conversationForReply?.reply_mode === 'ai') {
+      const { id: interactiveId, title: interactiveTitle } = extractInteractiveData(req.body);
+      const rawText = messageData.type === 'interactive'
+        ? interactiveTitle
+        : (messageData.text ?? '');
+      const botIncoming: BotIncoming = {
+        type: messageData.type === 'interactive'
+          ? 'interactive'
+          : messageData.mediaId
+            ? 'media'
+            : messageData.type === 'text'
+              ? 'text'
+              : 'other',
+        text: rawText.toLowerCase().trim(),
+        rawText,
+        interactiveId,
+        interactiveTitle,
+        hasMedia: !!messageData.mediaId,
+        mediaType: messageData.type ?? '',
+        mediaId: messageData.mediaId ?? '',
+        mimeType: messageData.mimeType ?? '',
+        fileName: messageData.fileName ?? '',
+        inboxMessageId: inboxMessage?.id ?? null,
+        conversationId: conversationForReply?.id ?? null,
+      };
+
+      try {
+        botHandledMessage = await handleBotMessageFrom({
+          from: messageData.from,
+          phoneNumberId,
+          accessToken,
+          incoming: botIncoming,
+        });
+        if (botHandledMessage) {
+          return res.status(200).json({ status: 'bot_handled' });
+        }
+      } catch (botErr) {
+        logger.error('Bot handler error (fail-open)', {
+          err: botErr instanceof Error ? botErr.message : String(botErr),
+          from: messageData.from,
+        });
+        // Fall through to AI reply
+      }
+    }
+
     // Generate AI reply for text messages (but not for CV/document uploads)
-    // Only when conversation is in AI mode.
-    if (conversationForReply?.reply_mode === 'ai' && shouldReplyWithAI(messageData)) {
+    // Only when conversation is in AI mode and the bot did not handle the message.
+    if (!botHandledMessage && conversationForReply?.reply_mode === 'ai' && shouldReplyWithAI(messageData)) {
       try {
         const aiReply = await generateWhatsAppReply({
           from: messageData.from || '',

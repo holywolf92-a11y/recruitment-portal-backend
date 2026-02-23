@@ -442,7 +442,9 @@ export function startWhatsAppAttachmentVerificationWorker() {
       }
 
       // Mark inbox_attachments as linked (do not overwrite storage_path; it points to raw upload).
-      await db.from('inbox_attachments').update({ linked_candidate_id: candidateId }).eq('id', attachmentId);
+      // Write both linked_candidate_id (identity-first signal) AND candidate_id (required by CV Inbox
+      // UI to show status as "extracted" rather than "queued").
+      await db.from('inbox_attachments').update({ linked_candidate_id: candidateId, candidate_id: candidateId }).eq('id', attachmentId);
 
       return {
         status: 'linked',
@@ -464,7 +466,12 @@ export function startWhatsAppAttachmentVerificationWorker() {
   });
 
   worker.on('failed', (job: Job | undefined, err: Error) => {
-    logger.error('WhatsApp attachment verification job failed', { jobId: job?.id, error: err.message });
+    logger.error('WhatsApp attachment verification job failed', err, {
+      jobId: job?.id,
+      attachmentId: (job as any)?.data?.attachmentId,
+      wamid: (job as any)?.data?.wamid,
+      inboxMessageId: (job as any)?.data?.inboxMessageId,
+    });
   });
 
   return worker;

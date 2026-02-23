@@ -58,7 +58,23 @@ export function startWhatsAppMediaWorker() {
       const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
 
       const classification = DocumentClassifier.classify(fileName, undefined, mimeType);
-      const attachmentType = classification.attachmentKind === 'cv' ? 'cv' : 'document';
+      const normalizedMime = String(mimeType || '').toLowerCase();
+      const isCommonCvMime =
+        normalizedMime.includes('application/pdf') ||
+        normalizedMime.includes('application/msword') ||
+        normalizedMime.includes('application/vnd.openxmlformats-officedocument.wordprocessingml') ||
+        normalizedMime.includes('text/plain') ||
+        normalizedMime.startsWith('image/');
+
+      // WhatsApp often provides generic filenames (e.g. "document.pdf"). If we treat these as "document",
+      // the CV Inbox UI shows them as "queued" forever because no parsing job is created.
+      const isUnknownish =
+        classification.attachmentKind === 'unknown' ||
+        (classification.attachmentKind === 'document' &&
+          (!classification.documentType || classification.documentType === 'unknown'));
+
+      const attachmentType =
+        classification.attachmentKind === 'cv' || (isUnknownish && isCommonCvMime) ? 'cv' : 'document';
 
       // Identity-first rule: store raw WhatsApp upload unbound; never create/bind a candidate here.
       const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
@@ -83,10 +99,7 @@ export function startWhatsAppMediaWorker() {
         try {
           await enqueueCvParsingJobForAttachment(attachment.id, { force: false, expiresInSeconds: 3600 });
         } catch (err) {
-          logger.error('Failed to enqueue CV parsing (non-fatal)', {
-            attachmentId: attachment.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          logger.error('Failed to enqueue CV parsing (non-fatal)', err, { attachmentId: attachment.id });
         }
       } else {
         // Identity-first rule: run AI extraction BEFORE linking/binding.
@@ -108,11 +121,19 @@ export function startWhatsAppMediaWorker() {
             }
           );
         } catch (err) {
-          logger.error('Failed to enqueue WhatsApp attachment pre-verification (non-fatal)', {
-            attachmentId: attachment.id,
-            error: err instanceof Error ? err.message : String(err),
-          });
+          logger.error('Failed to enqueue WhatsApp attachment pre-verification (non-fatal)', err, { attachmentId: attachment.id });
         }
+      }
+
+      // Best-effort: mark legacy inbox message as processed so it doesn't linger as "pending".
+      try {
+        const db = supabaseAdminClient();
+        await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessageId);
+      } catch (err) {
+        logger.warn('Failed to update inbox_messages status (fail-open)', {
+          inboxMessageId,
+          err: err instanceof Error ? err.message : String(err),
+        });
       }
 
       return {
@@ -134,7 +155,26 @@ export function startWhatsAppMediaWorker() {
   });
 
   worker.on('failed', (job: Job | undefined, err: Error) => {
-    logger.error('WhatsApp media job failed', { jobId: job?.id, error: err.message });
+    logger.error('WhatsApp media job failed', err, {
+      jobId: job?.id,
+      wamid: (job as any)?.data?.wamid,
+      mediaId: (job as any)?.data?.mediaId,
+      inboxMessageId: (job as any)?.data?.inboxMessageId,
+    });
+
+    // Only mark as failed on the final attempt.
+    try {
+      const attempts = (job as any)?.opts?.attempts ?? 1;
+      const attemptsMade = (job as any)?.attemptsMade ?? 0;
+      const isFinal = attemptsMade >= attempts;
+      const inboxMessageId = (job as any)?.data?.inboxMessageId;
+      if (isFinal && inboxMessageId) {
+        const db = supabaseAdminClient();
+        void db.from('inbox_messages').update({ status: 'failed' }).eq('id', inboxMessageId);
+      }
+    } catch {
+      // fail-open
+    }
   });
 
   return worker;

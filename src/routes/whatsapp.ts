@@ -3,6 +3,7 @@ import { asyncHandler, createLogger } from '../utils/errorHandling';
 import { whatsappLimiter } from '../middleware/rateLimit';
 import { webhookLoggingMiddleware, webhookErrorMonitor } from '../middleware/webhookLogger';
 import { createInboxMessage } from '../services/inboxService';
+import { supabaseAdminClient } from '../config/database';
 import {
   extractMessageData,
   validateWebhookSignature,
@@ -329,6 +330,22 @@ router.post(
     }
 
     res.status(200).json({ status: 'received', id: inboxMessage?.id ?? null });
+
+    // Mark text-only (no-media) legacy inbox_messages as processed immediately.
+    // Media messages are marked 'processed' by whatsappMediaWorker after download.
+    // Without this, every text message stays 'pending' in the legacy table forever.
+    if (!messageData.mediaId && inboxMessage?.id) {
+      try {
+        const db = supabaseAdminClient();
+        await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessage.id);
+      } catch (err) {
+        // Non-fatal — legacy table cleanup only
+        logger.warn('Failed to mark text inbox_message as processed (non-fatal)', {
+          inboxMessageId: inboxMessage.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   })
 );
 

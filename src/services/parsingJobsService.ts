@@ -60,9 +60,16 @@ export class ParsingJobsService {
 
   async setStatus(jobId: string, status: JobStatus, extra?: Record<string, any>) {
     const db = supabaseAdminClient();
-    // Only update status + one output column.
-    // We intentionally keep this minimal to avoid breaking on schema differences.
+
+    // Build base payload — always include status + any error/timing metadata
     const payload1: any = { status };
+
+    // Persist error details so failures are diagnosable (previously these were silently dropped)
+    if (extra?.error_message != null) payload1.error_message = extra.error_message;
+    if (extra?.error_code   != null) payload1.error_code   = extra.error_code;
+    if (extra?.finished_at  != null) payload1.finished_at  = extra.finished_at;
+
+    // Output column — try 'output' first, fall back to 'result_json' below
     if (extra && Object.prototype.hasOwnProperty.call(extra, 'result_json')) {
       payload1.output = extra.result_json;
     }
@@ -77,12 +84,19 @@ export class ParsingJobsService {
     if (!attempt1.error) return attempt1.data;
 
     const msg1 = String((attempt1.error as any)?.message || attempt1.error);
-    const shouldFallback = /column\s+"?output"?\s+does\s+not\s+exist/i.test(msg1);
-    if (!shouldFallback) {
+
+    // If the failure is due to unknown columns (schema mismatch), retry with safe subset
+    const isColumnMismatch = /column\s+"?\w+"?\s+does\s+not\s+exist/i.test(msg1);
+    if (!isColumnMismatch) {
+      logger.error('Failed to update parsing job status', { jobId, status, error: msg1 });
       throw new AppError('Failed to update parsing job', ErrorType.DATABASE, 500);
     }
 
+    // Fallback: try an older schema (result_json instead of output, drop unknown cols)
     const payload2: any = { status };
+    if (extra?.error_message != null) payload2.error_message = extra.error_message;
+    if (extra?.error_code   != null) payload2.error_code    = extra.error_code;
+    if (extra?.finished_at  != null) payload2.finished_at   = extra.finished_at;
     if (extra && Object.prototype.hasOwnProperty.call(extra, 'result_json')) {
       payload2.result_json = extra.result_json;
     }
@@ -95,6 +109,7 @@ export class ParsingJobsService {
       .single();
 
     if (attempt2.error) {
+      logger.error('Failed to update parsing job status (fallback)', { jobId, status, error: attempt2.error });
       throw new AppError('Failed to update parsing job', ErrorType.DATABASE, 500);
     }
     return attempt2.data;

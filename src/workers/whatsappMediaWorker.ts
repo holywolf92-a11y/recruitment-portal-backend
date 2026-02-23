@@ -54,7 +54,9 @@ export function startWhatsAppMediaWorker() {
         throw new Error(`Media too large: ${buffer.length} bytes > ${maxBytes}`);
       }
 
-      const fileName = meta.file_name || meta.id || `${mediaId}.bin`;
+      // WhatsApp media metadata API rarely returns the real filename; the original
+      // filename from the webhook payload (job.data.fileName) is more reliable.
+      const fileName = meta.file_name || job.data.fileName || meta.id || `${mediaId}.bin`;
       const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
 
       const classification = DocumentClassifier.classify(fileName, undefined, mimeType);

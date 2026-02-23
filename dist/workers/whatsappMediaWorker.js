@@ -4,6 +4,7 @@ exports.startWhatsAppMediaWorker = startWhatsAppMediaWorker;
 const bullmq_1 = require("bullmq");
 const redis_1 = require("../config/redis");
 const errorHandling_1 = require("../utils/errorHandling");
+const database_1 = require("../config/database");
 const documentClassifier_1 = require("../services/documentClassifier");
 const inboxAttachmentService_1 = require("../services/inboxAttachmentService");
 const whatsappService_1 = require("../services/whatsappService");
@@ -39,7 +40,17 @@ function startWhatsAppMediaWorker() {
         const fileName = meta.file_name || meta.id || `${mediaId}.bin`;
         const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
         const classification = documentClassifier_1.DocumentClassifier.classify(fileName, undefined, mimeType);
-        const attachmentType = classification.attachmentKind === 'cv' ? 'cv' : 'document';
+        const normalizedMime = String(mimeType || '').toLowerCase();
+        const isCommonCvMime = normalizedMime.includes('application/pdf') ||
+            normalizedMime.includes('application/msword') ||
+            normalizedMime.includes('application/vnd.openxmlformats-officedocument.wordprocessingml') ||
+            normalizedMime.includes('text/plain');
+        // WhatsApp often provides generic filenames (e.g. "document.pdf"). If we treat these as "document",
+        // the CV Inbox UI shows them as "queued" forever because no parsing job is created.
+        const attachmentType = classification.attachmentKind === 'cv' ||
+            (classification.attachmentKind === 'unknown' && isCommonCvMime)
+            ? 'cv'
+            : 'document';
         // Identity-first rule: store raw WhatsApp upload unbound; never create/bind a candidate here.
         const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
         const rawId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -62,10 +73,7 @@ function startWhatsAppMediaWorker() {
                 await (0, inboxAttachmentService_1.enqueueCvParsingJobForAttachment)(attachment.id, { force: false, expiresInSeconds: 3600 });
             }
             catch (err) {
-                logger.error('Failed to enqueue CV parsing (non-fatal)', {
-                    attachmentId: attachment.id,
-                    error: err instanceof Error ? err.message : String(err),
-                });
+                logger.error('Failed to enqueue CV parsing (non-fatal)', err, { attachmentId: attachment.id });
             }
         }
         else {
@@ -85,11 +93,19 @@ function startWhatsAppMediaWorker() {
                 });
             }
             catch (err) {
-                logger.error('Failed to enqueue WhatsApp attachment pre-verification (non-fatal)', {
-                    attachmentId: attachment.id,
-                    error: err instanceof Error ? err.message : String(err),
-                });
+                logger.error('Failed to enqueue WhatsApp attachment pre-verification (non-fatal)', err, { attachmentId: attachment.id });
             }
+        }
+        // Best-effort: mark legacy inbox message as processed so it doesn't linger as "pending".
+        try {
+            const db = (0, database_1.supabaseAdminClient)();
+            await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessageId);
+        }
+        catch (err) {
+            logger.warn('Failed to update inbox_messages status (fail-open)', {
+                inboxMessageId,
+                err: err instanceof Error ? err.message : String(err),
+            });
         }
         return {
             attachmentId: attachment.id,
@@ -106,7 +122,26 @@ function startWhatsAppMediaWorker() {
         logger.info('WhatsApp media job completed', { jobId: job.id });
     });
     worker.on('failed', (job, err) => {
-        logger.error('WhatsApp media job failed', { jobId: job?.id, error: err.message });
+        logger.error('WhatsApp media job failed', err, {
+            jobId: job?.id,
+            wamid: job?.data?.wamid,
+            mediaId: job?.data?.mediaId,
+            inboxMessageId: job?.data?.inboxMessageId,
+        });
+        // Only mark as failed on the final attempt.
+        try {
+            const attempts = job?.opts?.attempts ?? 1;
+            const attemptsMade = job?.attemptsMade ?? 0;
+            const isFinal = attemptsMade >= attempts;
+            const inboxMessageId = job?.data?.inboxMessageId;
+            if (isFinal && inboxMessageId) {
+                const db = (0, database_1.supabaseAdminClient)();
+                void db.from('inbox_messages').update({ status: 'failed' }).eq('id', inboxMessageId);
+            }
+        }
+        catch {
+            // fail-open
+        }
     });
     return worker;
 }

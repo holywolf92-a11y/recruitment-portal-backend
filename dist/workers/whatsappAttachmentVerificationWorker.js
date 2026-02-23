@@ -389,7 +389,12 @@ function startWhatsAppAttachmentVerificationWorker() {
         logger.info('WhatsApp attachment verification job completed', { jobId: job.id });
     });
     worker.on('failed', (job, err) => {
-        logger.error('WhatsApp attachment verification job failed', { jobId: job?.id, error: err.message });
+        logger.error('WhatsApp attachment verification job failed', err, {
+            jobId: job?.id,
+            attachmentId: job?.data?.attachmentId,
+            wamid: job?.data?.wamid,
+            inboxMessageId: job?.data?.inboxMessageId,
+        });
     });
     return worker;
 }

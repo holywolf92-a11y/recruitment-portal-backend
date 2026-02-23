@@ -380,16 +380,16 @@ function startCvParserWorker() {
         try {
             const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
             const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-            if (!accessToken || !phoneNumberId) {
+            if (!accessToken || !phoneNumberId)
+                return;
+            // Always use the phone number extracted from the CV itself.
+            // Never fall back to the sender's phone – the sender can be a partner,
+            // referral, or employee forwarding the CV on behalf of the candidate.
+            const to = normalizeWhatsAppTo(params.cvExtractedPhone);
+            if (!to) {
+                console.log(`[CVParser] No CV-extracted phone number available for WhatsApp notification (candidateId=${params.candidateId}). Skipping.`);
                 return;
             }
-            const isWhatsApp = await isWhatsAppOriginAttachment(params.attachmentId);
-            if (!isWhatsApp)
-                return;
-            const to = normalizeWhatsAppTo(params.cvExtractedPhone) ??
-                normalizeWhatsAppTo(params.candidatePhone);
-            if (!to)
-                return;
             const conversation = await (0, whatsappInboxService_1.ensureConversationForPhone)(to);
             // Idempotency: do not send twice for the same attachment
             try {
@@ -406,14 +406,8 @@ function startCvParserWorker() {
                     return;
             }
             catch (dedupeErr) {
-                // Fail open: don't block the pipeline if the dedupe query fails.
                 console.warn('[CVParser] WhatsApp CV notification dedupe check failed (non-fatal):', dedupeErr);
             }
-            const text = buildCvReceivedWhatsAppText({
-                candidateName: params.candidateName,
-                candidateEmail: params.candidateEmail,
-                missingDataEmailSent: params.missingDataEmailSent,
-            });
             // Best-effort: attach candidate to conversation if missing
             if (!conversation.candidate_id) {
                 try {
@@ -430,15 +424,94 @@ function startCvParserWorker() {
                     console.warn('[CVParser] Failed to link candidate to WhatsApp conversation (non-fatal):', linkErr);
                 }
             }
+            // ─────────────────────────────────────────────────────────────────────────
+            // Determine send strategy:
+            //   1. If WHATSAPP_MISSING_DOCS_TEMPLATE_NAME is configured AND the candidate
+            //      is missing documents → use Template 2 (missing_documents_request).
+            //      This bypasses the 24-hour window restriction that blocks free-form text
+            //      to candidates who haven't messaged us first.
+            //   2. Otherwise fall back to free-form text (works only within 24h window).
+            // ─────────────────────────────────────────────────────────────────────────
+            const templateName = (process.env.WHATSAPP_MISSING_DOCS_TEMPLATE_NAME || '').trim();
+            // Compute which documents are still missing for this candidate.
+            let missingDocsList = [];
+            if (templateName) {
+                try {
+                    const db = (0, database_1.supabaseAdminClient)();
+                    const [candRes, docsRes] = await Promise.all([
+                        db
+                            .from('candidates')
+                            .select('cv_received,passport_received,cnic_received,driving_license_received,degree_received')
+                            .eq('id', params.candidateId)
+                            .maybeSingle(),
+                        db
+                            .from('candidate_documents')
+                            .select('category,document_type,file_name')
+                            .eq('candidate_id', params.candidateId)
+                            .limit(100),
+                    ]);
+                    const cand = candRes.data;
+                    const categories = new Set((docsRes.data || []).map((d) => String(d?.category || '').toLowerCase()).filter(Boolean));
+                    const fileNames = (docsRes.data || []).map((d) => String(d?.file_name || '').toLowerCase());
+                    if (!cand?.cv_received && !categories.has('cv_resume') && !categories.has('cv'))
+                        missingDocsList.push('CV / Resume');
+                    if (!cand?.passport_received && !categories.has('passport') && !fileNames.some((n) => n.includes('passport')))
+                        missingDocsList.push('Passport (clear scan, all pages)');
+                    if (!cand?.cnic_received && !categories.has('cnic') && !categories.has('national_id') && !fileNames.some((n) => n.includes('cnic') || n.includes('nic')))
+                        missingDocsList.push('CNIC (front & back)');
+                    if (!cand?.driving_license_received && !categories.has('driving_license') && !fileNames.some((n) => n.includes('driving') || n.includes('license')))
+                        missingDocsList.push('Driving License');
+                    if (!cand?.degree_received && !categories.has('educational_documents') && !fileNames.some((n) => n.includes('degree') || n.includes('diploma')))
+                        missingDocsList.push('Educational Degree / Certificate');
+                }
+                catch (mdErr) {
+                    console.warn('[CVParser] Failed to compute missing docs for WhatsApp template (non-fatal):', mdErr);
+                }
+            }
+            const useTemplate = !!templateName && missingDocsList.length > 0;
+            // Build body text (used for free-form fallback and for audit recording)
+            const fallbackText = buildCvReceivedWhatsAppText({
+                candidateName: params.candidateName,
+                candidateEmail: params.candidateEmail,
+                missingDataEmailSent: params.missingDataEmailSent,
+            });
+            const candidateName = (params.candidateName || 'Candidate').trim();
+            const candidateCode = (params.candidateCode || 'N/A').trim();
+            const bulletList = missingDocsList.map((d) => `• ${d}`).join('\n');
+            // Body text to store in whatsapp_messages for visibility in inbox UI
+            const recordBody = useTemplate
+                ? `[Template: ${templateName}]\n\nAssalam o Alaikum ${candidateName},\n\nThank you for submitting your CV (Ref: ${candidateCode}).\n\nTo complete your application, we still need:\n${bulletList}\n\nPlease reply or send them to our WhatsApp at your earliest convenience.\n\n— Falisha Manpower Team`
+                : fallbackText;
             try {
-                const sendRes = await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, to, text);
+                let sendRes;
+                if (useTemplate) {
+                    console.log(`[CVParser] Sending Template 2 (${templateName}) to ${to} – ${missingDocsList.length} missing doc(s)`);
+                    sendRes = await (0, whatsappService_1.sendTemplateMessage)(phoneNumberId, accessToken, to, {
+                        name: templateName,
+                        language: 'en',
+                        components: [
+                            {
+                                type: 'body',
+                                parameters: [
+                                    { type: 'text', text: candidateName }, // {{1}} candidate name
+                                    { type: 'text', text: candidateCode }, // {{2}} application reference
+                                    { type: 'text', text: bulletList }, // {{3}} missing docs bullet list
+                                ],
+                            },
+                        ],
+                    });
+                }
+                else {
+                    console.log(`[CVParser] Template not configured or no missing docs – sending free-form CV received message to ${to}`);
+                    sendRes = await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, to, fallbackText);
+                }
                 const metaMessageId = sendRes?.messages?.[0]?.id ?? null;
                 await (0, whatsappInboxService_1.recordOutboundMessage)({
                     conversationId: conversation.id,
                     direction: 'outbound',
                     fromNumberId: phoneNumberId,
                     toPhoneNumber: to,
-                    body: text,
+                    body: recordBody,
                     metaMessageId: metaMessageId ?? undefined,
                     status: 'sent',
                     raw: {
@@ -448,25 +521,29 @@ function startCvParserWorker() {
                         candidate_code: params.candidateCode ?? null,
                         email: params.candidateEmail ?? null,
                         missing_data_email_sent: !!params.missingDataEmailSent,
+                        template_used: useTemplate ? templateName : null,
+                        missing_docs: useTemplate ? missingDocsList : null,
                         whatsapp_send: sendRes,
                     },
                 });
-                console.log('[CVParser] ✅ WhatsApp CV received notification sent', {
+                console.log(`[CVParser] ✅ WhatsApp notification sent (${useTemplate ? 'template' : 'free-form'})`, {
                     attachmentId: params.attachmentId,
                     candidateId: params.candidateId,
                     to,
+                    templateName: useTemplate ? templateName : null,
+                    missingDocs: missingDocsList,
                 });
             }
             catch (sendErr) {
-                console.warn('[CVParser] WhatsApp CV notification send failed (non-fatal):', sendErr?.message || sendErr);
-                // Still record an outbound attempt for audit/visibility
+                console.warn('[CVParser] WhatsApp notification send failed (non-fatal):', sendErr?.message || sendErr);
+                // Still record the attempt for audit/visibility
                 try {
                     await (0, whatsappInboxService_1.recordOutboundMessage)({
                         conversationId: conversation.id,
                         direction: 'outbound',
                         fromNumberId: phoneNumberId,
                         toPhoneNumber: to,
-                        body: text,
+                        body: recordBody,
                         status: 'failed',
                         raw: {
                             kind: 'cv_received_notification',
@@ -475,6 +552,8 @@ function startCvParserWorker() {
                             candidate_code: params.candidateCode ?? null,
                             email: params.candidateEmail ?? null,
                             missing_data_email_sent: !!params.missingDataEmailSent,
+                            template_used: useTemplate ? templateName : null,
+                            missing_docs: useTemplate ? missingDocsList : null,
                             error: String(sendErr?.message || sendErr),
                         },
                     });
@@ -1208,6 +1287,11 @@ function startCvParserWorker() {
                 }
             }
             // If no profile photo exists yet, try extracting it directly from the CV PDF.
+            // Strategy (in order):
+            //   1. Hybrid extraction: Python parser /extract-photo on the full CV buffer (fast, reliable face detection)
+            //   2. Fallback: OpenAI Vision page scan via Puppeteer (extractProfilePhotoFromPdfUsingAI)
+            // This ensures WhatsApp-ingested CVs where the photo is embedded in the CV pages (no separate
+            // 'photos' split section) still get a profile photo extracted reliably.
             if (newCandidate?.id && mimeType === 'application/pdf') {
                 try {
                     const { data: freshCandidate } = await db
@@ -1216,15 +1300,28 @@ function startCvParserWorker() {
                         .eq('id', newCandidate.id)
                         .maybeSingle();
                     if (!hasProfilePhoto(freshCandidate)) {
-                        console.log(`[CVParser] No profile photo found for candidate ${newCandidate.id}. Extracting from CV PDF...`);
-                        const extraction = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfUsingAI)({
-                            candidateId: newCandidate.id,
-                        });
-                        console.log(`[CVParser] ✅ Extracted profile photo from CV PDF`, {
-                            candidateId: newCandidate.id,
-                            pageUsed: extraction.pageUsed,
-                            confidence: extraction.confidence,
-                        });
+                        console.log(`[CVParser] No profile photo found for candidate ${newCandidate.id}. Attempting hybrid extraction from full CV PDF...`);
+                        // Primary: Python parser /extract-photo + AI buffer fallback (no Puppeteer needed)
+                        const hybridResult = await (0, hybridPhotoExtractionService_1.extractProfilePhotoHybrid)(newCandidate.id, attachmentId, fileBytes);
+                        if (hybridResult.success && hybridResult.photoBuffer) {
+                            await (0, hybridPhotoExtractionService_1.uploadExtractedPhotoToCandidatePhotos)(newCandidate.id, attachmentId, hybridResult.photoBuffer);
+                            console.log(`[CVParser] ✅ Hybrid extraction from full CV succeeded (method=${hybridResult.method}).`, {
+                                candidateId: newCandidate.id,
+                                attachmentId,
+                            });
+                        }
+                        else {
+                            // Secondary fallback: OpenAI Vision scan of rendered PDF pages via Puppeteer
+                            console.log(`[CVParser] Hybrid extraction produced no photo for candidate ${newCandidate.id}. Falling back to AI page scan...`);
+                            const extraction = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfUsingAI)({
+                                candidateId: newCandidate.id,
+                            });
+                            console.log(`[CVParser] ✅ AI page scan extracted photo from CV PDF`, {
+                                candidateId: newCandidate.id,
+                                pageUsed: extraction.pageUsed,
+                                confidence: extraction.confidence,
+                            });
+                        }
                     }
                     else {
                         console.log(`[CVParser] Profile photo already present for candidate ${newCandidate.id}. Skipping CV photo extraction.`);

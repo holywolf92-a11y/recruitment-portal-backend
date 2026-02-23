@@ -81,7 +81,7 @@ $Listener.Stop()
 # Extract code from callback URL
 $QueryString = $RawUrl -replace "^/\?", ""
 $Params = @{}
-$QueryString -split "&" | ForEach-Object {
+$QueryString -split ([char]38) | ForEach-Object {
     $kv = $_ -split "=", 2
     $Params[$kv[0]] = [System.Uri]::UnescapeDataString($kv[1])
 }
@@ -128,9 +128,9 @@ Write-Host "RUN_GMAIL_POLLING=true" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Also set for admin API access:" -ForegroundColor Cyan
-Write-Host "ADMIN_SECRET=<make up a long random string>"
+Write-Host 'Also set for admin API access:' -ForegroundColor Cyan
+Write-Host 'ADMIN_SECRET=<make up a long random string>'
 Write-Host ""
-Write-Host "To start the historical backfill after deployment, run:" -ForegroundColor Cyan
-Write-Host ".\scripts\gmail-backfill.ps1 -AdminSecret 'YOUR_ADMIN_SECRET'"
+Write-Host 'To start the historical backfill after deployment, run:' -ForegroundColor Cyan
+Write-Host '.\scripts\gmail-backfill.ps1 -AdminSecret YOUR_ADMIN_SECRET'
 Write-Host ""

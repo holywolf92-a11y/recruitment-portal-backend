@@ -70,13 +70,54 @@ class Logger {
     constructor(context) {
         this.context = context;
     }
+    safeStringify(value) {
+        try {
+            return JSON.stringify(value);
+        }
+        catch {
+            return '[unserializable meta]';
+        }
+    }
     formatMessage(level, message, meta) {
         const timestamp = new Date().toISOString();
-        const metaStr = meta ? ` | ${JSON.stringify(meta)}` : '';
+        const metaStr = meta ? ` | ${this.safeStringify(meta)}` : '';
         return `[${timestamp}] [${level.toUpperCase()}] [${this.context}] ${message}${metaStr}`;
     }
-    error(message, error, meta) {
-        console.error(this.formatMessage(LogLevel.ERROR, message, { ...meta, error: error?.message, stack: error?.stack }));
+    error(message, errorOrMeta, meta) {
+        const baseMeta = meta && typeof meta === 'object' ? meta : {};
+        // Backward-compatible overload:
+        // - error(message, err, meta)
+        // - error(message, meta)
+        let errMessage;
+        let errStack;
+        let mergedMeta = { ...baseMeta };
+        if (errorOrMeta instanceof Error) {
+            errMessage = errorOrMeta.message;
+            errStack = errorOrMeta.stack;
+        }
+        else if (typeof errorOrMeta === 'string') {
+            errMessage = errorOrMeta;
+        }
+        else if (errorOrMeta && typeof errorOrMeta === 'object') {
+            const maybeMessage = errorOrMeta.message;
+            const maybeStack = errorOrMeta.stack;
+            const looksLikeError = typeof maybeMessage === 'string' || typeof maybeStack === 'string';
+            if (looksLikeError) {
+                errMessage = typeof maybeMessage === 'string' ? maybeMessage : undefined;
+                errStack = typeof maybeStack === 'string' ? maybeStack : undefined;
+            }
+            else {
+                mergedMeta = { ...errorOrMeta, ...mergedMeta };
+            }
+        }
+        else if (errorOrMeta != null) {
+            errMessage = String(errorOrMeta);
+        }
+        console.error(this.formatMessage(LogLevel.ERROR, message, {
+            ...mergedMeta,
+            error: errMessage,
+            stack: errStack,
+        }));
     }
     warn(message, meta) {
         console.warn(this.formatMessage(LogLevel.WARN, message, meta));

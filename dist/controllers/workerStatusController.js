@@ -34,14 +34,18 @@ async function getWorkerStatus(req, res) {
         // Try to get queue stats if Redis is available
         if (process.env.REDIS_URL) {
             try {
-                const [cvCounts, docVerifCounts] = await Promise.all([
+                const [cvCounts, docVerifCounts, waMediaCounts, waVerifyCounts] = await Promise.all([
                     queue_1.cvParsingQueue.getJobCounts(),
                     queue_1.documentVerificationQueue.getJobCounts(),
+                    queue_1.whatsappMediaQueue.getJobCounts(),
+                    queue_1.whatsappAttachmentVerificationQueue.getJobCounts(),
                 ]);
                 status.queues.available = true;
                 status.queues.jobs = {
                     cvParsing: cvCounts,
                     documentVerification: docVerifCounts,
+                    whatsappMedia: waMediaCounts,
+                    whatsappAttachmentVerification: waVerifyCounts,
                 };
             }
             catch (queueError) {

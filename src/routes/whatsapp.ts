@@ -36,6 +36,22 @@ function extractInteractiveData(body: any): { id: string; title: string } {
   return { id: '', title: '' };
 }
 
+// ── Internal company numbers — skip AI/bot, process docs silently ─────────────
+// Format: international without leading '+' (WhatsApp sends 92xxxxxxxxxx for PK)
+const INTERNAL_NUMBERS = new Set([
+  '923005787762',
+  '923005547806',
+  '923451897011',
+  '923465028305',
+]);
+
+function isInternalNumber(phone: string): boolean {
+  const normalized = phone.replace(/^\+/, '').trim();
+  // Also handle if number is stored as 0xxx (convert to 92xxx Pakistan format)
+  const withCountry = normalized.startsWith('0') ? '92' + normalized.slice(1) : normalized;
+  return INTERNAL_NUMBERS.has(normalized) || INTERNAL_NUMBERS.has(withCountry);
+}
+
 const router = Router();
 const logger = createLogger('WhatsAppRoute');
 
@@ -209,6 +225,7 @@ router.post(
     if (messageData.mediaId && inboxMessage?.id && messageData.from) {
       try {
         const mediaJobId = `whatsapp-media:${messageData.wamid}:${messageData.mediaId}`;
+        const isInternal = isInternalNumber(messageData.from);
         await whatsappMediaQueue.add(
           'process',
           {
@@ -219,6 +236,7 @@ router.post(
             mimeType: messageData.mimeType,
             fileName: messageData.fileName,
             receivedAt: receivedAt.toISOString(),
+            source: isInternal ? 'internal_whatsapp_upload' : 'whatsapp',
           },
           {
             jobId: mediaJobId,
@@ -235,6 +253,33 @@ router.post(
           mediaId: messageData.mediaId,
         });
       }
+    }
+
+    // ── Internal number early exit — no AI, no bot, just process + optional confirm ──
+    if (messageData.from && isInternalNumber(messageData.from)) {
+      if (messageData.mediaId) {
+        // Attachment already queued above — send confirmation receipt
+        const confirmMsg =
+          '\u2705 *Document Received*\nYour document has been successfully received and processed.\nThe candidate record has been updated in the system.\n\u2014 Falisha Manpower Automation';
+        try {
+          await sendMessage(phoneNumberId, accessToken, messageData.from, confirmMsg);
+          logger.info('Sent internal upload confirmation', { to: messageData.from });
+        } catch (err) {
+          logger.warn('Failed to send internal confirmation (non-fatal)', {
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      } else {
+        // Text-only from internal number — no reply, mark processed silently
+        if (inboxMessage?.id) {
+          try {
+            const db = supabaseAdminClient();
+            await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessage.id);
+          } catch { /* non-fatal */ }
+        }
+        logger.info('Text-only from internal number — ignored silently', { from: messageData.from });
+      }
+      return res.status(200).json({ status: 'internal_number' });
     }
 
     // ── WhatsApp Bot intercept (text, interactive buttons/lists, and media in active flows) ──

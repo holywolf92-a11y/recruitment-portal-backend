@@ -3,15 +3,21 @@
  *
  * Merges two candidate records: the "winner" survives, the "loser" is soft-deleted.
  *
- * What gets transferred from loser → winner:
- *   • candidate_documents      (only those not already on winner)
- *   • inbox_attachments        (candidate_id pointer re-targeted)
- *   • parsing_jobs             (n/a — linked via inbox_attachments, not candidate directly)
+ * Enterprise-grade guarantees:
+ *   ✔ Full DB transaction via merge_candidates_atomic() PL/pgSQL function
+ *   ✔ SELECT FOR UPDATE row-level locking prevents concurrent merges
+ *   ✔ Pre-merge JSON snapshot stored in candidate_merges.pre_merge_snapshot
+ *   ✔ Immutable audit row written atomically with all other changes
+ *   ✔ Any failure rolls back ALL steps — no partial merges
  *
- * An immutable row is written to candidate_merges for auditability.
+ * What gets transferred from loser → winner (computed in TS, applied atomically in PG):
+ *   • Field-filling: winner's NULL fields filled from loser (or overwritten for loser_wins)
+ *   • inbox_attachments  — candidate_id pointer re-targeted
+ *   • candidate_documents — moved to winner; duplicates deleted
+ *   • candidate_merges   — immutable audit row + pre-merge snapshot
  *
  * Usage:
- *   await mergeCandidates(winnerId, loserId, 'admin', 'winner_wins');
+ *   await mergeCandidates(winnerId, loserId, { mergedBy: 'admin', strategy: 'winner_wins' });
  */
 
 import { supabaseAdminClient } from '../config/database';
@@ -44,8 +50,11 @@ export interface MergeResult {
 /**
  * Merge loser candidate into winner candidate.
  *
- * @param winnerId  The candidate that survives.
- * @param loserId   The candidate to be soft-deleted. Its documents are moved to winner.
+ * All destructive writes are delegated to merge_candidates_atomic() which
+ * wraps them in a single Postgres transaction with SELECT FOR UPDATE locking.
+ *
+ * @param winnerId  The candidate that survives (keeps its candidate_code).
+ * @param loserId   The candidate to be soft-deleted.
  */
 export async function mergeCandidates(
   winnerId: string,
@@ -60,16 +69,26 @@ export async function mergeCandidates(
     throw new Error('Cannot merge a candidate with itself');
   }
 
-  // ── Fetch both candidates ────────────────────────────────────────────────
+  // ── Phase 1 (read-only): Fetch both records and compute all changes ───────
+  //    Nothing is written in this phase — if RPC fails, nothing is committed.
+
   const [{ data: winner, error: winnerErr }, { data: loser, error: loserErr }] = await Promise.all([
     db.from('candidates').select('*').eq('id', winnerId).neq('status', 'Deleted').single(),
     db.from('candidates').select('*').eq('id', loserId).neq('status', 'Deleted').single(),
   ]);
 
   if (winnerErr || !winner) throw new Error(`Winner candidate not found: ${winnerId}`);
-  if (loserErr || !loser) throw new Error(`Loser candidate not found: ${loserId}`);
+  if (loserErr || !loser)   throw new Error(`Loser candidate not found: ${loserId}`);
 
-  // ── Step 1: Fill in missing fields on winner from loser ──────────────────
+  // ── Pre-merge snapshot: captures both records BEFORE any write ────────────
+  //    Stored in candidate_merges.pre_merge_snapshot for forensic audit.
+  const preMergeSnapshot = {
+    winner_before: { ...winner },
+    loser_before:  { ...loser },
+    captured_at:   new Date().toISOString(),
+  };
+
+  // ── Compute winner field updates ─────────────────────────────────────────
   const FILLABLE_FIELDS = [
     'father_name', 'date_of_birth', 'cnic', 'cnic_normalized', 'passport', 'passport_normalized',
     'passport_expiry', 'nationality', 'gender', 'marital_status', 'address', 'phone',
@@ -82,7 +101,6 @@ export async function mergeCandidates(
   const fieldsFilledIn: string[] = [];
 
   if (strategy === 'loser_wins') {
-    // Loser's non-null fields overwrite winner's fields
     for (const field of FILLABLE_FIELDS) {
       if (loser[field] !== null && loser[field] !== undefined && loser[field] !== '') {
         updates[field] = loser[field];
@@ -90,7 +108,6 @@ export async function mergeCandidates(
       }
     }
   } else if (strategy === 'winner_wins') {
-    // Fill in winner's empty fields from loser
     for (const field of FILLABLE_FIELDS) {
       const winnerEmpty = winner[field] === null || winner[field] === undefined || winner[field] === '';
       const loserHas = loser[field] !== null && loser[field] !== undefined && loser[field] !== '';
@@ -104,113 +121,66 @@ export async function mergeCandidates(
     fieldsFilledIn.push(...Object.keys(options.fieldOverrides));
   }
 
-  if (Object.keys(updates).length > 0) {
-    const { error: updateErr } = await db
-      .from('candidates')
-      .update({ ...updates, updated_at: new Date().toISOString() })
-      .eq('id', winnerId);
-    if (updateErr) {
-      logger.warn('Failed to fill in winner fields from loser', { message: updateErr.message });
-      // Non-fatal — continue with merge
-    }
-  }
-
-  // ── Step 2: Re-point inbox_attachments from loser → winner ──────────────
-  const { data: relinkData, error: relinkErr } = await db
-    .from('inbox_attachments')
-    .update({ candidate_id: winnerId })
-    .eq('candidate_id', loserId)
-    .select('id');
-
-  const attachmentsRelinked = relinkData?.length ?? 0;
-  if (relinkErr) {
-    logger.warn('Failed to relink inbox_attachments', { message: relinkErr.message });
-  }
-
-  // ── Step 3: Move candidate_documents from loser → winner ─────────────────
-  // Avoid duplicating documents the winner already has (same file_name + document_type).
-  const { data: winnerDocs } = await db
-    .from('candidate_documents')
-    .select('file_name, document_type')
-    .eq('candidate_id', winnerId);
+  // ── Compute document split (move vs delete) ──────────────────────────────
+  const [{ data: winnerDocs }, { data: loserDocs }] = await Promise.all([
+    db.from('candidate_documents').select('id, file_name, document_type').eq('candidate_id', winnerId),
+    db.from('candidate_documents').select('id, file_name, document_type').eq('candidate_id', loserId),
+  ]);
 
   const winnerDocKeys = new Set(
     (winnerDocs || []).map((d: any) => `${d.document_type}::${d.file_name}`)
   );
 
-  const { data: loserDocs } = await db
-    .from('candidate_documents')
-    .select('id, file_name, document_type')
-    .eq('candidate_id', loserId);
+  const docsToMoveIds: string[] = [];
+  const docsToDeleteIds: string[] = [];
 
-  const docsToMove = (loserDocs || []).filter(
-    (d: any) => !winnerDocKeys.has(`${d.document_type}::${d.file_name}`)
-  );
-
-  let documentsMoved = 0;
-  if (docsToMove.length > 0) {
-    const docIds = docsToMove.map((d: any) => d.id);
-    const { error: moveErr } = await db
-      .from('candidate_documents')
-      .update({ candidate_id: winnerId })
-      .in('id', docIds);
-    if (moveErr) {
-      logger.warn('Failed to move some candidate_documents', { message: moveErr.message });
+  for (const d of (loserDocs || []) as any[]) {
+    if (winnerDocKeys.has(`${d.document_type}::${d.file_name}`)) {
+      docsToDeleteIds.push(d.id);
     } else {
-      documentsMoved = docIds.length;
+      docsToMoveIds.push(d.id);
     }
   }
 
-  // Soft-delete remaining loser documents (duplicates of what winner already had)
-  const docsToDelete = (loserDocs || [])
-    .filter((d: any) => !docsToMove.some((m: any) => m.id === d.id))
-    .map((d: any) => d.id);
+  // ── Build field diff for audit log ───────────────────────────────────────
+  const fieldOverridesDiff = fieldsFilledIn.length > 0
+    ? Object.fromEntries(
+        fieldsFilledIn.map(f => [f, { from: loser[f], to: updates[f] ?? winner[f] }])
+      )
+    : null;
 
-  if (docsToDelete.length > 0) {
-    await db.from('candidate_documents').delete().in('id', docsToDelete);
-  }
+  // ── Phase 2 (atomic write): Single PG transaction via RPC ────────────────
+  //    merge_candidates_atomic() does SELECT FOR UPDATE on both rows first,
+  //    preventing concurrent merges. Any failure auto-rolls back all steps.
+  const { data: rpcResult, error: rpcError } = await (db as any).rpc('merge_candidates_atomic', {
+    p_winner_id:          winnerId,
+    p_loser_id:           loserId,
+    p_winner_updates:     Object.keys(updates).length > 0 ? updates : {},
+    p_docs_to_move:       docsToMoveIds.length > 0 ? docsToMoveIds : null,
+    p_docs_to_delete:     docsToDeleteIds.length > 0 ? docsToDeleteIds : null,
+    p_merged_by:          mergedBy,
+    p_strategy:           strategy,
+    p_pre_merge_snapshot: preMergeSnapshot,
+    p_field_overrides:    fieldOverridesDiff,
+    p_review_reasons:     options.reviewReasons ?? null,
+  });
 
-  // ── Step 4: Soft-delete the loser ────────────────────────────────────────
-  const { error: deleteErr } = await db
-    .from('candidates')
-    .update({ status: 'Deleted', updated_at: new Date().toISOString() })
-    .eq('id', loserId);
-
-  if (deleteErr) {
-    throw new Error(`Failed to soft-delete loser candidate: ${deleteErr.message}`);
-  }
-
-  // ── Step 5: Write audit record ───────────────────────────────────────────
-  const { data: auditRow, error: auditErr } = await db
-    .from('candidate_merges')
-    .insert({
-      winner_id: winnerId,
-      loser_id: loserId,
-      merged_by: mergedBy,
-      merge_strategy: strategy,
-      field_overrides: fieldsFilledIn.length > 0
-        ? Object.fromEntries(fieldsFilledIn.map(f => [f, { from: loser[f], to: updates[f] ?? winner[f] }]))
-        : null,
-      review_reasons: options.reviewReasons ?? null,
-    })
-    .select('id')
-    .single();
-
-  if (auditErr) {
-    // Non-fatal: merge succeeded, audit write failed. Log but don't roll back.
-    logger.error('Failed to write candidate_merges audit row', { message: auditErr.message });
+  if (rpcError) {
+    // Postgres automatically rolled back — no partial state exists
+    logger.error('merge_candidates_atomic RPC failed — full rollback guaranteed', rpcError);
+    throw new Error(`Merge failed (rolled back): ${rpcError.message}`);
   }
 
   const result: MergeResult = {
     winnerId,
     loserId,
-    mergeAuditId: auditRow?.id ?? 'audit-write-failed',
-    documentsMoved,
-    attachmentsRelinked,
+    mergeAuditId:        rpcResult?.audit_id ?? 'unknown',
+    documentsMoved:      rpcResult?.docs_moved ?? docsToMoveIds.length,
+    attachmentsRelinked: rpcResult?.attachments_relinked ?? 0,
     fieldsFilledIn,
   };
 
-  logger.info('Candidate merge complete', result);
+  logger.info('Candidate merge complete (atomic, locked)', result);
   return result;
 }
 

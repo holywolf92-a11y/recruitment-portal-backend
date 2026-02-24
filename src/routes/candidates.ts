@@ -21,7 +21,8 @@ import {
   updateCandidateFieldManuallyController,
   getMissingFieldsController,
   mergeCandidateController,
-  getCandidateMergeHistoryController
+  getCandidateMergeHistoryController,
+  getMatchingMetricsController,
 } from '../controllers/candidateController';
 
 const router = Router();
@@ -56,6 +57,9 @@ router.get('/daily-stats', dailyStatsController);
 
 // Export candidates (CSV/Excel)
 router.get('/export', exportCandidatesController);
+
+// Matching governance metrics (must be before /:id wildcard)
+router.get('/matching-metrics', getMatchingMetricsController);
 
 // Bulk operations
 router.patch('/bulk/status', bulkUpdateCandidateStatusController);

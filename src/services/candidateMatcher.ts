@@ -18,6 +18,8 @@ interface MatchResult {
   candidateId: string | null;
   matchedBy: 'cnic' | 'passport' | 'email' | 'phone' | 'name_dob' | 'name_father' | 'name' | null;
   confidence: number;
+  /** Signal breakdown: { cnic: 1.0, phone: 0.92, name: 0.88 } — stored on the candidate row for auditability */
+  matchSignals?: Record<string, number>;
   multipleMatches: boolean;
   matchCount: number;
   needsManualReview: boolean;
@@ -367,6 +369,15 @@ export class CandidateMatcher {
       reviewReasons.push(`Name-only match (${ns?.label ?? ''}) — verify identity before linking`);
     }
 
+    // Build signal map for persistence and audit explainability
+    const matchSignals: Record<string, number> = {};
+    for (const sig of matchedSignals) {
+      // Keep the highest confidence per source if somehow duplicated
+      if (!matchSignals[sig.source] || sig.confidence > matchSignals[sig.source]) {
+        matchSignals[sig.source] = sig.confidence;
+      }
+    }
+
     if (matchedSignals.length > 1) {
       logger.info(
         `Probabilistic match: candidate=${matchedCandidateId}, signals=[${matchedSignals.map(s => s.source).join(', ')}], ` +
@@ -374,15 +385,43 @@ export class CandidateMatcher {
       );
     }
 
+    // Persist confidence + signal breakdown to the candidate row (fire-and-forget)
+    // This makes auto-merge decisions explainable after the fact without blocking.
+    this.persistMatchConfidence(matchedCandidateId, finalConfidence, matchSignals).catch(
+      (err: Error) => logger.warn('Failed to persist match confidence (non-fatal)', { message: err.message })
+    );
+
     return {
       candidateId: matchedCandidateId,
       matchedBy: primarySignal.source as MatchResult['matchedBy'],
       confidence: finalConfidence,
+      matchSignals,
       multipleMatches: false,
       matchCount: matchedSignals.length,
       needsManualReview: isNameOnly,
       ...(reviewReasons.length > 0 ? { reviewReasons } : {}),
     };
+  }
+
+  /**
+   * Persist the last match confidence and signals breakdown to the candidate row.
+   * Called fire-and-forget after every successful match so the data is available
+   * for governance dashboards and manual audit review.
+   */
+  private static async persistMatchConfidence(
+    candidateId: string,
+    confidence: number,
+    signals: Record<string, number>
+  ): Promise<void> {
+    const db = supabaseAdminClient();
+    await db
+      .from('candidates')
+      .update({
+        last_match_confidence: parseFloat(confidence.toFixed(3)),
+        last_match_signals: signals,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', candidateId);
   }
 
   /**

@@ -31,8 +31,9 @@ export class ParsingJobsService {
 
     const msg1 = String((attempt1.error as any)?.message || attempt1.error);
     const shouldFallback =
-      /column\s+"?inbox_attachment_id"?\s+does\s+not\s+exist/i.test(msg1) ||
-      /null value in column\s+"?attachment_id"?\s+violates\s+not-null constraint/i.test(msg1);
+      /column.*inbox_attachment_id.*does\s+not\s+exist/i.test(msg1) ||
+      /does\s+not\s+exist.*inbox_attachment_id/i.test(msg1) ||
+      /null value in column.*attachment_id.*violates\s+not-null\s+constraint/i.test(msg1);
 
     if (!shouldFallback) {
       logger.error('Failed to create parsing job', attempt1.error);
@@ -86,7 +87,8 @@ export class ParsingJobsService {
     const msg1 = String((attempt1.error as any)?.message || attempt1.error);
 
     // If the failure is due to unknown columns (schema mismatch), retry with safe subset
-    const isColumnMismatch = /column\s+"?\w+"?\s+does\s+not\s+exist/i.test(msg1);
+    // PostgREST may use single quotes, double quotes, or no quotes around the column name
+    const isColumnMismatch = /column.*does\s+not\s+exist/i.test(msg1);
     if (!isColumnMismatch) {
       logger.error('Failed to update parsing job status', { jobId, status, error: msg1 });
       throw new AppError('Failed to update parsing job', ErrorType.DATABASE, 500);

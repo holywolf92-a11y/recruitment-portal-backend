@@ -14,6 +14,23 @@
 import { Router, Request, Response } from 'express';
 import { asyncHandler, createLogger } from '../utils/errorHandling';
 import { testConnection, createOAuth2ClientWithToken } from '../services/gmailService';
+
+async function testConnection2() {
+  const token2 = process.env.GMAIL2_REFRESH_TOKEN;
+  if (!token2) return { ok: false, error: 'GMAIL2_REFRESH_TOKEN not set' };
+  try {
+    const { google } = await import('googleapis');
+    const clientId = process.env.GMAIL_CLIENT_ID!;
+    const clientSecret = process.env.GMAIL_CLIENT_SECRET!;
+    const auth = new google.auth.OAuth2(clientId, clientSecret);
+    auth.setCredentials({ refresh_token: token2 });
+    const gmail = google.gmail({ version: 'v1', auth });
+    const res = await gmail.users.getProfile({ userId: 'me' });
+    return { ok: true, email: res.data.emailAddress };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
 import { triggerManualPoll } from '../workers/gmailPollingWorker';
 import {
   startGmailBackfill,
@@ -42,15 +59,18 @@ router.get(
   '/status',
   requireAdminToken,
   asyncHandler(async (_req: Request, res: Response) => {
-    const conn = await testConnection();
+    const [conn1, conn2] = await Promise.all([testConnection(), testConnection2()]);
     const backfill = getBackfillState();
 
     return res.json({
-      gmail: conn,
+      account1: { ...conn1, purpose: 'candidate email replies (falishamanpower4035@gmail.com)' },
+      account2: { ...conn2, purpose: 'new CV intake (falishaoep4035@gmail.com)' },
+      gmail: conn1, // keep for backward compat
       credentials: {
         clientId: process.env.GMAIL_CLIENT_ID ? 'configured' : 'MISSING',
         clientSecret: process.env.GMAIL_CLIENT_SECRET ? 'configured' : 'MISSING',
         refreshToken: process.env.GMAIL_REFRESH_TOKEN ? 'configured' : 'MISSING',
+        refreshToken2: process.env.GMAIL2_REFRESH_TOKEN ? 'configured' : 'MISSING',
       },
       polling: {
         enabled: process.env.RUN_GMAIL_POLLING === 'true',

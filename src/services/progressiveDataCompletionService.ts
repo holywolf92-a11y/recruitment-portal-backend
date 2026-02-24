@@ -278,6 +278,34 @@ export async function enrichCandidateData(
       }
     }
 
+    // Strip columns that do not exist in the production candidates table
+    // to prevent PGRST204 "could not find column" errors.
+    const KNOWN_CANDIDATE_COLUMNS = new Set([
+      // Core identity
+      'name', 'father_name', 'email', 'phone', 'date_of_birth', 'gender',
+      'marital_status', 'address', 'cnic_normalized', 'passport_normalized',
+      // Profile
+      'nationality', 'position', 'experience_years', 'country_of_interest',
+      'skills', 'languages', 'education', 'certifications', 'internships',
+      'previous_employment', 'passport_expiry', 'professional_summary',
+      // Status & meta
+      'status', 'source', 'ai_score', 'auto_extracted', 'needs_review',
+      'updated_at', 'field_sources', 'extraction_confidence', 'extraction_source',
+      'extracted_at',
+      // Checklist flags
+      'passport_received', 'cnic_received', 'degree_received', 'medical_received',
+      'visa_received', 'cv_received', 'photo_received', 'certificate_received',
+      // Other known columns
+      'profile_photo_url', 'gcc_years', 'salary_expectation', 'available_from',
+      'religion', 'driving_license', 'medical_expiry', 'interview_date',
+    ]);
+    for (const col of Object.keys(updates)) {
+      if (!KNOWN_CANDIDATE_COLUMNS.has(col)) {
+        console.warn(`[ProgressiveCompletion] Stripping unknown column '${col}' from update to prevent schema error`);
+        delete updates[col];
+      }
+    }
+
     const { error: updateError } = await db
       .from('candidates')
       .update(updates)

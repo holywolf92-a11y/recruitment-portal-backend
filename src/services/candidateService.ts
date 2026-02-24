@@ -814,6 +814,28 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
     }
   }
 
+  // Strip unknown columns to prevent PGRST204 schema errors
+  const KNOWN_CANDIDATE_COLUMNS_UPDATE = new Set([
+    'name', 'father_name', 'email', 'phone', 'date_of_birth', 'gender',
+    'marital_status', 'address', 'cnic_normalized', 'passport_normalized',
+    'nationality', 'position', 'experience_years', 'country_of_interest',
+    'skills', 'languages', 'education', 'certifications', 'internships',
+    'previous_employment', 'passport_expiry', 'professional_summary',
+    'status', 'source', 'ai_score', 'auto_extracted', 'needs_review',
+    'updated_at', 'field_sources', 'extraction_confidence', 'extraction_source',
+    'extracted_at', 'passport_received', 'cnic_received', 'degree_received',
+    'medical_received', 'visa_received', 'cv_received', 'photo_received',
+    'certificate_received', 'profile_photo_url', 'gcc_years', 'salary_expectation',
+    'available_from', 'religion', 'driving_license', 'medical_expiry',
+    'interview_date',
+  ]);
+  for (const col of Object.keys(updateData)) {
+    if (!KNOWN_CANDIDATE_COLUMNS_UPDATE.has(col)) {
+      console.warn(`[CandidateService] Stripping unknown column '${col}' from updateCandidate`);
+      delete updateData[col];
+    }
+  }
+
   const { data: candidate, error } = await db
     .from('candidates')
     .update(updateData)

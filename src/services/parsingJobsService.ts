@@ -62,59 +62,49 @@ export class ParsingJobsService {
   async setStatus(jobId: string, status: JobStatus, extra?: Record<string, any>) {
     const db = supabaseAdminClient();
 
-    // Build base payload — always include status + any error/timing metadata
-    const payload1: any = { status };
+    // Progressive payloads: try most-complete first, fall back to minimal on schema errors.
+    // Production table (migration 002) has: id, inbox_attachment_id, status, output, created_at
+    // Newer migrations add: finished_at, error_code, error_message, result_json, etc.
+    const payloads: Record<string, any>[] = [
+      // Full modern schema
+      {
+        status,
+        ...(extra?.finished_at  != null && { finished_at:  extra.finished_at }),
+        ...(extra?.error_code   != null && { error_code:   extra.error_code }),
+        ...(extra?.error_message != null && { error_message: extra.error_message }),
+        ...(extra?.result_json  !== undefined && { output: extra.result_json }),
+      },
+      // Minimal: status + output (migration 002 schema)
+      {
+        status,
+        ...(extra?.result_json !== undefined && { output: extra.result_json }),
+      },
+      // Absolute minimum
+      { status },
+    ];
 
-    // Persist error details so failures are diagnosable (previously these were silently dropped)
-    if (extra?.error_message != null) payload1.error_message = extra.error_message;
-    if (extra?.error_code   != null) payload1.error_code   = extra.error_code;
-    if (extra?.finished_at  != null) payload1.finished_at  = extra.finished_at;
+    for (const payload of payloads) {
+      const { error } = await db.from('parsing_jobs').update(payload).eq('id', jobId);
+      if (!error) return null;
 
-    // Output column — try 'output' first, fall back to 'result_json' below
-    if (extra && Object.prototype.hasOwnProperty.call(extra, 'result_json')) {
-      payload1.output = extra.result_json;
-    }
+      const msg  = String((error as any)?.message || error);
+      const code = String((error as any)?.code    || '');
 
-    // Use plain update (no .select().single()) to avoid PGRST116 false positives
-    // when 0 rows are matched — the update is best-effort; we only care about column errors.
-    const attempt1 = await db
-      .from('parsing_jobs')
-      .update(payload1)
-      .eq('id', jobId);
+      console.error('[ParsingJobsService] setStatus error:', JSON.stringify(error), '| jobId:', jobId, '| status:', status);
 
-    if (!attempt1.error) return null;
+      // Schema mismatch — try next, simpler payload
+      const isSchemaError =
+        /could not find.*column/i.test(msg) ||
+        /column.*does\s+not\s+exist/i.test(msg) ||
+        code === 'PGRST204';
 
-    const msg1 = String((attempt1.error as any)?.message || attempt1.error);
-    // Log the raw error so it's visible in Railway logs
-    console.error('[ParsingJobsService] setStatus attempt1 raw error:', JSON.stringify(attempt1.error));
+      if (isSchemaError) continue;
 
-    // If the failure is due to unknown columns (schema mismatch), retry with safe subset
-    // PostgREST may use single quotes, double quotes, or no quotes around the column name
-    const isColumnMismatch = /column.*does\s+not\s+exist/i.test(msg1);
-    if (!isColumnMismatch) {
-      logger.error('Failed to update parsing job status', { jobId, status, error: msg1 });
+      // Non-schema error: stop retrying
+      logger.error('Failed to update parsing job status', { jobId, status, error: msg });
       throw new AppError('Failed to update parsing job', ErrorType.DATABASE, 500);
     }
 
-    // Fallback: try an older schema (result_json instead of output, drop unknown cols)
-    const payload2: any = { status };
-    if (extra?.error_message != null) payload2.error_message = extra.error_message;
-    if (extra?.error_code   != null) payload2.error_code    = extra.error_code;
-    if (extra?.finished_at  != null) payload2.finished_at   = extra.finished_at;
-    if (extra && Object.prototype.hasOwnProperty.call(extra, 'result_json')) {
-      payload2.result_json = extra.result_json;
-    }
-
-    const attempt2 = await db
-      .from('parsing_jobs')
-      .update(payload2)
-      .eq('id', jobId);
-
-    if (attempt2.error) {
-      console.error('[ParsingJobsService] setStatus attempt2 fallback raw error:', JSON.stringify(attempt2.error));
-      logger.error('Failed to update parsing job status (fallback)', { jobId, status, error: attempt2.error });
-      throw new AppError('Failed to update parsing job', ErrorType.DATABASE, 500);
-    }
     return null;
   }
 

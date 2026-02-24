@@ -75,16 +75,18 @@ export class ParsingJobsService {
       payload1.output = extra.result_json;
     }
 
+    // Use plain update (no .select().single()) to avoid PGRST116 false positives
+    // when 0 rows are matched — the update is best-effort; we only care about column errors.
     const attempt1 = await db
       .from('parsing_jobs')
       .update(payload1)
-      .eq('id', jobId)
-      .select()
-      .single();
+      .eq('id', jobId);
 
-    if (!attempt1.error) return attempt1.data;
+    if (!attempt1.error) return null;
 
     const msg1 = String((attempt1.error as any)?.message || attempt1.error);
+    // Log the raw error so it's visible in Railway logs
+    console.error('[ParsingJobsService] setStatus attempt1 raw error:', JSON.stringify(attempt1.error));
 
     // If the failure is due to unknown columns (schema mismatch), retry with safe subset
     // PostgREST may use single quotes, double quotes, or no quotes around the column name
@@ -106,15 +108,14 @@ export class ParsingJobsService {
     const attempt2 = await db
       .from('parsing_jobs')
       .update(payload2)
-      .eq('id', jobId)
-      .select()
-      .single();
+      .eq('id', jobId);
 
     if (attempt2.error) {
+      console.error('[ParsingJobsService] setStatus attempt2 fallback raw error:', JSON.stringify(attempt2.error));
       logger.error('Failed to update parsing job status (fallback)', { jobId, status, error: attempt2.error });
       throw new AppError('Failed to update parsing job', ErrorType.DATABASE, 500);
     }
-    return attempt2.data;
+    return null;
   }
 
   async getJob(jobId: string) {

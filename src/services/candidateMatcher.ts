@@ -152,245 +152,223 @@ export class CandidateMatcher {
       }
     }
 
-    // Priority 3: Email (skip government/police department emails)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 2: Probabilistic soft-signal matching
+    //
+    // Unlike the hard identifiers above (CNIC/Passport), soft signals individually
+    // carry <100% confidence.  We therefore collect ALL matching signals first and
+    // then aggregate:
+    //   • All signals agree on the same candidate  → auto-link (with corroboration bonus)
+    //   • Signals point to DIFFERENT candidates    → conflict → needsManualReview
+    //
+    // Corroboration bonus: +3 % per additional confirming signal (capped at 0.99).
+    // e.g. email (0.95) + phone (0.90) both agree → final confidence = min(0.99, 0.95 + 0.03) = 0.98
+    // ─────────────────────────────────────────────────────────────────────────
+
+    interface SoftSignal {
+      source: 'email' | 'phone' | 'name_dob' | 'name_father' | 'name';
+      confidence: number;
+      candidateId: string;
+      label?: string;
+    }
+
+    const signals: SoftSignal[] = [];
+
+    // ── Email ──────────────────────────────────────────────────────────────────
     if (criteria.email && !this.isGovernmentEmail(criteria.email)) {
-      const normalized = criteria.email.toLowerCase().trim();
-      const { data, error } = await db
+      const normalizedEmail = criteria.email.toLowerCase().trim();
+      const { data: emailData, error: emailError } = await db
         .from('candidates')
         .select('id')
-        .ilike('email', normalized)
-        .neq('status', 'Deleted'); // Exclude deleted candidates
+        .ilike('email', normalizedEmail)
+        .neq('status', 'Deleted');
 
-      if (!error && data && data.length > 0) {
-        if (data.length === 1) {
-          logger.info(`Matched candidate by email: ${normalized}`);
+      if (!emailError && emailData) {
+        if (emailData.length === 1) {
+          signals.push({ source: 'email', confidence: 0.95, candidateId: emailData[0].id });
+          logger.info(`Soft signal: email → ${emailData[0].id}`);
+        } else if (emailData.length > 1) {
+          // Ambiguous email shared by multiple candidates — escalate immediately.
           return {
-            candidateId: data[0].id,
-            matchedBy: 'email',
-            confidence: 0.95,
-            multipleMatches: false,
-            matchCount: 1,
-            needsManualReview: false
-          };
-        } else {
-          logger.warn(`Multiple candidates found for email: ${normalized}`);
-          return {
-            candidateId: null,
-            matchedBy: null,
-            confidence: 0,
-            multipleMatches: true,
-            matchCount: data.length,
-            needsManualReview: true,
-            reviewReasons: [`Multiple candidates (${data.length}) have same email: ${normalized}`]
+            candidateId: null, matchedBy: null, confidence: 0,
+            multipleMatches: true, matchCount: emailData.length, needsManualReview: true,
+            reviewReasons: [`Multiple candidates (${emailData.length}) share email: ${normalizedEmail}`],
           };
         }
       }
     } else if (criteria.email && this.isGovernmentEmail(criteria.email)) {
-      logger.info(`Skipped email matching for government email: ${criteria.email}`);
+      logger.info(`Skipped email matching for government/generic email: ${criteria.email}`);
     }
 
-    // Priority 4: Phone
-    // Normalize to E.164 and query the DB directly — avoids loading all candidates into memory.
+    // ── Phone ──────────────────────────────────────────────────────────────────
     if (criteria.phone) {
       const e164 = normalizePhoneE164(criteria.phone);
       if (e164) {
-        const { data, error } = await db
+        const { data: phoneData, error: phoneError } = await db
           .from('candidates')
           .select('id')
           .eq('phone', e164)
           .neq('status', 'Deleted');
 
-        if (!error && data) {
-          if (data.length === 1) {
-            logger.info(`Matched candidate by phone (E.164): ${e164}`);
+        if (!phoneError && phoneData) {
+          if (phoneData.length === 1) {
+            signals.push({ source: 'phone', confidence: 0.90, candidateId: phoneData[0].id });
+            logger.info(`Soft signal: phone → ${phoneData[0].id}`);
+          } else if (phoneData.length > 1) {
             return {
-              candidateId: data[0].id,
-              matchedBy: 'phone',
-              confidence: 0.90,
-              multipleMatches: false,
-              matchCount: 1,
-              needsManualReview: false,
-            };
-          } else if (data.length > 1) {
-            logger.warn(`Multiple candidates found for phone: ${e164}`);
-            return {
-              candidateId: null,
-              matchedBy: null,
-              confidence: 0,
-              multipleMatches: true,
-              matchCount: data.length,
-              needsManualReview: true,
-              reviewReasons: [`Multiple candidates (${data.length}) have same phone: ${e164}`],
+              candidateId: null, matchedBy: null, confidence: 0,
+              multipleMatches: true, matchCount: phoneData.length, needsManualReview: true,
+              reviewReasons: [`Multiple candidates (${phoneData.length}) share phone: ${e164}`],
             };
           }
         }
       }
     }
 
-    // Priority 5: Name + DOB
-    if (criteria.name && criteria.dateOfBirth) {
-      const normalizedName = this.normalizeName(criteria.name);
-      const dobISO = this.parseDateToISO(criteria.dateOfBirth);
-
-      if (dobISO) {
-        const { data, error } = await db
-          .from('candidates')
-          .select('id, name, date_of_birth')
-          .not('date_of_birth', 'is', null)
-          .neq('status', 'Deleted');
-
-        if (!error && data && data.length > 0) {
-          const matches = data.filter((c: any) => {
-            const candidateName = this.normalizeName(c.name || '');
-            const candidateDob = this.parseDateToISO(String(c.date_of_birth || ''));
-            if (!candidateDob) return false;
-            const nameSimilarity = this.calculateSimilarity(normalizedName, candidateName);
-            return nameSimilarity >= 0.90 && candidateDob === dobISO;
-          });
-
-          if (matches.length === 1) {
-            logger.info(`Matched candidate by name+DOB: ${criteria.name} / ${dobISO}`);
-            return {
-              candidateId: matches[0].id,
-              matchedBy: 'name_dob',
-              confidence: 0.86,
-              multipleMatches: false,
-              matchCount: 1,
-              needsManualReview: false,
-            };
-          } else if (matches.length > 1) {
-            logger.warn(`Multiple candidates found for name+DOB: ${criteria.name} / ${dobISO}`);
-            return {
-              candidateId: null,
-              matchedBy: null,
-              confidence: 0,
-              multipleMatches: true,
-              matchCount: matches.length,
-              needsManualReview: true,
-              reviewReasons: [`Multiple candidates (${matches.length}) match name+DOB: ${criteria.name} / ${dobISO}`],
-            };
-          }
-        }
-      }
-    }
-
-    // Priority 6: Name + Father Name (only if both provided and candidate has CV data)
-    if (criteria.name && criteria.fatherName) {
-      const normalizedName = this.normalizeName(criteria.name);
-      const normalizedFather = this.normalizeName(criteria.fatherName);
-
-      // Only match candidates that have father_name (i.e., have CV parsed)
-      const { data, error } = await db
-        .from('candidates')
-        .select('id, name, father_name')
-        .not('father_name', 'is', null)
-        .neq('status', 'Deleted'); // Exclude deleted candidates
-
-      if (error) {
-        const msg = (error as any)?.message || String(error);
-        if (/column\s+candidates\.father_name\s+does not exist/i.test(msg)) {
-          logger.warn('Skipping name+father matching; candidates.father_name column missing', { message: msg });
-        } else {
-          logger.warn('Name+father candidate query failed', { message: msg });
-        }
-        // Fall through to "no match" behavior.
-      }
-
-      if (!error && data && data.length > 0) {
-        const matches = data.filter(c => {
-          const candidateName = this.normalizeName(c.name || '');
-          const candidateFather = this.normalizeName(c.father_name || '');
-          
-          const nameSimilarity = this.calculateSimilarity(normalizedName, candidateName);
-          const fatherSimilarity = this.calculateSimilarity(normalizedFather, candidateFather);
-          
-          // Both must have strong similarity (>= 0.92)
-          return nameSimilarity >= 0.92 && fatherSimilarity >= 0.92;
-        });
-
-        if (matches.length === 1) {
-          logger.info(`Matched candidate by name+father: ${criteria.name} / ${criteria.fatherName}`);
-          return {
-            candidateId: matches[0].id,
-            matchedBy: 'name_father',
-            confidence: 0.85,
-            multipleMatches: false,
-            matchCount: 1,
-            needsManualReview: false
-          };
-        } else if (matches.length > 1) {
-          logger.warn(`Multiple candidates found for name+father: ${criteria.name}`);
-          return {
-            candidateId: null,
-            matchedBy: null,
-            confidence: 0,
-            multipleMatches: true,
-            matchCount: matches.length,
-            needsManualReview: true,
-            reviewReasons: [`Multiple candidates (${matches.length}) match name+father: ${criteria.name} / ${criteria.fatherName}`]
-          };
-        }
-      }
-    }
-
-    // Priority 7: Name-only matching (fallback when CNIC/passport/email/phone don't match or not available)
-    // Try name matching if we have a name - this is a fallback when other methods didn't find a match
+    // ── Name-based signals (single batched DB query) ───────────────────────────
+    // Load candidates once rather than issuing 3 separate full-table reads.
     if (criteria.name) {
       const normalizedName = this.normalizeName(criteria.name);
-      
-      const { data, error } = await db
+      const normalizedFather = criteria.fatherName ? this.normalizeName(criteria.fatherName) : null;
+      const dobISO = criteria.dateOfBirth ? this.parseDateToISO(criteria.dateOfBirth) : null;
+
+      const { data: nameData, error: nameError } = await db
         .from('candidates')
-        .select('id, name')
+        .select('id, name, father_name, date_of_birth')
         .not('name', 'is', null)
-        .neq('status', 'Deleted'); // Exclude deleted candidates
+        .neq('status', 'Deleted');
 
-      if (!error && data && data.length > 0) {
-        const matches = data.filter(c => {
-          const candidateName = this.normalizeName(c.name || '');
-          const similarity = this.calculateSimilarity(normalizedName, candidateName);
-          // Use slightly lower threshold (0.85) for better matching when CNIC/email/phone don't match
-          return similarity >= 0.85;
-        });
+      if (!nameError && nameData && nameData.length > 0) {
 
-        if (matches.length === 1) {
-          const actualSimilarity = this.calculateSimilarity(normalizedName, this.normalizeName(matches[0].name || ''));
-          logger.info(`Name-only match (needs review): "${criteria.name}" -> "${matches[0].name}" (similarity: ${actualSimilarity.toFixed(3)})`);
-          // Name-only is never strong enough to auto-link — always flag for human review.
-          return {
-            candidateId: matches[0].id,
-            matchedBy: 'name',
-            confidence: 0.80,
-            multipleMatches: false,
-            matchCount: 1,
-            needsManualReview: true,
-            reviewReasons: [`Name-only match (${(actualSimilarity * 100).toFixed(0)}% similarity) — verify identity before linking`],
-          };
-        } else if (matches.length > 1) {
-          logger.warn(`Multiple candidates found for name: "${criteria.name}" (${matches.length} matches)`);
-          return {
-            candidateId: null,
-            matchedBy: 'name',
-            confidence: 0.75,
-            multipleMatches: true,
-            matchCount: matches.length,
-            needsManualReview: true,
-            reviewReasons: [`Multiple candidates (${matches.length}) match name: ${criteria.name}`],
-          };
-        } else {
-          logger.info(`No name matches found for: "${criteria.name}" (checked ${data.length} candidates)`);
+        // Name + DOB
+        if (dobISO) {
+          const dobMatches = nameData.filter((c: any) => {
+            const cn = this.normalizeName(c.name || '');
+            const cd = this.parseDateToISO(String(c.date_of_birth || ''));
+            return cd === dobISO && this.calculateSimilarity(normalizedName, cn) >= 0.90;
+          });
+          if (dobMatches.length === 1) {
+            signals.push({ source: 'name_dob', confidence: 0.86, candidateId: dobMatches[0].id });
+            logger.info(`Soft signal: name+DOB → ${dobMatches[0].id}`);
+          } else if (dobMatches.length > 1) {
+            // Multiple candidates with same name+DOB → conflict, add all
+            for (const m of dobMatches) {
+              signals.push({ source: 'name_dob', confidence: 0.86, candidateId: m.id });
+            }
+          }
+        }
+
+        // Name + Father — only run if no name_dob signal already found for these candidates
+        if (normalizedFather) {
+          const fatherMatches = nameData.filter((c: any) => {
+            if (!c.father_name) return false;
+            const cn = this.normalizeName(c.name || '');
+            const cf = this.normalizeName(c.father_name || '');
+            return this.calculateSimilarity(normalizedName, cn) >= 0.92 &&
+                   this.calculateSimilarity(normalizedFather, cf) >= 0.92;
+          });
+          if (fatherMatches.length === 1) {
+            // Only add if not already covered by a name_dob signal for the same candidate
+            if (!signals.some(s => s.source === 'name_dob' && s.candidateId === fatherMatches[0].id)) {
+              signals.push({ source: 'name_father', confidence: 0.85, candidateId: fatherMatches[0].id });
+              logger.info(`Soft signal: name+father → ${fatherMatches[0].id}`);
+            } else {
+              // Corroborating signal — add anyway so the bonus is counted
+              signals.push({ source: 'name_father', confidence: 0.85, candidateId: fatherMatches[0].id });
+              logger.info(`Soft signal: name+father corroborates name+DOB → ${fatherMatches[0].id}`);
+            }
+          } else if (fatherMatches.length > 1) {
+            for (const m of fatherMatches) {
+              signals.push({ source: 'name_father', confidence: 0.85, candidateId: m.id });
+            }
+          }
+        }
+
+        // Name-only fallback — only runs if no stronger name signal was found
+        const hasNameSignal = signals.some(s => s.source === 'name_dob' || s.source === 'name_father');
+        if (!hasNameSignal) {
+          const nameMatches = nameData.filter((c: any) => {
+            const cn = this.normalizeName(c.name || '');
+            return this.calculateSimilarity(normalizedName, cn) >= 0.85;
+          });
+          if (nameMatches.length === 1) {
+            const sim = this.calculateSimilarity(normalizedName, this.normalizeName(nameMatches[0].name || ''));
+            signals.push({
+              source: 'name', confidence: 0.80, candidateId: nameMatches[0].id,
+              label: `${(sim * 100).toFixed(0)}% name similarity`,
+            });
+            logger.info(`Soft signal: name-only → ${nameMatches[0].id} (${(sim * 100).toFixed(0)}% sim)`);
+          }
+          // If > 1 name-only matches, no signal is pushed (too ambiguous for a soft signal)
         }
       }
     }
 
-    // No match found
-    logger.info('No candidate match found', criteria);
+    // ── Aggregate signals ─────────────────────────────────────────────────────
+    if (signals.length === 0) {
+      logger.info('No candidate match found', criteria);
+      return {
+        candidateId: null, matchedBy: null, confidence: 0,
+        multipleMatches: false, matchCount: 0, needsManualReview: false,
+      };
+    }
+
+    // Group by candidates that were pointed to
+    const byCandidate = new Map<string, SoftSignal[]>();
+    for (const sig of signals) {
+      const existing = byCandidate.get(sig.candidateId) ?? [];
+      existing.push(sig);
+      byCandidate.set(sig.candidateId, existing);
+    }
+
+    // Conflict: signals point to different candidates
+    if (byCandidate.size > 1) {
+      const conflictDetails = [...byCandidate.entries()].map(
+        ([cid, sigs]) => `${cid} via [${sigs.map(s => s.source).join(', ')}]`
+      );
+      logger.warn('Signal conflict across multiple candidates', { conflicts: conflictDetails });
+      return {
+        candidateId: null, matchedBy: null, confidence: 0,
+        multipleMatches: true, matchCount: byCandidate.size, needsManualReview: true,
+        reviewReasons: [
+          `Signal conflict: different candidates matched by different signals — ${conflictDetails.join(' | ')}`,
+        ],
+      };
+    }
+
+    // All signals agree on one candidate
+    const [matchedCandidateId, matchedSignals] = [...byCandidate.entries()][0];
+
+    // Compute combined confidence: highest single signal + corroboration bonus (+3 % per extra signal)
+    const maxConf = Math.max(...matchedSignals.map(s => s.confidence));
+    const corroborationBonus = (matchedSignals.length - 1) * 0.03;
+    const finalConfidence = Math.min(0.99, maxConf + corroborationBonus);
+
+    // Determine primary source (highest-confidence signal)
+    const primarySignal = matchedSignals.reduce((best, s) => s.confidence > best.confidence ? s : best);
+    const isNameOnly = matchedSignals.every(s => s.source === 'name');
+
+    const reviewReasons: string[] = [];
+    if (isNameOnly) {
+      const ns = matchedSignals.find(s => s.source === 'name');
+      reviewReasons.push(`Name-only match (${ns?.label ?? ''}) — verify identity before linking`);
+    }
+
+    if (matchedSignals.length > 1) {
+      logger.info(
+        `Probabilistic match: candidate=${matchedCandidateId}, signals=[${matchedSignals.map(s => s.source).join(', ')}], ` +
+        `base=${maxConf.toFixed(2)}, bonus=${corroborationBonus.toFixed(2)}, final=${finalConfidence.toFixed(3)}`
+      );
+    }
+
     return {
-      candidateId: null,
-      matchedBy: null,
-      confidence: 0,
+      candidateId: matchedCandidateId,
+      matchedBy: primarySignal.source as MatchResult['matchedBy'],
+      confidence: finalConfidence,
       multipleMatches: false,
-      matchCount: 0,
-      needsManualReview: false
+      matchCount: matchedSignals.length,
+      needsManualReview: isNameOnly,
+      ...(reviewReasons.length > 0 ? { reviewReasons } : {}),
     };
   }
 

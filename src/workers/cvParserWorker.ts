@@ -647,15 +647,35 @@ export function startCvParserWorker() {
         const db = supabaseAdminClient();
 
         // Fetch attachment metadata and storage location.
+        // Also fetches candidate_id + parsing_status for idempotency guard below.
         const { data: attachmentMeta, error: attachmentMetaError } = await db
           .from('inbox_attachments')
-          .select('file_name, mime_type, storage_bucket, storage_path, sha256')
+          .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status')
           .eq('id', attachmentId)
           .maybeSingle();
 
         if (attachmentMetaError) {
           throw new Error(`Failed to fetch attachment metadata: ${attachmentMetaError.message}`);
         }
+
+        // ── Idempotency guard ──────────────────────────────────────────────────
+        // If this attachment was already successfully linked to a candidate by a
+        // previous job (e.g., BullMQ retry or Gmail poller picking the same email
+        // twice), skip re-processing to avoid creating a duplicate candidate.
+        // The `force` flag bypasses this check for manual admin reprocessing.
+        if (!force && attachmentMeta?.candidate_id) {
+          const existingId = attachmentMeta.candidate_id;
+          console.log(
+            `[CVParser] ⏭  Skipping attachment ${attachmentId} — already linked to candidate ${existingId} (idempotency guard)`
+          );
+          await parsingJobs.setStatus(jobId, 'extracted', {
+            finished_at: new Date().toISOString(),
+            skipped_reason: 'already_linked',
+            candidate_id: existingId,
+          });
+          return { skipped: true, candidateId: existingId };
+        }
+        // ──────────────────────────────────────────────────────────────────────
 
         const storageBucket = attachmentMeta?.storage_bucket || STORAGE_BUCKET;
         const storagePath = attachmentMeta?.storage_path;

@@ -19,6 +19,7 @@ import {
   getAttachment,
   isAcceptedCvMime,
   GMAIL_CV_QUERY,
+  createOAuth2ClientWithToken,
 } from '../services/gmailService';
 import { supabaseAdminClient } from '../config/database';
 
@@ -113,14 +114,14 @@ async function isAlreadyProcessed(gmailMessageId: string): Promise<boolean> {
  * Process a single Gmail message ID.
  * Returns 'skipped' | 'processed' | 'error'.
  */
-async function processOne(gmailMessageId: string): Promise<'skipped' | 'processed' | 'error'> {
+async function processOne(gmailMessageId: string, authClient?: ReturnType<typeof createOAuth2ClientWithToken>): Promise<'skipped' | 'processed' | 'error'> {
   try {
     // Idempotency: skip already-stored messages
     if (await isAlreadyProcessed(gmailMessageId)) {
       return 'skipped';
     }
 
-    const fullMessage = await getMessage(gmailMessageId);
+    const fullMessage = await getMessage(gmailMessageId, authClient);
 
     if (!fullMessage.attachments || fullMessage.attachments.length === 0) {
       // Text-only message — nothing to store for CV purposes
@@ -168,7 +169,7 @@ async function processOne(gmailMessageId: string): Promise<'skipped' | 'processe
 
     for (const attachment of cvAttachments) {
       try {
-        const buffer = await getAttachment(fullMessage.id, attachment.id);
+        const buffer = await getAttachment(fullMessage.id, attachment.id, authClient);
 
         // Immutable path — never overwrites
         const storagePath = `gmail/backfill/${fullMessage.id}/${Date.now()}_${attachment.filename.replace(/[^a-zA-Z0-9.\-_]/g, '_')}`;
@@ -257,6 +258,11 @@ export interface BackfillOptions {
    * Default 200ms.
    */
   delayMs?: number;
+  /**
+   * Optional pre-built OAuth2 client (for polling a second Gmail account).
+   * If omitted, uses the default GMAIL_REFRESH_TOKEN account.
+   */
+  authClient?: ReturnType<typeof createOAuth2ClientWithToken>;
 }
 
 /**
@@ -274,6 +280,7 @@ export async function startGmailBackfill(opts: BackfillOptions = {}): Promise<Ba
   const batchSize = opts.batchSize ?? 100;
   const maxTotal = opts.maxTotal ?? 10_000;
   const delayMs = opts.delayMs ?? 200;
+  const authClient = opts.authClient;
 
   logger.info('Starting Gmail historical backfill', {
     afterDate: opts.afterDate?.toISOString() ?? 'all history',
@@ -306,7 +313,7 @@ export async function startGmailBackfill(opts: BackfillOptions = {}): Promise<Ba
               return;
             }
 
-            const result = await processOne(id);
+            const result = await processOne(id, authClient);
             if (result === 'processed') state.processed++;
             else if (result === 'skipped') state.skipped++;
             // errors counted inside processOne

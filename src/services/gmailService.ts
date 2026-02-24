@@ -121,10 +121,11 @@ export async function listAllMessages(
   query: string = GMAIL_CV_QUERY,
   options?: {
     batchSize?: number;
-    afterDate?: Date;   // only messages after this date
-    beforeDate?: Date;  // only messages before this date
+    afterDate?: Date;
+    beforeDate?: Date;
     onBatch?: (ids: string[], pageNum: number, totalSoFar: number) => Promise<void>;
-    maxTotal?: number;  // safety cap
+    maxTotal?: number;
+    authClient?: ReturnType<typeof createOAuth2Client>;
   }
 ): Promise<{ total: number; pageCount: number }> {
   let q = query;
@@ -144,7 +145,7 @@ export async function listAllMessages(
   let total = 0;
 
   while (true) {
-    const page = await listMessages(q, Math.min(batchSize, maxTotal - total), pageToken);
+    const page = await listMessages(q, Math.min(batchSize, maxTotal - total), pageToken, options?.authClient);;
     const ids = page.messages.map((m) => m.id).filter(Boolean);
 
     if (ids.length > 0) {

@@ -13,7 +13,7 @@
 
 import { Router, Request, Response } from 'express';
 import { asyncHandler, createLogger } from '../utils/errorHandling';
-import { testConnection } from '../services/gmailService';
+import { testConnection, createOAuth2ClientWithToken } from '../services/gmailService';
 import { triggerManualPoll } from '../workers/gmailPollingWorker';
 import {
   startGmailBackfill,
@@ -94,10 +94,22 @@ router.post(
       batchSize,
       maxTotal,
       delayMs,
+      account,
     } = req.body || {};
 
     const afterDate = afterStr ? new Date(afterStr) : undefined;
     const beforeDate = beforeStr ? new Date(beforeStr) : undefined;
+
+    // Support account=2 to backfill the second Gmail account (GMAIL2_REFRESH_TOKEN)
+    let authClient: ReturnType<typeof createOAuth2ClientWithToken> | undefined;
+    if (account === 2 || account === '2') {
+      const token2 = process.env.GMAIL2_REFRESH_TOKEN;
+      if (!token2) {
+        return res.status(400).json({ error: 'GMAIL2_REFRESH_TOKEN not configured' });
+      }
+      authClient = createOAuth2ClientWithToken(token2);
+      logger.info('Backfill using account 2 (falishaoep4035@gmail.com)');
+    }
 
     if (afterDate && isNaN(afterDate.getTime())) {
       return res.status(400).json({ error: 'Invalid afterDate — use ISO format e.g. 2024-01-01' });
@@ -114,6 +126,7 @@ router.post(
       batchSize: batchSize ? Number(batchSize) : undefined,
       maxTotal: maxTotal ? Number(maxTotal) : undefined,
       delayMs: delayMs !== undefined ? Number(delayMs) : undefined,
+      authClient,
     }).catch((err: Error) => {
       return res.status(409).json({ error: err.message });
     });

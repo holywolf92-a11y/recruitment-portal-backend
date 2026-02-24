@@ -146,6 +146,12 @@ function parseDate(dateStr: string | undefined, fieldName: string): string | und
   }
 }
 
+/** Truncate a string to maxLen characters without throwing. */
+function trunc(value: string | undefined | null, maxLen: number): string | undefined {
+  if (!value) return undefined;
+  return value.length > maxLen ? value.slice(0, maxLen) : value;
+}
+
 // Helper to create candidate from parsed CV data
 async function createCandidateFromParsedData(parsed: any, attachmentId: string, identityFields?: any) {
   try {
@@ -224,24 +230,27 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
     }
 
     const candidateData: CreateCandidateData = {
-      name: resolvedName,
+      name: trunc(resolvedName, 255) || 'Unknown',
       father_name: identityFields?.father_name || candidate.father_name || undefined,
-      email: resolvedEmail,
-      phone: resolvedPhone,
+      email: trunc(resolvedEmail, 255),
+      phone: trunc(resolvedPhone, 50),
       address: candidate.location || undefined,
       date_of_birth: dateOfBirth,
-      marital_status: candidate.marital_status || undefined,
+      marital_status: trunc(candidate.marital_status, 20) || undefined,
       cnic: identityFields?.cnic || candidate.cnic || undefined,
       passport: identityFields?.passport_no || candidate.passport || undefined,
-      nationality: candidate.nationality || identityFields?.nationality || undefined,
-      position: extractedPosition,
+      nationality: trunc(candidate.nationality || identityFields?.nationality, 100) || undefined,
+      position: trunc(extractedPosition, 255),
       experience_years: candidate.experience_years || undefined,
-      country_of_interest: candidate.country_of_interest || undefined,
+      country_of_interest: trunc(candidate.country_of_interest, 100) || undefined,
       skills: Array.isArray(candidate.skills) ? candidate.skills.join(', ') : undefined,
       languages: Array.isArray(candidate.languages) ? candidate.languages.join(', ') : undefined,
-      education: Array.isArray(candidate.education) && candidate.education.length > 0 
-        ? candidate.education.map((e: any) => `${e.degree} from ${e.institution}`).join('; ')
-        : undefined,
+      education: trunc(
+        Array.isArray(candidate.education) && candidate.education.length > 0
+          ? candidate.education.map((e: any) => `${e.degree} from ${e.institution}`).join('; ')
+          : undefined,
+        255
+      ),
       certifications: Array.isArray(candidate.certifications) ? candidate.certifications.join(', ') : undefined,
       internships: Array.isArray((candidate as any).internships) ? (candidate as any).internships.join(', ') : undefined,
       previous_employment: candidate.previous_employment || (

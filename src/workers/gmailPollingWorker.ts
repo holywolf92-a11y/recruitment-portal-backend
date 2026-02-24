@@ -7,6 +7,7 @@ import {
   getAttachment,
   isAcceptedCvMime,
   GMAIL_CV_QUERY,
+  createOAuth2ClientWithToken,
 } from '../services/gmailService';
 import { uploadCandidateDocument } from '../services/candidateDocumentService';
 import { processMissingDataEmailReply } from '../services/missingDataEmailReplyService';
@@ -23,20 +24,31 @@ export async function startGmailPolling(intervalMinutes: number = 5) {
 
   // Run immediately on start
   await pollGmail();
+  if (process.env.GMAIL2_REFRESH_TOKEN) {
+    await pollGmail(createOAuth2ClientWithToken(process.env.GMAIL2_REFRESH_TOKEN));
+  }
 
   // Then run every N minutes
   const intervalMs = intervalMinutes * 60 * 1000;
   setInterval(async () => {
     await pollGmail();
+    if (process.env.GMAIL2_REFRESH_TOKEN) {
+      await pollGmail(createOAuth2ClientWithToken(process.env.GMAIL2_REFRESH_TOKEN));
+    }
   }, intervalMs);
 }
 
 /** Manually trigger one poll cycle (used by admin API). */
 export async function triggerManualPoll(): Promise<{ successCount: number; errorCount: number }> {
-  return pollGmail();
+  const r1 = await pollGmail();
+  if (process.env.GMAIL2_REFRESH_TOKEN) {
+    const r2 = await pollGmail(createOAuth2ClientWithToken(process.env.GMAIL2_REFRESH_TOKEN));
+    return { successCount: r1.successCount + r2.successCount, errorCount: r1.errorCount + r2.errorCount };
+  }
+  return r1;
 }
 
-async function pollGmail(): Promise<{ successCount: number; errorCount: number }> {
+async function pollGmail(authClient?: ReturnType<typeof createOAuth2ClientWithToken>): Promise<{ successCount: number; errorCount: number }> {
   if (isRunning) {
     logger.debug('Gmail polling already in progress, skipping');
     return { successCount: 0, errorCount: 0 };
@@ -49,7 +61,7 @@ async function pollGmail(): Promise<{ successCount: number; errorCount: number }
     logger.info('Starting Gmail poll');
 
     // Query for messages with attachments (PDFs, DOCs, images)
-    const { messages } = await listMessages(GMAIL_CV_QUERY, 20);
+    const { messages } = await listMessages(GMAIL_CV_QUERY, 20, undefined, authClient);
     if (!messages || messages.length === 0) {
       logger.info('No new Gmail messages with attachments');
       isRunning = false;
@@ -65,7 +77,7 @@ async function pollGmail(): Promise<{ successCount: number; errorCount: number }
       if (!msg.id) continue;
 
       try {
-        const fullMessage = await getMessage(msg.id);
+        const fullMessage = await getMessage(msg.id, authClient);
         if (!fullMessage.attachments || fullMessage.attachments.length === 0) {
           continue;
         }
@@ -205,7 +217,7 @@ async function pollGmail(): Promise<{ successCount: number; errorCount: number }
               continue;
             }
             try {
-              const buffer = await getAttachment(fullMessage.id, attachment.id);
+              const buffer = await getAttachment(fullMessage.id, attachment.id, authClient);
               await uploadCandidateDocument({
                 candidate_id: resolvedCandidate.id,
                 file_name: attachment.filename,
@@ -315,7 +327,7 @@ async function pollGmail(): Promise<{ successCount: number; errorCount: number }
             for (const attachment of fullMessage.attachments) {
               if (!attachment.id) continue;
               try {
-                const buffer = await getAttachment(fullMessage.id, attachment.id);
+                const buffer = await getAttachment(fullMessage.id, attachment.id, authClient);
                 await uploadCandidateDocument({
                   candidate_id: resolvedCandidateId,
                   file_name: attachment.filename,
@@ -383,7 +395,7 @@ async function pollGmail(): Promise<{ successCount: number; errorCount: number }
           for (const attachment of fullMessage.attachments) {
             if (!attachment.id) continue;
             try {
-              const buffer = await getAttachment(fullMessage.id, attachment.id);
+              const buffer = await getAttachment(fullMessage.id, attachment.id, authClient);
               await uploadCandidateDocument({
                 candidate_id: resolvedCandidate.id,
                 file_name: attachment.filename,
@@ -436,7 +448,7 @@ async function pollGmail(): Promise<{ successCount: number; errorCount: number }
           }
 
           try {
-            const buffer = await getAttachment(fullMessage.id, attachment.id);
+            const buffer = await getAttachment(fullMessage.id, attachment.id, authClient);
             // Immutable path: messageId + timestamp ensures no overwrites across different emails
             const storagePath = `gmail/${fullMessage.id}/${Date.now()}_${attachment.filename}`;
 

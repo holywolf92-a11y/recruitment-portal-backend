@@ -30,6 +30,21 @@ function createOAuth2Client() {
   return oauth2Client;
 }
 
+/** Create an OAuth2 client using a specific refresh token (for multi-account support). */
+export function createOAuth2ClientWithToken(refreshToken: string) {
+  const clientId = process.env.GMAIL_CLIENT_ID;
+  const clientSecret = process.env.GMAIL_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new AppError('Gmail credentials not configured', ErrorType.VALIDATION, 500);
+  }
+
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+
+  return oauth2Client;
+}
+
 /** CV-relevant Gmail query — includes all document and image attachment types */
 export const GMAIL_CV_QUERY =
   'has:attachment (filename:pdf OR filename:doc OR filename:docx OR ' +
@@ -74,9 +89,10 @@ export function isAcceptedCvMime(mimeType: string): boolean {
 export async function listMessages(
   query: string = GMAIL_CV_QUERY,
   maxResults: number = 10,
-  pageToken?: string
+  pageToken?: string,
+  authClient?: ReturnType<typeof createOAuth2Client>
 ): Promise<{ messages: Array<{ id: string; threadId: string }>; nextPageToken?: string }> {
-  const auth = createOAuth2Client();
+  const auth = authClient ?? createOAuth2Client();
   const gmail = google.gmail({ version: 'v1', auth });
 
   try {
@@ -202,8 +218,8 @@ function base64UrlEncode(input: string | Buffer): string {
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-export async function getMessage(messageId: string): Promise<GmailMessage> {
-  const auth = createOAuth2Client();
+export async function getMessage(messageId: string, authClient?: ReturnType<typeof createOAuth2Client>): Promise<GmailMessage> {
+  const auth = authClient ?? createOAuth2Client();
   const gmail = google.gmail({ version: 'v1', auth });
 
   try {
@@ -289,8 +305,8 @@ export async function sendThreadReply(args: {
   }
 }
 
-export async function getAttachment(messageId: string, attachmentId: string): Promise<Buffer> {
-  const auth = createOAuth2Client();
+export async function getAttachment(messageId: string, attachmentId: string, authClient?: ReturnType<typeof createOAuth2Client>): Promise<Buffer> {
+  const auth = authClient ?? createOAuth2Client();
   const gmail = google.gmail({ version: 'v1', auth });
 
   try {

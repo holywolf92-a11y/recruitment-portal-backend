@@ -215,32 +215,40 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     }
   }
 
+  // Truncate VARCHAR-limited fields to prevent 22001 overflow errors (safety net for all callers)
+  const VARCHAR_LIMITS_CREATE: Record<string, number> = {
+    name: 255, email: 255, phone: 50, position: 255, education: 255,
+    nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
+  };
+  const truncCreate = (val: any, maxLen: number) =>
+    typeof val === 'string' && val.length > maxLen ? val.slice(0, maxLen) : val;
+
   // Create candidate record
   const candidateData = {
     candidate_code: candidateCode,
-    name: data.name,
+    name: truncCreate(data.name, VARCHAR_LIMITS_CREATE.name),
     father_name: data.father_name,
     status: data.status,
     source: data.source,
     ai_score: data.ai_score,
     auto_extracted: data.auto_extracted,
     needs_review: data.needs_review,
-    email: data.email,
-    phone: phoneNormalized,
+    email: truncCreate(data.email, VARCHAR_LIMITS_CREATE.email),
+    phone: truncCreate(phoneNormalized, VARCHAR_LIMITS_CREATE.phone),
     date_of_birth: data.date_of_birth,
-    gender: data.gender,
-    marital_status: data.marital_status,
+    gender: truncCreate(data.gender, VARCHAR_LIMITS_CREATE.gender),
+    marital_status: truncCreate(data.marital_status, VARCHAR_LIMITS_CREATE.marital_status),
     address: data.address,
     cnic_normalized: cnicNormalized,
     passport_normalized: passportNormalized,
 
-    nationality: data.nationality,
-    position: data.position,
+    nationality: truncCreate(data.nationality, VARCHAR_LIMITS_CREATE.nationality),
+    position: truncCreate(data.position, VARCHAR_LIMITS_CREATE.position),
     experience_years: data.experience_years,
-    country_of_interest: data.country_of_interest,
+    country_of_interest: truncCreate(data.country_of_interest, VARCHAR_LIMITS_CREATE.country_of_interest),
     skills: data.skills,
     languages: data.languages,
-    education: data.education,
+    education: truncCreate(data.education, VARCHAR_LIMITS_CREATE.education),
     certifications: data.certifications,
     internships: data.internships,
     previous_employment: data.previous_employment,

@@ -871,3 +871,64 @@ export async function getMissingFieldsController(req: Request, res: Response) {
     }
   }
 }
+
+/**
+ * POST /api/candidates/:id/merge
+ * Merge another candidate (loserId in body) into this candidate (:id = winner).
+ *
+ * Body:
+ *   - loserId       {string}  required  — candidate to be soft-deleted
+ *   - strategy      {string}  optional  — 'winner_wins' | 'loser_wins' | 'manual' (default: winner_wins)
+ *   - fieldOverrides {object} optional  — explicit field values (only with strategy='manual')
+ *   - reason        {string}  optional  — human-readable explanation
+ */
+export async function mergeCandidateController(req: Request, res: Response) {
+  try {
+    const winnerId = req.params.id;
+    const { loserId, strategy, fieldOverrides, reason } = req.body;
+
+    if (!winnerId) return res.status(400).json({ error: 'Winner candidate ID required in URL' });
+    if (!loserId)  return res.status(400).json({ error: 'loserId required in request body' });
+    if (winnerId === loserId) return res.status(400).json({ error: 'Cannot merge a candidate with itself' });
+
+    const allowedStrategies = ['winner_wins', 'loser_wins', 'manual'];
+    if (strategy && !allowedStrategies.includes(strategy)) {
+      return res.status(400).json({ error: `strategy must be one of: ${allowedStrategies.join(', ')}` });
+    }
+
+    const { mergeCandidates } = await import('../services/mergeCandidateService');
+    const result = await mergeCandidates(winnerId, loserId, {
+      strategy: strategy || 'winner_wins',
+      fieldOverrides: strategy === 'manual' ? fieldOverrides : undefined,
+      reviewReasons: reason ? [reason] : undefined,
+      mergedBy: 'admin',
+    });
+
+    res.json({ success: true, merge: result });
+  } catch (error: any) {
+    console.error('Error merging candidates:', error);
+    if (error.message?.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message || 'Failed to merge candidates' });
+    }
+  }
+}
+
+/**
+ * GET /api/candidates/:id/merges
+ * Returns the merge audit history for a candidate (as winner or former loser).
+ */
+export async function getCandidateMergeHistoryController(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Candidate ID required' });
+
+    const { getCandidateMergeHistory } = await import('../services/mergeCandidateService');
+    const history = await getCandidateMergeHistory(id);
+    res.json({ merges: history });
+  } catch (error: any) {
+    console.error('Error fetching merge history:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch merge history' });
+  }
+}

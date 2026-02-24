@@ -240,12 +240,22 @@ export class CandidateMatcher {
 
       if (!nameError && nameData && nameData.length > 0) {
 
+        // Helper: name match predicate — Levenshtein OR phonetic (soundex + lower threshold).
+        // Phonetic catches "Muhammad" vs "Mohammad" (soundex M530 == M530, levenshtein ~0.75).
+        const nameMatches = (a: string, b: string, stdThreshold: number) => {
+          const sim = this.calculateSimilarity(a, b);
+          if (sim >= stdThreshold) return true;
+          // Phonetic fallback: same soundex code and similarity ≥ 0.65
+          if (sim >= 0.65 && this.phoneticMatch(a, b)) return true;
+          return false;
+        };
+
         // Name + DOB
         if (dobISO) {
           const dobMatches = nameData.filter((c: any) => {
             const cn = this.normalizeName(c.name || '');
             const cd = this.parseDateToISO(String(c.date_of_birth || ''));
-            return cd === dobISO && this.calculateSimilarity(normalizedName, cn) >= 0.90;
+            return cd === dobISO && nameMatches(normalizedName, cn, 0.90);
           });
           if (dobMatches.length === 1) {
             signals.push({ source: 'name_dob', confidence: 0.86, candidateId: dobMatches[0].id });
@@ -264,8 +274,8 @@ export class CandidateMatcher {
             if (!c.father_name) return false;
             const cn = this.normalizeName(c.name || '');
             const cf = this.normalizeName(c.father_name || '');
-            return this.calculateSimilarity(normalizedName, cn) >= 0.92 &&
-                   this.calculateSimilarity(normalizedFather, cf) >= 0.92;
+            return nameMatches(normalizedName, cn, 0.92) &&
+                   nameMatches(normalizedFather, cf, 0.92);
           });
           if (fatherMatches.length === 1) {
             // Only add if not already covered by a name_dob signal for the same candidate
@@ -287,17 +297,20 @@ export class CandidateMatcher {
         // Name-only fallback — only runs if no stronger name signal was found
         const hasNameSignal = signals.some(s => s.source === 'name_dob' || s.source === 'name_father');
         if (!hasNameSignal) {
-          const nameMatches = nameData.filter((c: any) => {
+          const nameOnlyMatches = nameData.filter((c: any) => {
             const cn = this.normalizeName(c.name || '');
-            return this.calculateSimilarity(normalizedName, cn) >= 0.85;
+            return nameMatches(normalizedName, cn, 0.85);
           });
-          if (nameMatches.length === 1) {
-            const sim = this.calculateSimilarity(normalizedName, this.normalizeName(nameMatches[0].name || ''));
+          if (nameOnlyMatches.length === 1) {
+            const sim = this.calculateSimilarity(normalizedName, this.normalizeName(nameOnlyMatches[0].name || ''));
+            const isPhonetic = sim < 0.85 && this.phoneticMatch(normalizedName, this.normalizeName(nameOnlyMatches[0].name || ''));
             signals.push({
-              source: 'name', confidence: 0.80, candidateId: nameMatches[0].id,
-              label: `${(sim * 100).toFixed(0)}% name similarity`,
+              source: 'name', confidence: 0.80, candidateId: nameOnlyMatches[0].id,
+              label: isPhonetic
+                ? `phonetic match (${(sim * 100).toFixed(0)}% levenshtein + soundex)`
+                : `${(sim * 100).toFixed(0)}% name similarity`,
             });
-            logger.info(`Soft signal: name-only → ${nameMatches[0].id} (${(sim * 100).toFixed(0)}% sim)`);
+            logger.info(`Soft signal: name-only → ${nameOnlyMatches[0].id} (${isPhonetic ? 'phonetic' : (sim * 100).toFixed(0) + '% sim'})`);
           }
           // If > 1 name-only matches, no signal is pushed (too ambiguous for a soft signal)
         }
@@ -380,32 +393,6 @@ export class CandidateMatcher {
   }
 
   /**
-   * Normalize phone to digits only (simple v1)
-   */
-  private static normalizePhone(phone: string): string {
-    // Remove all non-digits
-    let digits = phone.replace(/[^\d]/g, '');
-    
-    // Remove leading country code if present
-    if (digits.startsWith('92')) {
-      digits = '0' + digits.substring(2);
-    }
-    
-    return digits;
-  }
-
-  /**
-   * Normalize name for comparison
-   */
-  private static normalizeName(name: string): string {
-    return name
-      .toLowerCase()
-      .trim()
-      .replace(/[^\w\s]/g, '') // Remove special chars
-      .replace(/\s+/g, ' '); // Normalize spaces
-  }
-
-  /**
    * Calculate string similarity (Levenshtein distance based)
    */
   private static calculateSimilarity(str1: string, str2: string): number {
@@ -446,6 +433,105 @@ export class CandidateMatcher {
     }
 
     return matrix[str2.length][str1.length];
+  }
+
+  /**
+   * Soundex algorithm — phonetic code for a word.
+   * Returns a 4-char code (e.g. "M530" for "Muhammad" and "Mohammad").
+   * Used as a pre-filter to catch variant spellings before Levenshtein.
+   */
+  private static soundex(word: string): string {
+    if (!word) return '';
+    const MAP: Record<string, string> = {
+      b:'1', f:'1', p:'1', v:'1',
+      c:'2', g:'2', j:'2', k:'2', q:'2', s:'2', x:'2', z:'2',
+      d:'3', t:'3',
+      l:'4',
+      m:'5', n:'5',
+      r:'6',
+    };
+    const w = word.toLowerCase().replace(/[^a-z]/g, '');
+    if (!w) return '';
+
+    const first = w[0].toUpperCase();
+    let code = first;
+    let prev = MAP[w[0]] ?? '0';
+
+    for (let i = 1; i < w.length && code.length < 4; i++) {
+      const c = w[i];
+      if ('aeiouyhw'.includes(c)) { prev = '0'; continue; }
+      const digit = MAP[c] ?? '0';
+      if (digit !== prev && digit !== '0') {
+        code += digit;
+        prev = digit;
+      }
+    }
+    return code.padEnd(4, '0');
+  }
+
+  /**
+   * Normalise common Pakistani / Arabic name variant spellings to canonical forms.
+   * This means "Mohammad", "Mohammed", "Muhammed" → "muhammad" so Levenshtein
+   * between them becomes 1.0 (exact match) instead of ~0.75.
+   */
+  private static normalizePakistaniName(name: string): string {
+    const VARIANTS: [RegExp, string][] = [
+      // Muhammad variants
+      [/\b(mohammed?|mohamma?d|muhamme?d|muhama?d)\b/gi, 'muhammad'],
+      // Ahmad variants
+      [/\b(ahmad|ahmed)\b/gi, 'ahmed'],
+      // Rahman variants
+      [/\b(rahman)\b/gi, 'rehman'],
+      // Hussein variants
+      [/\b(hussein|husain)\b/gi, 'hussain'],
+      // Hassan variants
+      [/\b(hasan)\b/gi, 'hassan'],
+      // Umar variants
+      [/\b(omar)\b/gi, 'umar'],
+      // Ali variants
+      [/\b(aly)\b/gi, 'ali'],
+      // Iftikhar variants
+      [/\b(iftekhar)\b/gi, 'iftikhar'],
+      // Rizwan / Rizvan
+      [/\b(rizvan)\b/gi, 'rizwan'],
+      // Bilal / Billal
+      [/\b(billal)\b/gi, 'bilal'],
+      // Abdul variants (spacing)
+      [/\babdul\s+/gi, 'abdul '],
+    ];
+
+    let n = name.toLowerCase();
+    for (const [pattern, replacement] of VARIANTS) {
+      n = n.replace(pattern, replacement);
+    }
+    return n;
+  }
+
+  /**
+   * Normalize name for comparison — strips punctuation, normalises spaces,
+   * and applies Pakistani name variant normalization.
+   */
+  private static normalizeName(name: string): string {
+    const clean = name
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s]/g, '')
+      .replace(/\s+/g, ' ');
+    return this.normalizePakistaniName(clean);
+  }
+
+  /**
+   * Return true when the two names are phonetically equivalent (same Soundex code)
+   * even if their Levenshtein similarity is below the normal threshold.
+   * This catches Muhammad/Mohammad which have similarity ~0.75 but soundex M530 == M530.
+   */
+  static phoneticMatch(name1: string, name2: string): boolean {
+    // Apply per-word soundex — handles multi-word names by checking first tokens
+    const words1 = name1.trim().split(/\s+/);
+    const words2 = name2.trim().split(/\s+/);
+    if (words1.length === 0 || words2.length === 0) return false;
+    // First name phonetic match
+    return this.soundex(words1[0]) === this.soundex(words2[0]);
   }
 
   /**

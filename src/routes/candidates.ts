@@ -19,7 +19,9 @@ import {
   updateDocumentFlagsController,
   linkCandidatesCVController,
   updateCandidateFieldManuallyController,
-  getMissingFieldsController
+  getMissingFieldsController,
+  mergeCandidateController,
+  getCandidateMergeHistoryController
 } from '../controllers/candidateController';
 
 const router = Router();
@@ -87,5 +89,9 @@ router.post('/:id/link-cv', linkCandidatesCVController);
 // Progressive data completion endpoints
 router.get('/:id/missing-fields', getMissingFieldsController);
 router.patch('/:id/fields/:field', updateCandidateFieldManuallyController);
+
+// Candidate merge
+router.post('/:id/merge', mergeCandidateController);
+router.get('/:id/merges', getCandidateMergeHistoryController);
 
 export default router;

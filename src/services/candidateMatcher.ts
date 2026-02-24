@@ -1,5 +1,6 @@
 import { supabaseAdminClient } from '../config/database';
 import { createLogger } from '../utils/errorHandling';
+import { normalizePhoneE164 } from './candidateService';
 
 const logger = createLogger('CandidateMatcher');
 
@@ -189,39 +190,39 @@ export class CandidateMatcher {
     }
 
     // Priority 4: Phone
+    // Normalize to E.164 and query the DB directly — avoids loading all candidates into memory.
     if (criteria.phone) {
-      const normalized = this.normalizePhone(criteria.phone);
-      const { data, error } = await db
-        .from('candidates')
-        .select('id, phone')
-        .not('phone', 'is', null)
-        .neq('status', 'Deleted'); // Exclude deleted candidates
+      const e164 = normalizePhoneE164(criteria.phone);
+      if (e164) {
+        const { data, error } = await db
+          .from('candidates')
+          .select('id')
+          .eq('phone', e164)
+          .neq('status', 'Deleted');
 
-      if (!error && data && data.length > 0) {
-        // Match by normalized phone
-        const matches = data.filter(c => this.normalizePhone(c.phone || '') === normalized);
-        
-        if (matches.length === 1) {
-          logger.info(`Matched candidate by phone: ${normalized}`);
-          return {
-            candidateId: matches[0].id,
-            matchedBy: 'phone',
-            confidence: 0.90,
-            multipleMatches: false,
-            matchCount: 1,
-            needsManualReview: false
-          };
-        } else if (matches.length > 1) {
-          logger.warn(`Multiple candidates found for phone: ${normalized}`);
-          return {
-            candidateId: null,
-            matchedBy: null,
-            confidence: 0,
-            multipleMatches: true,
-            matchCount: matches.length,
-            needsManualReview: true,
-            reviewReasons: [`Multiple candidates (${matches.length}) have same phone: ${normalized}`]
-          };
+        if (!error && data) {
+          if (data.length === 1) {
+            logger.info(`Matched candidate by phone (E.164): ${e164}`);
+            return {
+              candidateId: data[0].id,
+              matchedBy: 'phone',
+              confidence: 0.90,
+              multipleMatches: false,
+              matchCount: 1,
+              needsManualReview: false,
+            };
+          } else if (data.length > 1) {
+            logger.warn(`Multiple candidates found for phone: ${e164}`);
+            return {
+              candidateId: null,
+              matchedBy: null,
+              confidence: 0,
+              multipleMatches: true,
+              matchCount: data.length,
+              needsManualReview: true,
+              reviewReasons: [`Multiple candidates (${data.length}) have same phone: ${e164}`],
+            };
+          }
         }
       }
     }
@@ -353,26 +354,27 @@ export class CandidateMatcher {
 
         if (matches.length === 1) {
           const actualSimilarity = this.calculateSimilarity(normalizedName, this.normalizeName(matches[0].name || ''));
-          logger.info(`Matched candidate by name only: "${criteria.name}" -> "${matches[0].name}" (similarity: ${actualSimilarity.toFixed(3)})`);
+          logger.info(`Name-only match (needs review): "${criteria.name}" -> "${matches[0].name}" (similarity: ${actualSimilarity.toFixed(3)})`);
+          // Name-only is never strong enough to auto-link — always flag for human review.
           return {
             candidateId: matches[0].id,
             matchedBy: 'name',
             confidence: 0.80,
             multipleMatches: false,
             matchCount: 1,
-            needsManualReview: false
+            needsManualReview: true,
+            reviewReasons: [`Name-only match (${(actualSimilarity * 100).toFixed(0)}% similarity) — verify identity before linking`],
           };
         } else if (matches.length > 1) {
           logger.warn(`Multiple candidates found for name: "${criteria.name}" (${matches.length} matches)`);
-          // If multiple matches, return the first one but flag for review
           return {
-            candidateId: matches[0].id,
+            candidateId: null,
             matchedBy: 'name',
             confidence: 0.75,
             multipleMatches: true,
             matchCount: matches.length,
             needsManualReview: true,
-            reviewReasons: [`Multiple candidates (${matches.length}) match name: ${criteria.name}`]
+            reviewReasons: [`Multiple candidates (${matches.length}) match name: ${criteria.name}`],
           };
         } else {
           logger.info(`No name matches found for: "${criteria.name}" (checked ${data.length} candidates)`);

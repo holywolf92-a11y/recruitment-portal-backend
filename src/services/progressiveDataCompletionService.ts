@@ -11,7 +11,8 @@
  */
 
 import { supabaseAdminClient } from '../config/database';
-import { normalizeCNIC, normalizePassport, normalizePhoneE164 } from './candidateService';
+import { normalizeCNIC, normalizePassport } from './candidateService';
+import { CandidateMatcher } from './candidateMatcher';
 
 // Excel Browser fields (the "bible" for missing data tracking)
 export const EXCEL_BROWSER_FIELDS = {
@@ -654,116 +655,58 @@ export function isGovernmentEmail(email: string): boolean {
 }
 
 /**
- * Find existing candidate by identity matching
- * Priority: CNIC > Passport > Email/Phone > Name + Father Name + DOB
+ * Find an existing candidate for an incoming document/CV.
+ *
+ * Single source of truth: delegates entirely to CandidateMatcher so every
+ * ingestion path (Gmail, WhatsApp, web upload) uses identical logic.
+ *
+ * Auto-link threshold: confidence >= 0.84
+ *   CNIC (0.99), Passport (0.98), Email (0.95), Phone (0.90),
+ *   Name+DOB (0.86), Name+Father (0.85) → auto-link
+ *   Name-only (0.80) → manual review, no auto-link
+ *
+ * Returns the candidate ID to link, or null to create a new record.
  */
 export async function findExistingCandidate(
   extractedData: Record<string, any>
 ): Promise<string | null> {
-  const db = supabaseAdminClient();
+  const AUTO_LINK_CONFIDENCE_THRESHOLD = 0.84;
 
-  // Priority 1: CNIC
-  if (extractedData.cnic) {
-    const normalizedCNIC = normalizeCNIC(extractedData.cnic);
-    if (normalizedCNIC) {
-      const { data } = await db
-        .from('candidates')
-        .select('id')
-        .eq('cnic_normalized', normalizedCNIC)
-        .maybeSingle();
-      if (data) return data.id;
+  const result = await CandidateMatcher.findCandidate({
+    cnic:        extractedData.cnic,
+    passport:    extractedData.passport || extractedData.passport_no,
+    email:       extractedData.email,
+    phone:       extractedData.phone,
+    name:        extractedData.name,
+    fatherName:  extractedData.father_name,
+    dateOfBirth: extractedData.date_of_birth,
+  });
+
+  // Needs manual review → do not auto-link, but log for visibility
+  if (result.needsManualReview) {
+    console.warn(
+      `[ProgressiveCompletion] Candidate match needs manual review ` +
+      `(matchedBy=${result.matchedBy}, confidence=${result.confidence}):`,
+      result.reviewReasons
+    );
+    return null;
+  }
+
+  // Below threshold → do not auto-link (name-only matches land here)
+  if (!result.candidateId || result.confidence < AUTO_LINK_CONFIDENCE_THRESHOLD) {
+    if (result.candidateId) {
+      console.warn(
+        `[ProgressiveCompletion] Match confidence ${result.confidence} below ` +
+        `threshold ${AUTO_LINK_CONFIDENCE_THRESHOLD} — not auto-linking ` +
+        `(matchedBy=${result.matchedBy})`
+      );
     }
+    return null;
   }
 
-  // Priority 2: Passport
-  if (extractedData.passport || extractedData.passport_no) {
-    const passport = extractedData.passport || extractedData.passport_no;
-    const normalizedPassport = normalizePassport(passport);
-    if (normalizedPassport) {
-      const { data } = await db
-        .from('candidates')
-        .select('id')
-        .eq('passport_normalized', normalizedPassport)
-        .maybeSingle();
-      if (data) return data.id;
-    }
-  }
-
-  // Priority 3: Email (but SKIP government emails to prevent false matches)
-  if (extractedData.email && !isGovernmentEmail(extractedData.email)) {
-    const { data } = await db
-      .from('candidates')
-      .select('id')
-      .eq('email', extractedData.email)
-      .maybeSingle();
-    if (data) return data.id;
-  }
-
-  // Priority 4: Phone (normalize to E.164 before lookup to handle format differences)
-  if (extractedData.phone) {
-    const normalizedPhone = normalizePhoneE164(extractedData.phone) || extractedData.phone;
-    const { data } = await db
-      .from('candidates')
-      .select('id')
-      .eq('phone', normalizedPhone)
-      .maybeSingle();
-    if (data) return data.id;
-  }
-
-  // Priority 5: Name + Father Name + DOB (fuzzy match — requires father_name)
-  if (extractedData.name && extractedData.father_name) {
-    const { data: candidates } = await db
-      .from('candidates')
-      .select('id, name, father_name, date_of_birth')
-      .ilike('name', `%${extractedData.name.split(' ')[0]}%`)
-      .limit(10);
-
-    if (candidates && candidates.length > 0) {
-      const firstName = extractedData.name.split(' ')[0].toLowerCase();
-      const match = candidates.find((c: any) => {
-        const cFirstName = c.name?.toLowerCase().split(' ')[0];
-        const nameMatch = cFirstName === firstName ||
-          c.name?.toLowerCase().includes(firstName) ||
-          firstName.includes(cFirstName);
-
-        const fatherMatch = c.father_name?.toLowerCase() === extractedData.father_name.toLowerCase();
-
-        const dobMatch = extractedData.date_of_birth && c.date_of_birth &&
-          c.date_of_birth === parseDate(extractedData.date_of_birth);
-
-        return nameMatch && (fatherMatch || dobMatch);
-      });
-
-      if (match) return match.id;
-    }
-  }
-
-  // Priority 6: Name + DOB (strong dedup even without father_name)
-  // Handles repeated CV submissions where father_name is not extracted.
-  if (extractedData.name && extractedData.date_of_birth) {
-    const dobStr = typeof extractedData.date_of_birth === 'string'
-      ? extractedData.date_of_birth
-      : null;
-    if (dobStr && /^\d{4}-\d{2}-\d{2}$/.test(dobStr)) {
-      const { data: dobCandidates } = await db
-        .from('candidates')
-        .select('id, name')
-        .eq('date_of_birth', dobStr)
-        .limit(20);
-
-      if (dobCandidates && dobCandidates.length > 0) {
-        const searchName = extractedData.name.trim().toLowerCase();
-        const match = dobCandidates.find((c: any) => {
-          const dbName = c.name?.trim().toLowerCase();
-          return dbName === searchName;
-        });
-        if (match) {
-          console.log(`[ProgressiveCompletion] Name+DOB match found: ${match.id} for "${extractedData.name}" dob=${dobStr}`);
-          return match.id;
-        }
-      }
-    }
-  }
-
-  return null;
+  console.log(
+    `[ProgressiveCompletion] Auto-linking to existing candidate ${result.candidateId} ` +
+    `(matchedBy=${result.matchedBy}, confidence=${result.confidence})`
+  );
+  return result.candidateId;
 }

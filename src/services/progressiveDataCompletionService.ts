@@ -264,6 +264,20 @@ export async function enrichCandidateData(
     updates.field_sources = mergedFieldSources;
     updates.updated_at = new Date().toISOString();
 
+    // Truncate VARCHAR-limited fields to prevent 22001 overflow errors.
+    // Production schema (migration 011): position VARCHAR(255), education VARCHAR(255)
+    // Migration 001: name VARCHAR(255), email VARCHAR(255), phone VARCHAR(50)
+    const VARCHAR_LIMITS: Record<string, number> = {
+      name: 255, email: 255, phone: 50, position: 255, education: 255,
+      nationality: 100, country_of_interest: 100, marital_status: 20,
+      gender: 20,
+    };
+    for (const [col, maxLen] of Object.entries(VARCHAR_LIMITS)) {
+      if (typeof updates[col] === 'string' && updates[col].length > maxLen) {
+        updates[col] = updates[col].slice(0, maxLen);
+      }
+    }
+
     const { error: updateError } = await db
       .from('candidates')
       .update(updates)

@@ -795,6 +795,17 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
 
   updateData.updated_at = new Date().toISOString();
 
+  // Truncate VARCHAR-limited fields to prevent 22001 overflow errors
+  const VARCHAR_LIMITS: Record<string, number> = {
+    name: 255, email: 255, phone: 50, position: 255, education: 255,
+    nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
+  };
+  for (const [col, maxLen] of Object.entries(VARCHAR_LIMITS)) {
+    if (typeof updateData[col] === 'string' && updateData[col].length > maxLen) {
+      updateData[col] = updateData[col].slice(0, maxLen);
+    }
+  }
+
   const { data: candidate, error } = await db
     .from('candidates')
     .update(updateData)

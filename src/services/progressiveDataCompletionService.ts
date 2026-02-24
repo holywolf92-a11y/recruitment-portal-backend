@@ -11,7 +11,7 @@
  */
 
 import { supabaseAdminClient } from '../config/database';
-import { normalizeCNIC, normalizePassport } from './candidateService';
+import { normalizeCNIC, normalizePassport, normalizePhoneE164 } from './candidateService';
 
 // Excel Browser fields (the "bible" for missing data tracking)
 export const EXCEL_BROWSER_FIELDS = {
@@ -699,17 +699,18 @@ export async function findExistingCandidate(
     if (data) return data.id;
   }
 
-  // Priority 4: Phone
+  // Priority 4: Phone (normalize to E.164 before lookup to handle format differences)
   if (extractedData.phone) {
+    const normalizedPhone = normalizePhoneE164(extractedData.phone) || extractedData.phone;
     const { data } = await db
       .from('candidates')
       .select('id')
-      .eq('phone', extractedData.phone)
+      .eq('phone', normalizedPhone)
       .maybeSingle();
     if (data) return data.id;
   }
 
-  // Priority 5: Name + Father Name + DOB (fuzzy match)
+  // Priority 5: Name + Father Name + DOB (fuzzy match — requires father_name)
   if (extractedData.name && extractedData.father_name) {
     const { data: candidates } = await db
       .from('candidates')
@@ -734,6 +735,33 @@ export async function findExistingCandidate(
       });
 
       if (match) return match.id;
+    }
+  }
+
+  // Priority 6: Name + DOB (strong dedup even without father_name)
+  // Handles repeated CV submissions where father_name is not extracted.
+  if (extractedData.name && extractedData.date_of_birth) {
+    const dobStr = typeof extractedData.date_of_birth === 'string'
+      ? extractedData.date_of_birth
+      : null;
+    if (dobStr && /^\d{4}-\d{2}-\d{2}$/.test(dobStr)) {
+      const { data: dobCandidates } = await db
+        .from('candidates')
+        .select('id, name')
+        .eq('date_of_birth', dobStr)
+        .limit(20);
+
+      if (dobCandidates && dobCandidates.length > 0) {
+        const searchName = extractedData.name.trim().toLowerCase();
+        const match = dobCandidates.find((c: any) => {
+          const dbName = c.name?.trim().toLowerCase();
+          return dbName === searchName;
+        });
+        if (match) {
+          console.log(`[ProgressiveCompletion] Name+DOB match found: ${match.id} for "${extractedData.name}" dob=${dobStr}`);
+          return match.id;
+        }
+      }
     }
   }
 

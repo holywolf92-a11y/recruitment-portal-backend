@@ -682,11 +682,12 @@ export function startCvParserWorker() {
       try {
         const db = supabaseAdminClient();
 
-        // Fetch attachment metadata and storage location.
-        // Also fetches candidate_id + parsing_status for idempotency guard below.
+        // Fetch attachment metadata + linked inbox_message to get real Gmail email date.
+        // inbox_attachments.received_at is insertion time (useless for date filtering).
+        // The actual email date lives in inbox_messages.payload->>'internalDate' (Unix ms from Gmail API).
         const { data: attachmentMeta, error: attachmentMetaError } = await db
           .from('inbox_attachments')
-          .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status, received_at')
+          .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status, inbox_message_id, inbox_messages(payload, source)')
           .eq('id', attachmentId)
           .maybeSingle();
 
@@ -694,20 +695,28 @@ export function startCvParserWorker() {
           throw new Error(`Failed to fetch attachment metadata: ${attachmentMetaError.message}`);
         }
 
-        // ── Date guard: skip CVs received before 2024-01-01 ──────────────────
-        const CV_CUTOFF = new Date('2024-01-01T00:00:00.000Z');
-        const attachmentReceivedAt = attachmentMeta?.received_at ? new Date(attachmentMeta.received_at) : null;
-        if (attachmentReceivedAt && attachmentReceivedAt < CV_CUTOFF) {
-          console.log(
-            `[CVParser] ⏭  Skipping pre-2024 attachment ${attachmentId} — received ${attachmentMeta.received_at} (before cutoff 2024-01-01)`
-          );
-          await parsingJobs.setStatus(jobId, 'extracted', {
-            finished_at: new Date().toISOString(),
-            skipped_reason: 'pre_2024_cutoff',
-            error_code: null,
-            error_message: null,
-          });
-          return { skipped: true, reason: 'pre_2024_cutoff' };
+        // ── Gmail date guard: skip CVs whose email was sent before 2024-01-01 ───────
+        // Only applies to Gmail-sourced attachments (internalDate is Gmail Unix ms).
+        // WhatsApp / web-upload attachments don’t have internalDate — always process.
+        const CV_CUTOFF_MS = new Date('2024-01-01T00:00:00.000Z').getTime();
+        const inboxMsg = (attachmentMeta as any)?.inbox_messages as { payload?: any; source?: string } | null;
+        const gmailInternalDate = inboxMsg?.payload?.internalDate;
+        if (gmailInternalDate) {
+          // Gmail internalDate is a Unix timestamp in milliseconds (as a string or number)
+          const emailDateMs = parseInt(String(gmailInternalDate), 10);
+          if (!isNaN(emailDateMs) && emailDateMs > 0 && emailDateMs < CV_CUTOFF_MS) {
+            const emailDateStr = new Date(emailDateMs).toISOString().split('T')[0];
+            console.log(
+              `[CVParser] ⏭  Skipping pre-2024 attachment ${attachmentId} — Gmail email date ${emailDateStr} (before cutoff 2024-01-01)`
+            );
+            await parsingJobs.setStatus(jobId, 'extracted', {
+              finished_at: new Date().toISOString(),
+              skipped_reason: 'pre_2024_cutoff',
+              error_code: null,
+              error_message: null,
+            });
+            return { skipped: true, reason: 'pre_2024_cutoff', emailDate: emailDateStr };
+          }
         }
         // ─────────────────────────────────────────────────────────────────────
 

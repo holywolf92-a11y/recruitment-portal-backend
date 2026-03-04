@@ -318,6 +318,7 @@ export async function startGmailBackfill(opts: BackfillOptions = {}): Promise<Ba
         beforeDate: opts.beforeDate,
         maxTotal,
         pageDelayMs, // inter-page quota guard
+        authClient,  // use account-specific auth (Account 2 if set, else Account 1 default)
         onBatch: async (ids: string[], pageNum: number, totalSoFar: number) => {
           state.discovered = totalSoFar;
           state.currentPage = pageNum;

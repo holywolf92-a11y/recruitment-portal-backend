@@ -686,13 +686,30 @@ export function startCvParserWorker() {
         // Also fetches candidate_id + parsing_status for idempotency guard below.
         const { data: attachmentMeta, error: attachmentMetaError } = await db
           .from('inbox_attachments')
-          .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status')
+          .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status, received_at')
           .eq('id', attachmentId)
           .maybeSingle();
 
         if (attachmentMetaError) {
           throw new Error(`Failed to fetch attachment metadata: ${attachmentMetaError.message}`);
         }
+
+        // ── Date guard: skip CVs received before 2024-01-01 ──────────────────
+        const CV_CUTOFF = new Date('2024-01-01T00:00:00.000Z');
+        const attachmentReceivedAt = attachmentMeta?.received_at ? new Date(attachmentMeta.received_at) : null;
+        if (attachmentReceivedAt && attachmentReceivedAt < CV_CUTOFF) {
+          console.log(
+            `[CVParser] ⏭  Skipping pre-2024 attachment ${attachmentId} — received ${attachmentMeta.received_at} (before cutoff 2024-01-01)`
+          );
+          await parsingJobs.setStatus(jobId, 'extracted', {
+            finished_at: new Date().toISOString(),
+            skipped_reason: 'pre_2024_cutoff',
+            error_code: null,
+            error_message: null,
+          });
+          return { skipped: true, reason: 'pre_2024_cutoff' };
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         // ── Idempotency guard ──────────────────────────────────────────────────
         // If this attachment was already successfully linked to a candidate by a

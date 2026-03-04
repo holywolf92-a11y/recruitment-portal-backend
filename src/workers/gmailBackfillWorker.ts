@@ -127,6 +127,19 @@ async function processOne(
 
     const fullMessage = await getMessage(gmailMessageId, authClient);
 
+    // ── Date filter: skip emails received before 2024-01-01 ──────────────────
+    const CV_CUTOFF_MS = new Date('2024-01-01T00:00:00.000Z').getTime();
+    const emailDateMs = fullMessage.internalDate ? parseInt(String(fullMessage.internalDate), 10) : 0;
+    if (emailDateMs > 0 && emailDateMs < CV_CUTOFF_MS) {
+      logger.debug('Backfill: skipping pre-2024 email', {
+        messageId: gmailMessageId,
+        emailDate: new Date(emailDateMs).toISOString(),
+      });
+      state.skipped++;
+      return 'skipped';
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     if (!fullMessage.attachments || fullMessage.attachments.length === 0) {
       // Text-only message — nothing to store for CV purposes
       return 'skipped';

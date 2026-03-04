@@ -114,7 +114,11 @@ async function isAlreadyProcessed(gmailMessageId: string): Promise<boolean> {
  * Process a single Gmail message ID.
  * Returns 'skipped' | 'processed' | 'error'.
  */
-async function processOne(gmailMessageId: string, authClient?: ReturnType<typeof createOAuth2ClientWithToken>): Promise<'skipped' | 'processed' | 'error'> {
+async function processOne(
+  gmailMessageId: string,
+  authClient?: ReturnType<typeof createOAuth2ClientWithToken>,
+  account: 1 | 2 = 1
+): Promise<'skipped' | 'processed' | 'error'> {
   try {
     // Idempotency: skip already-stored messages
     if (await isAlreadyProcessed(gmailMessageId)) {
@@ -152,7 +156,8 @@ async function processOne(gmailMessageId: string, authClient?: ReturnType<typeof
         internalDate: fullMessage.internalDate,
         threadId: fullMessage.threadId,
         messageIdHeader: fullMessage.messageIdHeader,
-        backfill: true,
+        backfill: true,       // CV parser MUST check this and skip immediate email sends
+        inbox_account: account, // which Gmail account received this
       },
       status: 'pending',
       receivedAt: fullMessage.internalDate,
@@ -255,9 +260,19 @@ export interface BackfillOptions {
   maxTotal?: number;
   /**
    * Delay in ms between processing each message to avoid hammering Gmail API.
-   * Default 200ms.
+   * Default 300ms (safe for Gmail's 250 quota-units/user/second limit).
    */
   delayMs?: number;
+  /**
+   * Delay in ms between fetching each page of message IDs.
+   * Default 1000ms — keeps well under daily quota.
+   */
+  pageDelayMs?: number;
+  /**
+   * Gmail account number (1 = falishamanpower4035, 2 = falishaoep4035).
+   * Used to tag inbox_messages so replies are routed back through the correct account.
+   */
+  account?: 1 | 2;
   /**
    * Optional pre-built OAuth2 client (for polling a second Gmail account).
    * If omitted, uses the default GMAIL_REFRESH_TOKEN account.
@@ -277,16 +292,21 @@ export async function startGmailBackfill(opts: BackfillOptions = {}): Promise<Ba
 
   resetState(opts.afterDate, opts.beforeDate);
 
-  const batchSize = opts.batchSize ?? 100;
-  const maxTotal = opts.maxTotal ?? 10_000;
-  const delayMs = opts.delayMs ?? 200;
-  const authClient = opts.authClient;
+  const batchSize   = opts.batchSize   ?? 100;
+  const maxTotal    = opts.maxTotal    ?? 10_000;
+  const delayMs     = opts.delayMs     ?? 300;   // 300ms between messages (safe: ~3 msgs/s)
+  const pageDelayMs = opts.pageDelayMs ?? 1_000; // 1s between pages (enterprise-safe)
+  const account     = opts.account     ?? 1;
+  const authClient  = opts.authClient;
 
   logger.info('Starting Gmail historical backfill', {
+    account,
     afterDate: opts.afterDate?.toISOString() ?? 'all history',
     beforeDate: opts.beforeDate?.toISOString() ?? 'now',
     batchSize,
     maxTotal,
+    delayMs,
+    pageDelayMs,
   });
 
   // Launch async — don't await
@@ -297,11 +317,13 @@ export async function startGmailBackfill(opts: BackfillOptions = {}): Promise<Ba
         afterDate: opts.afterDate,
         beforeDate: opts.beforeDate,
         maxTotal,
-        onBatch: async (ids, pageNum, totalSoFar) => {
+        pageDelayMs, // inter-page quota guard
+        onBatch: async (ids: string[], pageNum: number, totalSoFar: number) => {
           state.discovered = totalSoFar;
           state.currentPage = pageNum;
 
           logger.info(`Backfill: processing page ${pageNum} (${ids.length} messages, ${totalSoFar} discovered)`, {
+            account,
             processed: state.processed,
             skipped: state.skipped,
             errors: state.errors,
@@ -313,7 +335,7 @@ export async function startGmailBackfill(opts: BackfillOptions = {}): Promise<Ba
               return;
             }
 
-            const result = await processOne(id, authClient);
+            const result = await processOne(id, authClient, account);
             if (result === 'processed') state.processed++;
             else if (result === 'skipped') state.skipped++;
             // errors counted inside processOne

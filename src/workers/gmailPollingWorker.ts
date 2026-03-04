@@ -8,6 +8,8 @@ import {
   isAcceptedCvMime,
   GMAIL_CV_QUERY,
   createOAuth2ClientWithToken,
+  createOAuth2ClientForAccount2,
+  isAccount2Configured,
 } from '../services/gmailService';
 import { uploadCandidateDocument } from '../services/candidateDocumentService';
 import { processMissingDataEmailReply } from '../services/missingDataEmailReplyService';
@@ -23,10 +25,10 @@ export async function startGmailPolling(intervalMinutes: number = 5) {
   logger.info('Starting Gmail polling worker', { intervalMinutes });
 
   // Account 1 (falishamanpower4035@gmail.com) — handles candidate REPLIES to missing-data emails
-  await pollGmail();
+  await pollGmail(undefined, 1);
   // Account 2 (falishaoep4035@gmail.com) — handles new incoming CVs
-  if (process.env.GMAIL2_REFRESH_TOKEN) {
-    await pollGmail(createOAuth2ClientWithToken(process.env.GMAIL2_REFRESH_TOKEN));
+  if (isAccount2Configured()) {
+    await pollGmail(createOAuth2ClientForAccount2(), 2);
   } else {
     logger.warn('GMAIL2_REFRESH_TOKEN not set — skipping account 2 poll');
   }
@@ -34,24 +36,27 @@ export async function startGmailPolling(intervalMinutes: number = 5) {
   // Then run every N minutes
   const intervalMs = intervalMinutes * 60 * 1000;
   setInterval(async () => {
-    await pollGmail();
-    if (process.env.GMAIL2_REFRESH_TOKEN) {
-      await pollGmail(createOAuth2ClientWithToken(process.env.GMAIL2_REFRESH_TOKEN));
+    await pollGmail(undefined, 1);
+    if (isAccount2Configured()) {
+      await pollGmail(createOAuth2ClientForAccount2(), 2);
     }
   }, intervalMs);
 }
 
 /** Manually trigger one poll cycle (used by admin API). */
 export async function triggerManualPoll(): Promise<{ successCount: number; errorCount: number }> {
-  const r1 = await pollGmail();
-  if (process.env.GMAIL2_REFRESH_TOKEN) {
-    const r2 = await pollGmail(createOAuth2ClientWithToken(process.env.GMAIL2_REFRESH_TOKEN));
+  const r1 = await pollGmail(undefined, 1);
+  if (isAccount2Configured()) {
+    const r2 = await pollGmail(createOAuth2ClientForAccount2(), 2);
     return { successCount: r1.successCount + r2.successCount, errorCount: r1.errorCount + r2.errorCount };
   }
   return r1;
 }
 
-async function pollGmail(authClient?: ReturnType<typeof createOAuth2ClientWithToken>): Promise<{ successCount: number; errorCount: number }> {
+async function pollGmail(
+  authClient?: ReturnType<typeof createOAuth2ClientWithToken>,
+  accountNum: 1 | 2 = 1
+): Promise<{ successCount: number; errorCount: number }> {
   if (isRunning) {
     logger.debug('Gmail polling already in progress, skipping');
     return { successCount: 0, errorCount: 0 };
@@ -177,6 +182,7 @@ async function pollGmail(authClient?: ReturnType<typeof createOAuth2ClientWithTo
             threadId: fullMessage.threadId,
             messageIdHeader: fullMessage.messageIdHeader,
             bodyText: fullMessage.bodyText,
+            inbox_account: accountNum, // which Gmail account received this
           },
           status: 'pending',
           receivedAt: fullMessage.internalDate,

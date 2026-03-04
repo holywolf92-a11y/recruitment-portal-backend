@@ -31,18 +31,50 @@ function createOAuth2Client() {
 }
 
 /** Create an OAuth2 client using a specific refresh token (for multi-account support). */
-export function createOAuth2ClientWithToken(refreshToken: string) {
-  const clientId = process.env.GMAIL_CLIENT_ID;
-  const clientSecret = process.env.GMAIL_CLIENT_SECRET;
+export function createOAuth2ClientWithToken(
+  refreshToken: string,
+  clientId?: string,
+  clientSecret?: string
+) {
+  const id     = clientId     ?? process.env.GMAIL_CLIENT_ID;
+  const secret = clientSecret ?? process.env.GMAIL_CLIENT_SECRET;
+
+  if (!id || !secret) {
+    throw new AppError('Gmail credentials not configured', ErrorType.VALIDATION, 500);
+  }
+
+  const oauth2Client = new google.auth.OAuth2(id, secret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+
+  return oauth2Client;
+}
+
+/**
+ * Create an OAuth2 client for Account 2 (falishaoep4035@gmail.com).
+ * Uses GMAIL2_CLIENT_ID / GMAIL2_CLIENT_SECRET / GMAIL2_REFRESH_TOKEN.
+ * Falls back to shared GMAIL_CLIENT_ID/SECRET if account-specific ones are not set.
+ */
+export function createOAuth2ClientForAccount2() {
+  const refreshToken = process.env.GMAIL2_REFRESH_TOKEN;
+  if (!refreshToken) {
+    throw new AppError('GMAIL2_REFRESH_TOKEN not configured', ErrorType.VALIDATION, 500);
+  }
+
+  const clientId     = process.env.GMAIL2_CLIENT_ID     ?? process.env.GMAIL_CLIENT_ID;
+  const clientSecret = process.env.GMAIL2_CLIENT_SECRET ?? process.env.GMAIL_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    throw new AppError('Gmail credentials not configured', ErrorType.VALIDATION, 500);
+    throw new AppError('Gmail credentials not configured for account 2', ErrorType.VALIDATION, 500);
   }
 
   const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
   oauth2Client.setCredentials({ refresh_token: refreshToken });
-
   return oauth2Client;
+}
+
+/** Returns true if Account 2 is fully configured. */
+export function isAccount2Configured(): boolean {
+  return !!(process.env.GMAIL2_REFRESH_TOKEN);
 }
 
 /** CV-relevant Gmail query — includes all document and image attachment types */
@@ -86,6 +118,45 @@ export function isAcceptedCvMime(mimeType: string): boolean {
   return false;
 }
 
+/**
+ * Retry wrapper for Gmail API calls with exponential backoff.
+ * Handles 429 (rate limit) and 5xx (transient server errors) gracefully.
+ * Gmail API quota: 250 quota units/user/second. Each list/get = 5 units.
+ */
+async function withGmailRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = 5,
+  baseDelayMs = 1000
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+      const status: number =
+        err?.response?.status ?? err?.code ?? err?.status ?? 0;
+      const isRateLimit =
+        status === 429 ||
+        status === 403 ||
+        String(err?.message || '').toLowerCase().includes('rate') ||
+        String(err?.message || '').toLowerCase().includes('quota');
+      const isTransient = isRateLimit || status === 500 || status === 502 || status === 503;
+
+      if (!isTransient || attempt === maxAttempts) throw err;
+
+      const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 500;
+      logger.warn(`Gmail API rate limit / transient error — retrying in ${Math.round(delay)}ms`, {
+        attempt,
+        status,
+        message: err?.message,
+      });
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 export async function listMessages(
   query: string = GMAIL_CV_QUERY,
   maxResults: number = 10,
@@ -95,22 +166,23 @@ export async function listMessages(
   const auth = authClient ?? createOAuth2Client();
   const gmail = google.gmail({ version: 'v1', auth });
 
-  try {
-    const res = await gmail.users.messages.list({
-      userId: 'me',
-      q: query,
-      maxResults,
-      ...(pageToken ? { pageToken } : {}),
-    });
-
-    return {
-      messages: (res.data.messages ?? []) as Array<{ id: string; threadId: string }>,
-      nextPageToken: res.data.nextPageToken ?? undefined,
-    };
-  } catch (err) {
-    logger.error('Failed to list messages', err);
-    throw new AppError('Failed to list Gmail messages', ErrorType.EXTERNAL_SERVICE, 502);
-  }
+  return withGmailRetry(async () => {
+    try {
+      const res = await gmail.users.messages.list({
+        userId: 'me',
+        q: query,
+        maxResults,
+        ...(pageToken ? { pageToken } : {}),
+      });
+      return {
+        messages: (res.data.messages ?? []) as Array<{ id: string; threadId: string }>,
+        nextPageToken: res.data.nextPageToken ?? undefined,
+      };
+    } catch (err) {
+      logger.error('Failed to list messages', err);
+      throw new AppError('Failed to list Gmail messages', ErrorType.EXTERNAL_SERVICE, 502);
+    }
+  });
 }
 
 /**
@@ -125,6 +197,8 @@ export async function listAllMessages(
     beforeDate?: Date;
     onBatch?: (ids: string[], pageNum: number, totalSoFar: number) => Promise<void>;
     maxTotal?: number;
+    /** Delay in ms between fetching each page. Default 1000ms. */
+    pageDelayMs?: number;
     authClient?: ReturnType<typeof createOAuth2Client>;
   }
 ): Promise<{ total: number; pageCount: number }> {
@@ -138,15 +212,16 @@ export async function listAllMessages(
     q += ` before:${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
   }
 
-  const batchSize = options?.batchSize ?? 100;
-  const maxTotal = options?.maxTotal ?? 10_000;
+  const batchSize   = options?.batchSize   ?? 100;
+  const maxTotal    = options?.maxTotal    ?? 10_000;
+  const pageDelayMs = options?.pageDelayMs ?? 1_000; // 1 s between pages = safe quota buffer
   let pageToken: string | undefined;
   let pageNum = 0;
-  let total = 0;
+  let total   = 0;
 
   while (true) {
-    const page = await listMessages(q, Math.min(batchSize, maxTotal - total), pageToken, options?.authClient);;
-    const ids = page.messages.map((m) => m.id).filter(Boolean);
+    const page = await listMessages(q, Math.min(batchSize, maxTotal - total), pageToken, options?.authClient);
+    const ids  = page.messages.map((m) => m.id).filter(Boolean);
 
     if (ids.length > 0) {
       pageNum++;
@@ -156,6 +231,9 @@ export async function listAllMessages(
 
     if (!page.nextPageToken || total >= maxTotal || ids.length === 0) break;
     pageToken = page.nextPageToken;
+
+    // Respect quota — pause between pages
+    if (pageDelayMs > 0) await new Promise((r) => setTimeout(r, pageDelayMs));
   }
 
   return { total, pageCount: pageNum };
@@ -223,6 +301,7 @@ export async function getMessage(messageId: string, authClient?: ReturnType<type
   const auth = authClient ?? createOAuth2Client();
   const gmail = google.gmail({ version: 'v1', auth });
 
+  return withGmailRetry(async () => {
   try {
     const res = await gmail.users.messages.get({
       userId: 'me',
@@ -261,17 +340,26 @@ export async function getMessage(messageId: string, authClient?: ReturnType<type
     logger.error('Failed to get message', err);
     throw new AppError('Failed to get Gmail message', ErrorType.EXTERNAL_SERVICE, 502);
   }
+  }); // end withGmailRetry
 }
 
-export async function sendThreadReply(args: {
-  toEmail: string;
-  subject: string;
-  bodyText: string;
-  threadId: string;
-  inReplyToMessageId?: string;
-  referencesMessageId?: string;
-}) {
-  const auth = createOAuth2Client();
+/**
+ * Send a reply into an existing Gmail thread.
+ * Pass `authClient` for Account 2 (falishaoep4035@gmail.com) threads;
+ * omit to use Account 1 (falishamanpower4035@gmail.com).
+ */
+export async function sendThreadReply(
+  args: {
+    toEmail: string;
+    subject: string;
+    bodyText: string;
+    threadId: string;
+    inReplyToMessageId?: string;
+    referencesMessageId?: string;
+  },
+  authClient?: ReturnType<typeof createOAuth2Client>
+) {
+  const auth = authClient ?? createOAuth2Client();
   const gmail = google.gmail({ version: 'v1', auth });
 
   try {
@@ -310,23 +398,22 @@ export async function getAttachment(messageId: string, attachmentId: string, aut
   const auth = authClient ?? createOAuth2Client();
   const gmail = google.gmail({ version: 'v1', auth });
 
-  try {
-    const res = await gmail.users.messages.attachments.get({
-      userId: 'me',
-      messageId,
-      id: attachmentId,
-    });
+  return withGmailRetry(async () => {
+    try {
+      const res = await gmail.users.messages.attachments.get({
+        userId: 'me',
+        messageId,
+        id: attachmentId,
+      });
 
-    const data = res.data.data;
-    if (!data) {
-      throw new Error('No attachment data returned');
+      const data = res.data.data;
+      if (!data) throw new Error('No attachment data returned');
+      return Buffer.from(data, 'base64');
+    } catch (err) {
+      logger.error('Failed to get attachment', err);
+      throw new AppError('Failed to download Gmail attachment', ErrorType.EXTERNAL_SERVICE, 502);
     }
-
-    return Buffer.from(data, 'base64');
-  } catch (err) {
-    logger.error('Failed to get attachment', err);
-    throw new AppError('Failed to download Gmail attachment', ErrorType.EXTERNAL_SERVICE, 502);
-  }
+  });
 }
 
 export async function testConnection() {

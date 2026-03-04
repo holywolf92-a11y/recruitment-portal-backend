@@ -13,17 +13,18 @@
 
 import { Router, Request, Response } from 'express';
 import { asyncHandler, createLogger } from '../utils/errorHandling';
-import { testConnection, createOAuth2ClientWithToken } from '../services/gmailService';
+import {
+  testConnection,
+  createOAuth2ClientWithToken,
+  createOAuth2ClientForAccount2,
+  isAccount2Configured,
+} from '../services/gmailService';
 
 async function testConnection2() {
-  const token2 = process.env.GMAIL2_REFRESH_TOKEN;
-  if (!token2) return { ok: false, error: 'GMAIL2_REFRESH_TOKEN not set' };
+  if (!isAccount2Configured()) return { ok: false, error: 'GMAIL2_REFRESH_TOKEN not set' };
   try {
     const { google } = await import('googleapis');
-    const clientId = process.env.GMAIL_CLIENT_ID!;
-    const clientSecret = process.env.GMAIL_CLIENT_SECRET!;
-    const auth = new google.auth.OAuth2(clientId, clientSecret);
-    auth.setCredentials({ refresh_token: token2 });
+    const auth = createOAuth2ClientForAccount2();
     const gmail = google.gmail({ version: 'v1', auth });
     const res = await gmail.users.getProfile({ userId: 'me' });
     return { ok: true, email: res.data.emailAddress };
@@ -67,10 +68,17 @@ router.get(
       account2: { ...conn2, purpose: 'new CV intake (falishaoep4035@gmail.com)' },
       gmail: conn1, // keep for backward compat
       credentials: {
-        clientId: process.env.GMAIL_CLIENT_ID ? 'configured' : 'MISSING',
-        clientSecret: process.env.GMAIL_CLIENT_SECRET ? 'configured' : 'MISSING',
-        refreshToken: process.env.GMAIL_REFRESH_TOKEN ? 'configured' : 'MISSING',
-        refreshToken2: process.env.GMAIL2_REFRESH_TOKEN ? 'configured' : 'MISSING',
+        account1: {
+          clientId:     process.env.GMAIL_CLIENT_ID      ? 'configured' : 'MISSING',
+          clientSecret: process.env.GMAIL_CLIENT_SECRET  ? 'configured' : 'MISSING',
+          refreshToken: process.env.GMAIL_REFRESH_TOKEN  ? 'configured' : 'MISSING',
+        },
+        account2: {
+          clientId:     (process.env.GMAIL2_CLIENT_ID     ?? process.env.GMAIL_CLIENT_ID)     ? 'configured' : 'MISSING',
+          clientSecret: (process.env.GMAIL2_CLIENT_SECRET ?? process.env.GMAIL_CLIENT_SECRET) ? 'configured' : 'MISSING',
+          refreshToken: process.env.GMAIL2_REFRESH_TOKEN ? 'configured' : 'MISSING',
+          usingSharedClientCredentials: !process.env.GMAIL2_CLIENT_ID,
+        },
       },
       polling: {
         enabled: process.env.RUN_GMAIL_POLLING === 'true',
@@ -120,14 +128,13 @@ router.post(
     const afterDate = afterStr ? new Date(afterStr) : undefined;
     const beforeDate = beforeStr ? new Date(beforeStr) : undefined;
 
-    // Support account=2 to backfill the second Gmail account (GMAIL2_REFRESH_TOKEN)
+    // Support account=2 to backfill the second Gmail account
     let authClient: ReturnType<typeof createOAuth2ClientWithToken> | undefined;
     if (account === 2 || account === '2') {
-      const token2 = process.env.GMAIL2_REFRESH_TOKEN;
-      if (!token2) {
+      if (!isAccount2Configured()) {
         return res.status(400).json({ error: 'GMAIL2_REFRESH_TOKEN not configured' });
       }
-      authClient = createOAuth2ClientWithToken(token2);
+      authClient = createOAuth2ClientForAccount2();
       logger.info('Backfill using account 2 (falishaoep4035@gmail.com)');
     }
 
@@ -146,6 +153,7 @@ router.post(
       batchSize: batchSize ? Number(batchSize) : undefined,
       maxTotal: maxTotal ? Number(maxTotal) : undefined,
       delayMs: delayMs !== undefined ? Number(delayMs) : undefined,
+      account: (account === 2 || account === '2') ? 2 : 1,
       authClient,
     }).catch((err: Error) => {
       return res.status(409).json({ error: err.message });

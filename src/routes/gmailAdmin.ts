@@ -9,6 +9,9 @@
  *   POST /api/gmail-admin/backfill/start  — Start historical backfill
  *   GET  /api/gmail-admin/backfill/status — Current backfill progress
  *   POST /api/gmail-admin/backfill/cancel — Cancel running backfill
+ *   POST /api/gmail-admin/queue/pause     — Pause cv-parsing worker (queued jobs stay, won't be picked up)
+ *   POST /api/gmail-admin/queue/resume    — Resume cv-parsing worker
+ *   POST /api/gmail-admin/queue/drain     — Delete ALL waiting jobs from cv-parsing queue
  */
 
 import { Router, Request, Response } from 'express';
@@ -38,6 +41,7 @@ import {
   cancelBackfill,
   getBackfillState,
 } from '../workers/gmailBackfillWorker';
+import { cvParsingQueue } from '../config/queue';
 
 const router = Router();
 const logger = createLogger('GmailAdminRoute');
@@ -202,6 +206,47 @@ router.post(
   asyncHandler(async (_req: Request, res: Response) => {
     cancelBackfill();
     return res.json({ status: 'cancel_requested', state: getBackfillState() });
+  })
+);
+
+// POST /api/gmail-admin/queue/pause
+// Pauses the cv-parsing worker — queued jobs stay in Redis but won't be picked up.
+router.post(
+  '/queue/pause',
+  requireAdminToken,
+  asyncHandler(async (_req: Request, res: Response) => {
+    await cvParsingQueue.pause();
+    const counts = await cvParsingQueue.getJobCounts('waiting', 'active', 'delayed');
+    logger.info('cv-parsing queue paused by admin');
+    return res.json({ status: 'paused', counts });
+  })
+);
+
+// POST /api/gmail-admin/queue/resume
+// Resumes the cv-parsing worker after a pause.
+router.post(
+  '/queue/resume',
+  requireAdminToken,
+  asyncHandler(async (_req: Request, res: Response) => {
+    await cvParsingQueue.resume();
+    const counts = await cvParsingQueue.getJobCounts('waiting', 'active', 'delayed');
+    logger.info('cv-parsing queue resumed by admin');
+    return res.json({ status: 'resumed', counts });
+  })
+);
+
+// POST /api/gmail-admin/queue/drain
+// Removes ALL waiting (queued but not yet active) jobs from the cv-parsing queue.
+// Active jobs that are already being processed are NOT interrupted.
+router.post(
+  '/queue/drain',
+  requireAdminToken,
+  asyncHandler(async (_req: Request, res: Response) => {
+    const before = await cvParsingQueue.getJobCounts('waiting', 'active', 'delayed');
+    await cvParsingQueue.drain();
+    const after = await cvParsingQueue.getJobCounts('waiting', 'active', 'delayed');
+    logger.info('cv-parsing queue drained by admin', { before, after });
+    return res.json({ status: 'drained', before, after });
   })
 );
 

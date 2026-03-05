@@ -252,19 +252,33 @@ router.post(
 );
 
 // POST /api/gmail-admin/queue/retry-all
-// Re-enqueues ALL cv inbox_attachments that have no candidate_id yet (not yet parsed).
-// Runs entirely server-side — no need for 797 individual HTTP calls from the client.
+// Re-enqueues ALL cv inbox_attachments that have no candidate_id yet.
+// Responds immediately with the count, then runs enqueue in the background.
 // The date guard in the worker will still skip pre-2024 attachments automatically.
+let retryAllState: { running: boolean; ok: number; fail: number; total: number; startedAt: string | null; finishedAt: string | null } = {
+  running: false, ok: 0, fail: 0, total: 0, startedAt: null, finishedAt: null,
+};
+
+router.get(
+  '/queue/retry-all/status',
+  requireAdminToken,
+  asyncHandler(async (_req: Request, res: Response) => {
+    return res.json(retryAllState);
+  })
+);
+
 router.post(
   '/queue/retry-all',
   requireAdminToken,
   asyncHandler(async (req: Request, res: Response) => {
+    if (retryAllState.running) {
+      return res.json({ status: 'already_running', state: retryAllState });
+    }
+
     const db = supabaseAdminClient();
     const { enqueueCvParsingJobForAttachment } = await import('../services/inboxAttachmentService');
+    const limit = parseInt(String(req.query.limit ?? '2000'), 10);
 
-    const limit = parseInt(String(req.query.limit ?? '1000'), 10);
-
-    // Fetch all CV attachments that don't have a candidate yet
     const { data: attachments, error } = await db
       .from('inbox_attachments')
       .select('id')
@@ -276,22 +290,26 @@ router.post(
       return res.status(500).json({ error: error.message });
     }
 
-    let ok = 0;
-    let fail = 0;
-    const errors: string[] = [];
+    const total = attachments?.length ?? 0;
+    retryAllState = { running: true, ok: 0, fail: 0, total, startedAt: new Date().toISOString(), finishedAt: null };
 
-    for (const att of attachments ?? []) {
-      try {
-        await enqueueCvParsingJobForAttachment(att.id, { force: false });
-        ok++;
-      } catch (err: any) {
-        fail++;
-        if (errors.length < 10) errors.push(`${att.id}: ${err?.message}`);
+    // Respond immediately — work runs in background
+    res.json({ status: 'started', total, message: 'Poll GET /api/gmail-admin/queue/retry-all/status for progress' });
+
+    // Background loop
+    setImmediate(async () => {
+      for (const att of attachments ?? []) {
+        try {
+          await enqueueCvParsingJobForAttachment(att.id, { force: false });
+          retryAllState.ok++;
+        } catch {
+          retryAllState.fail++;
+        }
       }
-    }
-
-    logger.info('Bulk retry-all completed', { ok, fail, total: attachments?.length });
-    return res.json({ status: 'done', ok, fail, total: attachments?.length, sampleErrors: errors });
+      retryAllState.running = false;
+      retryAllState.finishedAt = new Date().toISOString();
+      logger.info('Bulk retry-all completed', { ok: retryAllState.ok, fail: retryAllState.fail, total });
+    });
   })
 );
 

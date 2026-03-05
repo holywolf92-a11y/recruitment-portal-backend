@@ -42,6 +42,7 @@ import {
   getBackfillState,
 } from '../workers/gmailBackfillWorker';
 import { cvParsingQueue } from '../config/queue';
+import { supabaseAdminClient } from '../config/database';
 
 const router = Router();
 const logger = createLogger('GmailAdminRoute');
@@ -247,6 +248,50 @@ router.post(
     const after = await cvParsingQueue.getJobCounts('waiting', 'active', 'delayed');
     logger.info('cv-parsing queue drained by admin', { before, after });
     return res.json({ status: 'drained', before, after });
+  })
+);
+
+// POST /api/gmail-admin/queue/retry-all
+// Re-enqueues ALL cv inbox_attachments that have no candidate_id yet (not yet parsed).
+// Runs entirely server-side — no need for 797 individual HTTP calls from the client.
+// The date guard in the worker will still skip pre-2024 attachments automatically.
+router.post(
+  '/queue/retry-all',
+  requireAdminToken,
+  asyncHandler(async (req: Request, res: Response) => {
+    const db = supabaseAdminClient();
+    const { enqueueCvParsingJobForAttachment } = await import('../services/inboxAttachmentService');
+
+    const limit = parseInt(String(req.query.limit ?? '1000'), 10);
+
+    // Fetch all CV attachments that don't have a candidate yet
+    const { data: attachments, error } = await db
+      .from('inbox_attachments')
+      .select('id')
+      .eq('attachment_kind', 'cv')
+      .is('candidate_id', null)
+      .limit(limit);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    let ok = 0;
+    let fail = 0;
+    const errors: string[] = [];
+
+    for (const att of attachments ?? []) {
+      try {
+        await enqueueCvParsingJobForAttachment(att.id, { force: false });
+        ok++;
+      } catch (err: any) {
+        fail++;
+        if (errors.length < 10) errors.push(`${att.id}: ${err?.message}`);
+      }
+    }
+
+    logger.info('Bulk retry-all completed', { ok, fail, total: attachments?.length });
+    return res.json({ status: 'done', ok, fail, total: attachments?.length, sampleErrors: errors });
   })
 );
 

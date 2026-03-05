@@ -702,9 +702,27 @@ export function startCvParserWorker() {
         const inboxMsg = (attachmentMeta as any)?.inbox_messages as { payload?: any; source?: string } | null;
         const gmailInternalDate = inboxMsg?.payload?.internalDate;
         if (gmailInternalDate) {
-          // Gmail internalDate is a Unix timestamp in milliseconds (as a string or number)
-          const emailDateMs = parseInt(String(gmailInternalDate), 10);
-          if (!isNaN(emailDateMs) && emailDateMs > 0 && emailDateMs < CV_CUTOFF_MS) {
+          // internalDate can arrive as:
+          // - Unix ms string: "1704067200000"
+          // - Unix sec string: "1704067200"
+          // - ISO string:      "2025-09-28T12:50:50.000Z"
+          let emailDateMs: number | null = null;
+          const raw = String(gmailInternalDate).trim();
+
+          if (/^\d+$/.test(raw)) {
+            const asNum = Number(raw);
+            if (Number.isFinite(asNum) && asNum > 0) {
+              // Heuristic: seconds are <= 10 digits, milliseconds are >= 13 digits
+              emailDateMs = raw.length <= 10 ? asNum * 1000 : asNum;
+            }
+          } else {
+            const parsedIsoMs = Date.parse(raw);
+            if (Number.isFinite(parsedIsoMs)) {
+              emailDateMs = parsedIsoMs;
+            }
+          }
+
+          if (emailDateMs && emailDateMs < CV_CUTOFF_MS) {
             const emailDateStr = new Date(emailDateMs).toISOString().split('T')[0];
             console.log(
               `[CVParser] ⏭  Skipping pre-2024 attachment ${attachmentId} — Gmail email date ${emailDateStr} (before cutoff 2024-01-01)`

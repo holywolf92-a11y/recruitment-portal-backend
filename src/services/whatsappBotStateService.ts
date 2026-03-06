@@ -115,5 +115,11 @@ export async function resetBotState(phoneNumber: string): Promise<void> {
     .eq('phone_number', phoneNumber)
     .maybeSingle();
   const welcomed = (data as any)?.bot_data?.welcomed ?? false;
-  return setBotState(phoneNumber, null, null, welcomed ? { welcomed: true } : {});
+  const lastMainMenuAt = (data as any)?.bot_data?.last_main_menu_at ?? null;
+  const preserved: Record<string, any> = {};
+  if (welcomed) preserved.welcomed = true;
+  if (lastMainMenuAt) preserved.last_main_menu_at = lastMainMenuAt;
+  // Always clear expected interactive ids on reset to avoid stale-button mismatch
+  preserved.expected_interactive_ids = [];
+  return setBotState(phoneNumber, null, null, preserved);
 }

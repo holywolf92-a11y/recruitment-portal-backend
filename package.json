@@ -20,6 +20,7 @@
     "test:all": "npm run test:integration && npm run test:errors",
     "smoke:cv": "node scripts/smoke-cv-parsing.js",
     "smoke:local-queue": "node scripts/smoke-local-queue.js",
+    "smoke:whatsapp-bot": "node scripts/smoke-whatsapp-bot-flow-guards.js",
     "test:split-upload": "node scripts/testSplitUpload.js",
     "check-endpoints": "node scripts/checkEndpoints.js",
     "check-endpoints:list": "node scripts/checkEndpoints.js --list"

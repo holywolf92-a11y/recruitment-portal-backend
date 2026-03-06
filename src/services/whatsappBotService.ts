@@ -21,6 +21,7 @@ import { sendText, sendButtons, sendList, sendImage, WaButton, WaListSection } f
 import { recordOutboundMessage } from './whatsappInboxService';
 
 const logger = createLogger('WhatsAppBot');
+const MAIN_MENU_DEBOUNCE_MS = 45_000;
 
 // ─── Config (set in Railway env) ─────────────────────────────────────────────
 const JOBS_URL        = process.env.WHATSAPP_BOT_JOBS_URL        || 'https://falisha.com/jobs';
@@ -137,7 +138,17 @@ async function showMainMenu(
   to: string,
   convId: string | null,
   state: BotState,
+  options?: { force?: boolean },
 ): Promise<void> {
+  const force = !!options?.force;
+  const lastMainMenuAtRaw = state.data?.last_main_menu_at as string | undefined;
+  if (!force && lastMainMenuAtRaw) {
+    const lastMs = Date.parse(lastMainMenuAtRaw);
+    if (Number.isFinite(lastMs) && Date.now() - lastMs < MAIN_MENU_DEBOUNCE_MS) {
+      return;
+    }
+  }
+
   // Send welcome image only ONCE per user (idempotent regardless of webhook retries).
   // Write the flag to DB BEFORE sending so any retry sees it already set.
   if (WELCOME_IMG_URL && !state.data?.welcomed) {
@@ -164,6 +175,116 @@ async function showMainMenu(
   ];
 
   await lx(phoneNumberId, accessToken, to, convId, body, 'View Options', sections);
+  await patchBotData(to, {
+    last_main_menu_at: new Date().toISOString(),
+    expected_interactive_ids: ['menu_candidate', 'menu_employer', 'menu_partner', 'menu_jobs', 'menu_social'],
+  });
+}
+
+async function setExpectedInteractive(phoneNumber: string, ids: string[]): Promise<void> {
+  await patchBotData(phoneNumber, { expected_interactive_ids: ids });
+}
+
+function getExpectedInteractiveIds(state: BotState): string[] {
+  return Array.isArray(state.data?.expected_interactive_ids)
+    ? state.data.expected_interactive_ids.filter((x: any) => typeof x === 'string')
+    : [];
+}
+
+async function repromptActiveFlow(
+  state: BotState,
+  phoneNumberId: string,
+  accessToken: string,
+): Promise<void> {
+  const { phoneNumber, conversationId: convId } = state;
+
+  if (state.flow === 'candidate_intake') {
+    if (state.step === 'profession') {
+      await lx(phoneNumberId, accessToken, phoneNumber, convId, 'Please select your profession:', 'Select Profession', [{ rows: PROFESSION_ROWS }]);
+      await setExpectedInteractive(phoneNumber, PROFESSION_ROWS.map((r) => r.id));
+      return;
+    }
+    if (state.step === 'experience') {
+      await lx(phoneNumberId, accessToken, phoneNumber, convId, 'Please select your experience level:', 'Select Experience', [{ rows: EXPERIENCE_ROWS }]);
+      await setExpectedInteractive(phoneNumber, EXPERIENCE_ROWS.map((r) => r.id));
+      return;
+    }
+    if (state.step === 'country') {
+      await lx(phoneNumberId, accessToken, phoneNumber, convId, 'Please select your preferred country:', 'Select Country', [{ rows: COUNTRY_ROWS }]);
+      await setExpectedInteractive(phoneNumber, COUNTRY_ROWS.map((r) => r.id));
+      return;
+    }
+    if (state.step === 'upload_waiting') {
+      await ix(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Please send your CV/documents, or tap *Done* if finished.',
+        [
+          { id: 'candidate_done', title: "Done / I'm finished" },
+          { id: 'talk_human', title: 'Talk to Human' },
+          { id: 'main_menu', title: 'Main Menu' },
+        ],
+      );
+      await setExpectedInteractive(phoneNumber, ['candidate_done', 'talk_human', 'main_menu']);
+      return;
+    }
+  }
+
+  if (state.flow === 'employer_intake') {
+    if (state.step === 'country') {
+      await lx(phoneNumberId, accessToken, phoneNumber, convId, 'Please select a country:', 'Select Country', [{ rows: EMPLOYER_COUNTRY_ROWS }]);
+      await setExpectedInteractive(phoneNumber, EMPLOYER_COUNTRY_ROWS.map((r) => r.id));
+      return;
+    }
+    if (state.step === 'benefits') {
+      await ix(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        '🍽 Does the package include accommodation, food, and transport?',
+        [
+          { id: 'ben_yes', title: '✅ Yes, included' },
+          { id: 'ben_no', title: '❌ No' },
+          { id: 'ben_partial', title: 'Partially' },
+        ],
+      );
+      await setExpectedInteractive(phoneNumber, ['ben_yes', 'ben_no', 'ben_partial']);
+      return;
+    }
+  }
+
+  if (state.flow === 'partner_onboarding') {
+    if (state.step === 'phone_confirm') {
+      await ix(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Please confirm your contact number:',
+        [
+          { id: 'pc_use_this', title: 'Use this number ✅' },
+          { id: 'pc_enter_diff', title: 'Enter different number' },
+        ],
+      );
+      await setExpectedInteractive(phoneNumber, ['pc_use_this', 'pc_enter_diff']);
+      return;
+    }
+    if (state.step === 'partner_type') {
+      await lx(phoneNumberId, accessToken, phoneNumber, convId, '🤝 What type of partner are you?', 'Select Type', [{ rows: PARTNER_TYPE_ROWS }]);
+      await setExpectedInteractive(phoneNumber, PARTNER_TYPE_ROWS.map((r) => r.id));
+      return;
+    }
+    if (state.step === 'email') {
+      await ix(phoneNumberId, accessToken, phoneNumber, convId, '📧 (Optional) Please share your *email address*, or tap Skip:', [{ id: 'email_skip', title: '⏭ Skip' }]);
+      await setExpectedInteractive(phoneNumber, ['email_skip']);
+      return;
+    }
+  }
+
+  await showMainMenu(phoneNumberId, accessToken, phoneNumber, convId, state, { force: true });
 }
 
 // ─── Talk to Human ────────────────────────────────────────────────────────────
@@ -262,12 +383,14 @@ async function handleCandidateFlow(
     if (incoming.type === 'text' && text.length > 0) {
       await patchBotData(phoneNumber, { name: incoming.rawText.trim() });
       await setBotState(phoneNumber, 'candidate_intake', 'profession', { ...data, name: incoming.rawText.trim() });
+      await setExpectedInteractive(phoneNumber, []);
       await lx(
         phoneNumberId, accessToken, phoneNumber, convId,
         `Thanks *${incoming.rawText.trim()}*! 👍\n\nWhat is your *Profession / Trade*?`,
         'Select Profession',
         [{ rows: PROFESSION_ROWS }],
       );
+      await setExpectedInteractive(phoneNumber, PROFESSION_ROWS.map((r) => r.id));
       return;
     }
     await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please type your full name to continue.');
@@ -295,6 +418,7 @@ async function handleCandidateFlow(
       'Select Experience',
       [{ rows: EXPERIENCE_ROWS }],
     );
+    await setExpectedInteractive(phoneNumber, EXPERIENCE_ROWS.map((r) => r.id));
     return;
   }
 
@@ -319,6 +443,7 @@ async function handleCandidateFlow(
       'Select Country',
       [{ rows: COUNTRY_ROWS }],
     );
+    await setExpectedInteractive(phoneNumber, COUNTRY_ROWS.map((r) => r.id));
     return;
   }
 
@@ -368,6 +493,7 @@ async function handleCandidateFlow(
         { id: 'talk_human',      title: 'Talk to Human' },
       ],
     );
+    await setExpectedInteractive(phoneNumber, ['candidate_done', 'main_menu', 'talk_human']);
     await setBotState(phoneNumber, 'candidate_intake', 'upload_waiting', newData);
     return;
   }
@@ -385,6 +511,7 @@ async function handleCandidateFlow(
           { id: 'talk_human',     title: 'Talk to Human' },
         ],
       );
+      await setExpectedInteractive(phoneNumber, ['candidate_done', 'talk_human']);
       return;
     }
 
@@ -402,14 +529,46 @@ async function handleCandidateFlow(
         { id: 'talk_human',     title: 'Talk to Human' },
       ],
     );
+    await setExpectedInteractive(phoneNumber, ['candidate_done', 'talk_human']);
     return;
   }
 
-  // ── Step: confirmed ───────────────────────────────────────────────────────
-  if (step === 'confirmed') {
-    // They replied after confirmation — show menu
-    await showMainMenu(phoneNumberId, accessToken, phoneNumber, convId, state);
-    await resetBotState(phoneNumber);
+  // ── Step: post_actions ────────────────────────────────────────────────────
+  if (step === 'post_actions') {
+    if (id === 'candidate_upload_more') {
+      await setBotState(phoneNumber, 'candidate_intake', 'upload_waiting', data);
+      await ix(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Great, please send additional documents now. Tap *Done* when finished.',
+        [
+          { id: 'candidate_done', title: "Done / I'm finished" },
+          { id: 'talk_human', title: 'Talk to Human' },
+          { id: 'main_menu', title: 'Main Menu' },
+        ],
+      );
+      await setExpectedInteractive(phoneNumber, ['candidate_done', 'talk_human', 'main_menu']);
+      return;
+    }
+    if (id === 'menu_jobs') {
+      await handleJobsFlow({ ...state, flow: 'jobs' }, incoming, phoneNumberId, accessToken);
+      return;
+    }
+    await ix(
+      phoneNumberId,
+      accessToken,
+      phoneNumber,
+      convId,
+      'Please choose an option below:',
+      [
+        { id: 'candidate_upload_more', title: 'Upload More Docs' },
+        { id: 'menu_jobs', title: 'See Jobs' },
+        { id: 'talk_human', title: 'Talk to Human' },
+      ],
+    );
+    await setExpectedInteractive(phoneNumber, ['candidate_upload_more', 'menu_jobs', 'talk_human']);
     return;
   }
 }
@@ -420,7 +579,7 @@ async function confirmCandidateProfile(
   accessToken: string,
 ): Promise<void> {
   const { phoneNumber, conversationId: convId, data } = state;
-  await setBotState(phoneNumber, 'candidate_intake', 'confirmed', data);
+  await setBotState(phoneNumber, 'candidate_intake', 'post_actions', data);
   await tx(
     phoneNumberId, accessToken, phoneNumber, convId,
     [
@@ -440,12 +599,12 @@ async function confirmCandidateProfile(
     phoneNumberId, accessToken, phoneNumber, convId,
     'What would you like to do next?',
     [
-      { id: 'menu_candidate', title: 'Upload More Docs' },
+      { id: 'candidate_upload_more', title: 'Upload More Docs' },
       { id: 'menu_jobs',      title: 'See Jobs' },
       { id: 'talk_human',     title: 'Talk to Human' },
     ],
   );
-  await resetBotState(phoneNumber);
+  await setExpectedInteractive(phoneNumber, ['candidate_upload_more', 'menu_jobs', 'talk_human']);
 }
 
 // ─── Flow B: Employer Intake ──────────────────────────────────────────────────
@@ -481,6 +640,7 @@ async function handleEmployerFlow(
         'Select Country',
         [{ rows: EMPLOYER_COUNTRY_ROWS }],
       );
+      await setExpectedInteractive(phoneNumber, EMPLOYER_COUNTRY_ROWS.map((r) => r.id));
       return;
     }
     const ctrId = id.startsWith('ec_') ? id : null;
@@ -532,6 +692,7 @@ async function handleEmployerFlow(
         { id: 'ben_partial',  title: 'Partially' },
       ],
     );
+    await setExpectedInteractive(phoneNumber, ['ben_yes', 'ben_no', 'ben_partial']);
     return;
   }
 
@@ -575,6 +736,7 @@ async function handleEmployerFlow(
         { id: 'talk_human',    title: 'Talk to Human' },
       ],
     );
+    await setExpectedInteractive(phoneNumber, ['menu_employer', 'menu_partner', 'talk_human']);
     await resetBotState(phoneNumber);
     return;
   }
@@ -636,6 +798,7 @@ async function handlePartnerFlow(
         ],
         `Register as Partner`,
       );
+      await setExpectedInteractive(phoneNumber, ['pc_use_this', 'pc_enter_diff']);
       return;
     }
     if (id === 'pc_use_this') {
@@ -682,6 +845,7 @@ async function handlePartnerFlow(
       'Select Type',
       [{ rows: PARTNER_TYPE_ROWS }],
     );
+    await setExpectedInteractive(phoneNumber, PARTNER_TYPE_ROWS.map((r) => r.id));
     return;
   }
 
@@ -696,6 +860,7 @@ async function handlePartnerFlow(
       '📧 (Optional) Please share your *email address*, or tap Skip:',
       [{ id: 'email_skip', title: '⏭ Skip' }],
     );
+    await setExpectedInteractive(phoneNumber, ['email_skip']);
     return;
   }
 
@@ -736,6 +901,7 @@ async function handlePartnerFlow(
         { id: 'talk_human',  title: 'Talk to Human' },
       ],
     );
+    await setExpectedInteractive(phoneNumber, ['main_menu', 'talk_human']);
     await resetBotState(phoneNumber);
     return;
   }
@@ -796,6 +962,8 @@ async function handleJobsFlow(
     ],
   );
 
+  await setExpectedInteractive(phoneNumber, ['menu_candidate', 'main_menu', 'talk_human']);
+
   await resetBotState(phoneNumber);
 }
 
@@ -829,6 +997,7 @@ async function handleSocialFlow(
       { id: 'menu_candidate', title: 'Apply for a Job' },
     ],
   );
+  await setExpectedInteractive(phoneNumber, ['main_menu', 'menu_candidate']);
   await resetBotState(phoneNumber);
 }
 
@@ -884,7 +1053,7 @@ export async function handleBotMessageFrom(params: {
     // ── Global overrides (work from any step) ────────────────────────────────
     if (isMainMenuRequest(text, id)) {
       await resetBotState(from);
-      await showMainMenu(phoneNumberId, accessToken, from, state.conversationId, state);
+      await showMainMenu(phoneNumberId, accessToken, from, state.conversationId, state, { force: true });
       return true;
     }
 
@@ -911,6 +1080,22 @@ export async function handleBotMessageFrom(params: {
     }
 
     // ── Active flow: route to the appropriate handler ─────────────────────────
+    if (incoming.type === 'interactive' && id) {
+      const expectedIds = getExpectedInteractiveIds(state);
+      const isGlobal = id === 'main_menu' || id === 'talk_human' || id.startsWith('menu_');
+      if (!isGlobal && expectedIds.length > 0 && !expectedIds.includes(id)) {
+        await tx(
+          phoneNumberId,
+          accessToken,
+          from,
+          state.conversationId,
+          'That button is from an older menu. Please use the latest options below.',
+        );
+        await repromptActiveFlow(state, phoneNumberId, accessToken);
+        return true;
+      }
+    }
+
     if (id.startsWith('menu_')) {
       // User tapped a menu button while in an existing flow — restart new flow
       await routeMenuSelection(id, state, incoming, phoneNumberId, accessToken, from);

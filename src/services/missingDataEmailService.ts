@@ -531,23 +531,34 @@ export async function sendStandaloneMissingDataEmail(args: {
       }
     }
 
+    // Generate or reuse tracking token (same as maybeSendMissingDataEmail)
+    let trackingToken = safeString(candidate.email_tracking_token).trim();
+    if (!trackingToken) {
+      trackingToken = generateTrackingToken();
+      await db
+        .from('candidates')
+        .update({ email_tracking_token: trackingToken })
+        .eq('id', args.candidateId);
+    }
+
     const rendered = renderMissingDataEmail({
       candidateId: args.candidateId,
       candidateName: candidate.name,
       missingFields,
       missingDocs,
+      trackingToken,
     });
 
-    // Send via Brevo/emailService (SMTP, not Gmail)
+    // Send via Hostinger SMTP
     const { emailService: emailSvc } = await import('./emailService');
-    const brevoResult = await emailSvc.sendEmail({
+    const smtpResult = await emailSvc.sendEmail({
       to: toEmail,
       subject: rendered.subject,
       html: rendered.bodyHtml,
       text: rendered.bodyText,
     });
 
-    if (!brevoResult) {
+    if (!smtpResult) {
       return { sent: false, reason: 'send_failed' };
     }
 

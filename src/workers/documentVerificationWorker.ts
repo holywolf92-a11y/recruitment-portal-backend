@@ -1296,23 +1296,12 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         // Recalculate missing fields
         await updateMissingFields(candidateId);
 
-        // Fetch candidate to check if gmail_thread_id is set
-        const { data: candidateForEmail } = await db
-          .from('candidates')
-          .select('gmail_thread_id')
-          .eq('id', candidateId)
-          .maybeSingle();
-
-        // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
+        // Send missing-data email via Hostinger SMTP
         try {
-          const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await import(
+          const { maybeSendMissingDataEmail } = await import(
             '../services/missingDataEmailService'
           );
-          if (candidateForEmail?.gmail_thread_id) {
-            await maybeSendMissingDataEmail({ candidateId, trigger: 'document_verified' });
-          } else {
-            await sendStandaloneMissingDataEmail({ candidateId, trigger: 'document_verified_manual' });
-          }
+          await maybeSendMissingDataEmail({ candidateId, trigger: 'document_verified' });
         } catch (emailErr) {
           console.warn('[DocumentVerification] Missing-data email send failed (non-fatal):', emailErr);
         }

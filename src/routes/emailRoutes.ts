@@ -282,3 +282,85 @@ emailRouter.get('/employers', async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Failed to fetch employers' });
   }
 });
+/**
+ * Manually trigger missing-documents email to one or all candidates.
+ *
+ * POST /api/email/send-missing-docs
+ * Body (single):  { candidateId: string, force?: boolean }
+ * Body (bulk):    { all: true, force?: boolean }
+ *
+ * Returns: { sent, skipped, errors, details[] }
+ */
+emailRouter.post('/send-missing-docs', async (req: Request, res: Response) => {
+  try {
+    const body = typeof req.body === 'string' ? (() => { try { return JSON.parse(req.body); } catch { return {}; } })() : (req.body || {});
+    const force = !!body.force;
+    const { maybeSendMissingDataEmail } = await import('../services/missingDataEmailService');
+
+    // ── Single candidate ─────────────────────────────────────────────────────
+    if (body.candidateId) {
+      const { candidateId } = body;
+
+      const emailIdRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!emailIdRegex.test(candidateId)) {
+        return res.status(400).json({ error: 'Invalid candidateId format (expected UUID)' });
+      }
+
+      const result = await maybeSendMissingDataEmail({ candidateId, trigger: 'manual_admin', force });
+
+      return res.json({
+        sent: result.sent ? 1 : 0,
+        skipped: result.sent ? 0 : 1,
+        errors: 0,
+        details: [{ candidateId, ...result }],
+      });
+    }
+
+    // ── Bulk: all eligible candidates ────────────────────────────────────────
+    if (body.all === true) {
+      const db = supabaseAdminClient();
+      const { data: candidates, error: dbError } = await db
+        .from('candidates')
+        .select('id')
+        .not('email', 'is', null)
+        .not('missing_data_email_status', 'in', '("stopped","completed")');
+
+      if (dbError) {
+        console.error('[EmailRouter] send-missing-docs bulk query failed:', dbError);
+        return res.status(500).json({ error: 'Failed to fetch candidates', detail: dbError.message });
+      }
+
+      let sent = 0, skipped = 0, errors = 0;
+      const details: { candidateId: string; sent?: boolean; reason?: string; error?: string }[] = [];
+
+      for (const candidate of (candidates || [])) {
+        try {
+          const result = await maybeSendMissingDataEmail({
+            candidateId: candidate.id,
+            trigger: 'manual_admin',
+            force,
+          });
+          if (result.sent) {
+            sent++;
+            details.push({ candidateId: candidate.id, sent: true });
+          } else {
+            skipped++;
+            details.push({ candidateId: candidate.id, sent: false, reason: result.reason });
+          }
+        } catch (err: any) {
+          errors++;
+          details.push({ candidateId: candidate.id, error: err?.message || 'Unknown error' });
+          console.error('[EmailRouter] send-missing-docs error for', candidate.id, err);
+        }
+      }
+
+      console.log(`[EmailRouter] send-missing-docs bulk: sent=${sent} skipped=${skipped} errors=${errors}`);
+      return res.json({ sent, skipped, errors, details });
+    }
+
+    return res.status(400).json({ error: 'Provide either candidateId (string) or all: true in request body' });
+  } catch (error: any) {
+    console.error('[EmailRouter] send-missing-docs error:', error);
+    return res.status(500).json({ error: error?.message || 'Internal server error' });
+  }
+});

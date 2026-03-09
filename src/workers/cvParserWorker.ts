@@ -1009,17 +1009,10 @@ export function startCvParserWorker() {
             console.log(`[CVParser] Backfill CV — suppressing immediate missing-data email for candidate ${existingCandidateId}`);
           } else {
           try {
-            const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await import(
+            const { maybeSendMissingDataEmail } = await import(
               '../services/missingDataEmailService'
             );
-            if (updatedCandidateForEmail?.gmail_thread_id) {
-              await maybeSendMissingDataEmail({ candidateId: existingCandidateId, trigger: 'cv_parsed_existing' });
-            } else {
-              await sendStandaloneMissingDataEmail({
-                candidateId: existingCandidateId,
-                trigger: 'cv_parsed_existing_manual',
-              });
-            }
+            await maybeSendMissingDataEmail({ candidateId: existingCandidateId, trigger: 'cv_parsed_existing' });
             missingDataEmailSent = true;
           } catch (emailErr) {
             console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
@@ -1089,17 +1082,10 @@ export function startCvParserWorker() {
                 console.log(`[CVParser] Backfill CV — suppressing immediate missing-data email for new candidate ${candidate.id}`);
               } else {
               try {
-                const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await import(
+                const { maybeSendMissingDataEmail } = await import(
                   '../services/missingDataEmailService'
                 );
-                if (updatedCandidateNew?.gmail_thread_id) {
-                  await maybeSendMissingDataEmail({ candidateId: candidate.id, trigger: 'cv_parsed_new' });
-                } else {
-                  await sendStandaloneMissingDataEmail({
-                    candidateId: candidate.id,
-                    trigger: 'cv_parsed_new_manual',
-                  });
-                }
+                await maybeSendMissingDataEmail({ candidateId: candidate.id, trigger: 'cv_parsed_new' });
                 missingDataEmailSent = true;
               } catch (emailErr) {
                 console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);

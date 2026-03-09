@@ -6,12 +6,9 @@ import { validateEnv } from './config/env';
 import { supabaseAdminClient } from './config/database';
 import routes from './routes';
 import { errorHandler, createLogger } from './utils/errorHandling';
-import { startGmailPolling } from './workers/gmailPollingWorker';
-import { startCvParserWorker } from './workers/cvParserWorker';
-import { startDocumentLinkWorker } from './workers/documentLinkWorker';
-import { startDocumentVerificationWorker } from './workers/documentVerificationWorker';
-import { startWhatsAppMediaWorker } from './workers/whatsappMediaWorker';
-import { startWhatsAppAttachmentVerificationWorker } from './workers/whatsappAttachmentVerificationWorker';
+// Workers are lazy-imported inside their `if` guards below.
+// Static imports would load bullmq, ioredis, googleapis & puppeteer
+// into memory at startup even when workers are disabled, wasting ~150-200 MB.
 
 dotenv.config();
 validateEnv();
@@ -108,9 +105,11 @@ try {
     // Gmail polling is disabled — outgoing email now uses Hostinger SMTP
     if (process.env.RUN_GMAIL_POLLING === 'true') {
       if (process.env.GMAIL_CLIENT_ID && process.env.GMAIL_REFRESH_TOKEN) {
-        startGmailPolling(5).catch((err) => {
-          logger.error('Failed to start Gmail polling', err);
-        });
+        import('./workers/gmailPollingWorker').then(({ startGmailPolling }) => {
+          startGmailPolling(5).catch((err) => {
+            logger.error('Failed to start Gmail polling', err);
+          });
+        }).catch((err) => logger.error('Failed to load Gmail polling worker', err));
       } else {
         logger.warn('RUN_GMAIL_POLLING=true but Gmail credentials are missing; polling disabled');
       }
@@ -120,62 +119,47 @@ try {
 
     // Start workers if explicitly enabled
     if (process.env.RUN_WORKER === 'true' && process.env.REDIS_URL) {
-      try {
-        // Start CV parser worker (requires Python service)
+      // Workers are lazy-imported here so their heavy dependencies (bullmq,
+      // ioredis, puppeteer) are only loaded into memory when actually needed.
+      import('./workers/cvParserWorker').then(({ startCvParserWorker }) => {
         if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
           startCvParserWorker();
           logger.info('CV Parser worker started');
         } else {
           logger.warn('CV Parser worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
         }
-        
-        // Start Document Link worker (only needs Redis)
-        try {
-          startDocumentLinkWorker();
-          logger.info('Document Link worker started');
-        } catch (linkErr: any) {
-          logger.error('Failed to start Document Link worker:', linkErr);
-        }
+      }).catch((err) => logger.error('Failed to load CV Parser worker', err));
 
-        // Start WhatsApp media worker (requires WhatsApp access token)
-        if (process.env.WHATSAPP_ACCESS_TOKEN) {
-          try {
-            startWhatsAppMediaWorker();
-            logger.info('WhatsApp Media worker started');
-          } catch (waErr: any) {
-            logger.error('Failed to start WhatsApp Media worker:', waErr);
-          }
-        } else {
-          logger.warn('WhatsApp Media worker not started (WHATSAPP_ACCESS_TOKEN missing)');
-        }
+      import('./workers/documentLinkWorker').then(({ startDocumentLinkWorker }) => {
+        startDocumentLinkWorker();
+        logger.info('Document Link worker started');
+      }).catch((err: any) => logger.error('Failed to start Document Link worker:', err));
 
-        // Start WhatsApp attachment verification worker (requires Python service)
-        if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
-          try {
-            startWhatsAppAttachmentVerificationWorker();
-            logger.info('WhatsApp Attachment Verification worker started');
-          } catch (waVerifyErr: any) {
-            logger.error('Failed to start WhatsApp Attachment Verification worker:', waVerifyErr);
-          }
-        } else {
-          logger.warn('WhatsApp Attachment Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
-        }
-        
-        // Start Document Verification worker (requires Python service)
-        if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
-          try {
-            startDocumentVerificationWorker();
-            logger.info('Document Verification worker started');
-          } catch (verifyErr: any) {
-            logger.error('Failed to start Document Verification worker:', verifyErr);
-            logger.warn('Document verification will not run automatically. Use reprocess endpoint to trigger manually.');
-          }
-        } else {
-          logger.warn('Document Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
-          logger.warn('Documents will remain in "Pending" status. Configure Python service or use reprocess endpoint.');
-        }
-      } catch (err) {
-        logger.error('Failed to start workers', err);
+      if (process.env.WHATSAPP_ACCESS_TOKEN) {
+        import('./workers/whatsappMediaWorker').then(({ startWhatsAppMediaWorker }) => {
+          startWhatsAppMediaWorker();
+          logger.info('WhatsApp Media worker started');
+        }).catch((err: any) => logger.error('Failed to start WhatsApp Media worker:', err));
+      } else {
+        logger.warn('WhatsApp Media worker not started (WHATSAPP_ACCESS_TOKEN missing)');
+      }
+
+      if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
+        import('./workers/whatsappAttachmentVerificationWorker').then(({ startWhatsAppAttachmentVerificationWorker }) => {
+          startWhatsAppAttachmentVerificationWorker();
+          logger.info('WhatsApp Attachment Verification worker started');
+        }).catch((err: any) => logger.error('Failed to start WhatsApp Attachment Verification worker:', err));
+
+        import('./workers/documentVerificationWorker').then(({ startDocumentVerificationWorker }) => {
+          startDocumentVerificationWorker();
+          logger.info('Document Verification worker started');
+        }).catch((err: any) => {
+          logger.error('Failed to start Document Verification worker:', err);
+          logger.warn('Document verification will not run automatically. Use reprocess endpoint to trigger manually.');
+        });
+      } else {
+        logger.warn('Document Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
+        logger.warn('Documents will remain in "Pending" status. Configure Python service or use reprocess endpoint.');
       }
     } else {
       logger.info('Workers not started (set RUN_WORKER=true and configure REDIS_URL)');

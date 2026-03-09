@@ -27,6 +27,9 @@ class EmailService {
           user: HOSTINGER_SMTP_USER,
           pass: HOSTINGER_SMTP_PASSWORD,
         },
+        connectionTimeout: 15000,  // 15s to establish TCP connection
+        greetingTimeout: 10000,    // 10s for SMTP greeting
+        socketTimeout: 30000,      // 30s of inactivity before abort
       });
 
       console.log('[EmailService] Hostinger SMTP transporter initialized');

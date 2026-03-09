@@ -32,10 +32,10 @@ function resolveFrontendUrl(): string {
 }
 
 /**
- * Test Brevo configuration
- * POST /api/email/test-brevo
+ * Test Hostinger SMTP configuration
+ * POST /api/email/test-email
  */
-emailRouter.post('/test-brevo', async (req: Request, res: Response) => {
+emailRouter.post('/test-email', async (req: Request, res: Response) => {
   try {
     const parsedBody = (() => {
       if (typeof req.body === 'string') {
@@ -49,8 +49,8 @@ emailRouter.post('/test-brevo', async (req: Request, res: Response) => {
     })();
 
     const to = parsedBody.to || (req.query.to as string | undefined);
-    const subject = parsedBody.subject || 'Brevo test email';
-    const message = parsedBody.message || 'This is a test email from the recruitment portal.';
+    const subject = parsedBody.subject || 'Hostinger SMTP test email';
+    const message = parsedBody.message || 'This is a test email from Falisha Jobs (support@falishajobs.com).';
 
     if (!to) {
       return res.status(400).json({ error: 'Please provide a recipient email via body.to or query ?to=' });
@@ -70,13 +70,13 @@ emailRouter.post('/test-brevo', async (req: Request, res: Response) => {
 
     return res.json({
       success: true,
-      mode: process.env.BREVO_API_KEY ? 'api' : 'smtp',
-      message: 'Test email sent successfully',
+      mode: 'hostinger-smtp',
+      message: 'Test email sent successfully via Hostinger SMTP',
     });
   } catch (error: any) {
     return res.status(500).json({
       error: error?.message || 'Failed to send test email',
-      mode: process.env.BREVO_API_KEY ? 'api' : 'smtp',
+      mode: 'hostinger-smtp',
     });
   }
 });

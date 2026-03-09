@@ -97,9 +97,15 @@ try {
 
   app.listen(PORT, '0.0.0.0', () => {
     logger.info(`Server listening on port ${PORT}`);
+
+    // Log email provider status
+    if (process.env.HOSTINGER_SMTP_USER && process.env.HOSTINGER_SMTP_PASSWORD) {
+      logger.info(`Email provider: Hostinger SMTP (${process.env.HOSTINGER_SMTP_USER})`);
+    } else {
+      logger.warn('Email provider: Hostinger SMTP credentials not set (HOSTINGER_SMTP_USER / HOSTINGER_SMTP_PASSWORD)');
+    }
     
-    // Start Gmail polling worker only when explicitly enabled.
-    // This prevents noisy log spam (e.g. invalid_client) when creds are present but not valid.
+    // Gmail polling is disabled — outgoing email now uses Hostinger SMTP
     if (process.env.RUN_GMAIL_POLLING === 'true') {
       if (process.env.GMAIL_CLIENT_ID && process.env.GMAIL_REFRESH_TOKEN) {
         startGmailPolling(5).catch((err) => {
@@ -109,7 +115,7 @@ try {
         logger.warn('RUN_GMAIL_POLLING=true but Gmail credentials are missing; polling disabled');
       }
     } else {
-      logger.info('Gmail polling worker disabled (set RUN_GMAIL_POLLING=true to enable)');
+      logger.info('Gmail polling worker disabled');
     }
 
     // Start workers if explicitly enabled

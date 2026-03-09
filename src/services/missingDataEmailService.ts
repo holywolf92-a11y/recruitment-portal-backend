@@ -1,46 +1,6 @@
 import crypto from 'crypto';
 import { supabaseAdminClient } from '../config/database';
 import { createLogger } from '../utils/errorHandling';
-import { sendThreadReply, createOAuth2ClientForAccount2, isAccount2Configured } from './gmailService';
-
-/**
- * Resolve the Gmail auth client to use for sending a reply to a candidate.
- * Looks up the candidate's linked inbox_message to determine which Gmail account
- * originally received their CV (Account 1 or 2), then returns the correct client.
- * Falls back to Account 1 (default) if the source account cannot be determined.
- */
-async function resolveGmailAuthClientForCandidate(
-  candidateId: string,
-  db: ReturnType<typeof import('../config/database').supabaseAdminClient>
-): Promise<ReturnType<typeof createOAuth2ClientForAccount2> | undefined> {
-  try {
-    // Find the most recent inbox_attachment linked to this candidate
-    const { data: att } = await db
-      .from('inbox_attachments')
-      .select('inbox_message_id')
-      .eq('candidate_id', candidateId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const inboxMessageId = (att as any)?.inbox_message_id;
-    if (!inboxMessageId) return undefined; // Account 1 default
-
-    const { data: msg } = await db
-      .from('inbox_messages')
-      .select('payload')
-      .eq('id', inboxMessageId)
-      .maybeSingle();
-
-    const payload: any = (msg as any)?.payload || {};
-    if (payload.inbox_account === 2 && isAccount2Configured()) {
-      return createOAuth2ClientForAccount2();
-    }
-    return undefined; // Account 1 default
-  } catch {
-    return undefined; // Safe default — Account 1
-  }
-}
 
 const logger = createLogger('MissingDataEmailService');
 
@@ -85,83 +45,6 @@ function getCandidatePreferredEmail(candidate: any): string | null {
   // and may not belong to the candidate.
   const email = safeString(candidate?.email).trim();
   return email || null;
-}
-
-async function maybeBackfillGmailThreadIdentity(candidateId: string): Promise<
-  | {
-      ok: true;
-      threadId: string;
-      subject: string | null;
-      messageIdHeader: string | null;
-      fromEmail: string | null;
-    }
-  | { ok: false }
-> {
-  try {
-    const db = supabaseAdminClient();
-
-    const { data: candidate } = await db
-      .from('candidates')
-      .select('id,email,gmail_thread_id,gmail_from_email')
-      .eq('id', candidateId)
-      .maybeSingle();
-
-    if (!candidate) return { ok: false };
-    if (safeString((candidate as any).gmail_thread_id).trim()) return { ok: false };
-
-    const { data: rows, error } = await db
-      .from('inbox_attachments')
-      .select('inbox_message_id, created_at, inbox_messages (source, payload)')
-      .eq('candidate_id', candidateId)
-      .order('created_at', { ascending: false })
-      .limit(10);
-
-    if (error || !rows || rows.length === 0) return { ok: false };
-
-    for (const row of rows as any[]) {
-      const msg = row?.inbox_messages;
-      if (!msg || msg.source !== 'gmail') continue;
-
-      const payload: any = msg.payload || {};
-      const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : '';
-      if (!threadId) continue;
-
-      const subject = typeof payload.subject === 'string' ? payload.subject : null;
-
-      const messageIdHeader =
-        typeof payload.messageIdHeader === 'string'
-          ? payload.messageIdHeader
-          : typeof payload.messageId === 'string'
-            ? payload.messageId
-            : null;
-
-      const fromRaw = typeof payload.from === 'string' ? payload.from : '';
-      const emailMatch = fromRaw.match(/<([^>]+)>/) || fromRaw.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
-      const fromEmail = (emailMatch?.[1] || emailMatch?.[0] || '').trim() || null;
-
-      const candidateEmail = safeString((candidate as any).email).trim();
-
-      const update: any = {
-        gmail_thread_id: threadId,
-        gmail_last_subject: subject,
-        gmail_last_message_id: messageIdHeader,
-      };
-
-      // Only set gmail_from_email if candidate has no real email.
-      // This avoids accidentally preferring a forwarding sender over the candidate's actual email.
-      if (!candidateEmail && fromEmail) {
-        update.gmail_from_email = fromEmail;
-      }
-
-      await db.from('candidates').update(update).eq('id', candidateId);
-
-      return { ok: true, threadId, subject, messageIdHeader, fromEmail };
-    }
-
-    return { ok: false };
-  } catch {
-    return { ok: false };
-  }
 }
 
 async function computeMissingDocsForCandidate(args: {
@@ -363,22 +246,10 @@ export async function maybeSendMissingDataEmail(args: {
     }
 
     const toEmail = getCandidatePreferredEmail(candidate);
-    let threadId = safeString(candidate.gmail_thread_id).trim();
-    const inReplyTo = safeString(candidate.gmail_last_message_id).trim();
-    const lastSubject = safeString(candidate.gmail_last_subject).trim();
 
     if (!toEmail) {
       return { sent: false, reason: 'missing_email' } as const;
     }
-
-    if (!threadId) {
-      const backfill = await maybeBackfillGmailThreadIdentity(args.candidateId);
-      if (backfill.ok) {
-        threadId = backfill.threadId;
-      }
-    }
-
-    if (!threadId) return { sent: false, reason: 'missing_thread' } as const;
 
     const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await import('./progressiveDataCompletionService');
     const missingFieldsRaw: string[] = Array.from(new Set(calculateMissingFields(candidate)));
@@ -439,7 +310,7 @@ export async function maybeSendMissingDataEmail(args: {
       }
     }
 
-    // Generate or reuse tracking token for reliable email threading
+    // Generate or reuse tracking token for subject-line threading
     let trackingToken = safeString(candidate.email_tracking_token).trim();
     if (!trackingToken) {
       trackingToken = generateTrackingToken();
@@ -457,19 +328,18 @@ export async function maybeSendMissingDataEmail(args: {
       trackingToken,
     });
 
-    const subject = lastSubject ? `Re: ${lastSubject.replace(/^re:\s*/i, '')}` : rendered.subject;
+    // Send via Hostinger SMTP
+    const { emailService: emailSvc } = await import('./emailService');
+    const sent = await emailSvc.sendEmail({
+      to: toEmail,
+      subject: rendered.subject,
+      html: rendered.bodyHtml,
+      text: rendered.bodyText,
+    });
 
-    // Route reply through the correct Gmail account (Account 2 if CV came via falishaoep4035@gmail.com)
-    const replyAuthClient = await resolveGmailAuthClientForCandidate(args.candidateId, db);
-
-    await sendThreadReply({
-      toEmail,
-      subject,
-      bodyText: rendered.bodyText,
-      threadId,
-      inReplyToMessageId: inReplyTo || undefined,
-      referencesMessageId: inReplyTo || undefined,
-    }, replyAuthClient);
+    if (!sent) {
+      return { sent: false, reason: 'send_failed' } as const;
+    }
 
     const newAttempts = attempts + 1;
     const newNextSendAt = addHours(now, 24);
@@ -488,9 +358,9 @@ export async function maybeSendMissingDataEmail(args: {
     try {
       await db.from('candidate_missing_data_email_log').insert({
         candidate_id: args.candidateId,
-        gmail_thread_id: threadId,
+        gmail_thread_id: null,
         to_email: toEmail,
-        subject,
+        subject: rendered.subject,
         body_text: rendered.bodyText,
         missing_fields: importantMissingFieldsRaw,
         missing_docs: missingDocs,

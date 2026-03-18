@@ -339,11 +339,11 @@ const LIST_FIELDS = [
   'id', 'candidate_code', 'name', 'status', 'source', 'ai_score',
   'position', 'nationality', 'country_of_interest', 'experience_years',
   'phone', 'email', 'date_of_birth', 'gender', 'marital_status', 'address',
-  'salary_expectation', 'date_available', 'interview_date',
-  'passport_normalized', 'cnic_normalized', 'passport_expiry', 'medical_expiry',
-  'license', 'gcc_years', 'languages',
+  'passport_normalized', 'cnic_normalized', 'passport_expiry',
+  'languages',
   'passport_received', 'cnic_received', 'degree_received', 'medical_received',
   'visa_received', 'cv_received', 'photo_received', 'certificate_received',
+  'driving_license_received',
   'profile_photo_url', 'profile_photo_bucket', 'profile_photo_path',
   'needs_review', 'auto_extracted', 'created_at', 'updated_at',
 ].join(',');
@@ -841,9 +841,8 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
     'updated_at', 'field_sources', 'extraction_confidence', 'extraction_source',
     'extracted_at', 'passport_received', 'cnic_received', 'degree_received',
     'medical_received', 'visa_received', 'cv_received', 'photo_received',
-    'certificate_received', 'profile_photo_url', 'gcc_years', 'salary_expectation',
-    'available_from', 'religion', 'driving_license', 'medical_expiry',
-    'interview_date',
+    'certificate_received', 'profile_photo_url',
+    'driving_license_received',
   ]);
   for (const col of Object.keys(updateData)) {
     if (!KNOWN_CANDIDATE_COLUMNS_UPDATE.has(col)) {

@@ -37,8 +37,8 @@ RUN npm ci --production=false
 # Copy source code (bust cache: 2026-01-27)
 COPY . .
 
-# Build TypeScript using node directly
-RUN node node_modules/typescript/bin/tsc -p tsconfig.json
+# Build TypeScript using node directly (4 GB heap for build step)
+RUN node --max-old-space-size=4096 node_modules/typescript/bin/tsc -p tsconfig.json
 
 # Start the app
 CMD ["npm", "start"]

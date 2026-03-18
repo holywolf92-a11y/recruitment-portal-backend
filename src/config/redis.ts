@@ -41,6 +41,8 @@ export const redis = new IORedis({
   connectTimeout: 15_000,
   family: 4,           // force IPv4 — Railway containers may otherwise try IPv6
   lazyConnect: true,   // don't connect at module load; connect on first command
+  // Give up after 5 retries (~30 s) to avoid hammering a blocked port
+  retryStrategy: (times) => (times >= 5 ? null : Math.min(times * 2_000, 10_000)),
   ...(isTLS ? { tls: { rejectUnauthorized: false } } : {}),
 });
 

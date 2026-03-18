@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import { redis } from '../config/redis';
 import {
   cvParsingQueue,
   documentVerificationQueue,
@@ -9,21 +8,48 @@ import {
 
 const router = Router();
 
+/** Ping Redis via Upstash REST (HTTPS/443) — avoids TCP port 6380 which may be blocked. */
+async function pingRedis(): Promise<{ ok: boolean; method: string }> {
+  const restUrl = process.env.UPSTASH_REDIS_REST_URL;
+  const restToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (restUrl && restToken) {
+    try {
+      const res = await fetch(`${restUrl}/ping`, {
+        headers: { Authorization: `Bearer ${restToken}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+      const data = await res.json() as { result?: string };
+      return { ok: data.result === 'PONG', method: 'rest' };
+    } catch {
+      return { ok: false, method: 'rest' };
+    }
+  }
+  return { ok: false, method: 'none' };
+}
+
+const EMPTY_COUNTS = { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
+async function safeJobCounts(q: typeof cvParsingQueue) {
+  try {
+    return await q.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed');
+  } catch {
+    return EMPTY_COUNTS;
+  }
+}
+
 router.get('/queue', async (_req, res) => {
   try {
-    const redisPing = await redis.ping();
+    const redisPing = await pingRedis();
     const [cvCounts, docCounts, waMediaCounts, waVerifyCounts] = await Promise.all([
-      cvParsingQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
-      documentVerificationQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
-      whatsappMediaQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
-      whatsappAttachmentVerificationQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
+      safeJobCounts(cvParsingQueue),
+      safeJobCounts(documentVerificationQueue),
+      safeJobCounts(whatsappMediaQueue),
+      safeJobCounts(whatsappAttachmentVerificationQueue),
     ]);
-    const isOk = redisPing === 'PONG';
+    const isOk = redisPing.ok;
 
     return res.status(isOk ? 200 : 503).json({
       ok: isOk,
-      redis: { ping: redisPing },
-      // Backward compatible (older checks only look at this)
+      redis: { ping: isOk ? 'PONG' : 'FAILED', method: redisPing.method },
       queue: { name: cvParsingQueue.name, counts: cvCounts },
       queues: [
         { name: cvParsingQueue.name, counts: cvCounts },

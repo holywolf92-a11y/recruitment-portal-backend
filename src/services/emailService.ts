@@ -10,6 +10,25 @@ interface EmailOptions {
 class EmailService {
   private transporter: nodemailer.Transporter | null = null;
 
+  private static readonly PRIMARY_FROM_EMAIL = 'support@falishajobs.com';
+
+  private getFromEmail(): string {
+    // Enforce a single canonical From address system-wide.
+    // Resend domain verification must be completed for this to appear correctly.
+    const configured = (process.env.EMAIL_FROM || '').trim();
+    const fromEmail = configured || EmailService.PRIMARY_FROM_EMAIL;
+
+    // Hard guarantee: never send from any other address.
+    if (fromEmail.toLowerCase() !== EmailService.PRIMARY_FROM_EMAIL) {
+      throw new Error(
+        `Invalid EMAIL_FROM. This system is locked to ${EmailService.PRIMARY_FROM_EMAIL}. ` +
+          `Got: ${fromEmail}`
+      );
+    }
+
+    return EmailService.PRIMARY_FROM_EMAIL;
+  }
+
   /**
    * Send via Resend HTTP API (HTTPS port 443 — works on Railway).
    * Railway blocks all outbound SMTP ports (25, 465, 587), so SMTP is not
@@ -18,7 +37,7 @@ class EmailService {
    */
   private async sendViaResend(options: EmailOptions): Promise<void> {
     const apiKey = process.env.RESEND_API_KEY!;
-    const fromEmail = process.env.HOSTINGER_SMTP_USER || 'support@falishajobs.com';
+    const fromEmail = this.getFromEmail();
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -27,6 +46,7 @@ class EmailService {
       },
       body: JSON.stringify({
         from: `Falisha Jobs <${fromEmail}>`,
+        reply_to: fromEmail,
         to: [options.to],
         subject: options.subject,
         html: options.html,
@@ -38,8 +58,13 @@ class EmailService {
       const body = await res.text();
       throw new Error(`Resend API error ${res.status}: ${body}`);
     }
-    const data = await res.json() as { id?: string };
-    console.log('[EmailService] Email sent via Resend:', data.id);
+    const data = (await res.json()) as { id?: string };
+    console.log('[EmailService] Email sent via Resend', {
+      id: data.id,
+      to: options.to,
+      subject: options.subject,
+      from: fromEmail,
+    });
   }
 
   private getTransporter(): nodemailer.Transporter {
@@ -77,7 +102,7 @@ class EmailService {
     }
 
     // Local dev fallback: Hostinger SMTP (only works outside Railway)
-    const fromAddress = process.env.HOSTINGER_SMTP_USER || 'support@falishajobs.com';
+    const fromAddress = this.getFromEmail();
     const transporter = this.getTransporter();
 
     try {

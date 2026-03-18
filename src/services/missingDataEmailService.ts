@@ -339,7 +339,7 @@ export async function maybeSendMissingDataEmail(args: {
       trackingToken,
     });
 
-    // Send via Hostinger SMTP
+    // Send via EmailService (Resend in production, SMTP in local dev)
     const { emailService: emailSvc } = await import('./emailService');
     const sent = await emailSvc.sendEmail({
       to: toEmail,

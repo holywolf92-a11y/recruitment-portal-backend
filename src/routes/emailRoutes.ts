@@ -70,13 +70,15 @@ emailRouter.post('/test-email', async (req: Request, res: Response) => {
 
     return res.json({
       success: true,
-      mode: 'hostinger-smtp',
-      message: 'Test email sent successfully via Hostinger SMTP',
+      mode: process.env.RESEND_API_KEY ? 'resend' : 'hostinger-smtp',
+      message: process.env.RESEND_API_KEY
+        ? 'Test email sent successfully via Resend'
+        : 'Test email sent successfully via Hostinger SMTP',
     });
   } catch (error: any) {
     return res.status(500).json({
       error: error?.message || 'Failed to send test email',
-      mode: 'hostinger-smtp',
+      mode: process.env.RESEND_API_KEY ? 'resend' : 'hostinger-smtp',
     });
   }
 });

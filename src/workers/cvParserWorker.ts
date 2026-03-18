@@ -1008,15 +1008,18 @@ export function startCvParserWorker() {
           if (isBackfill) {
             console.log(`[CVParser] Backfill CV — suppressing immediate missing-data email for candidate ${existingCandidateId}`);
           } else {
-          try {
-            const { maybeSendMissingDataEmail } = await import(
-              '../services/missingDataEmailService'
-            );
-            await maybeSendMissingDataEmail({ candidateId: existingCandidateId, trigger: 'cv_parsed_existing' });
-            missingDataEmailSent = true;
-          } catch (emailErr) {
-            console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
-          }
+            try {
+              const { maybeSendMissingDataEmail } = await import(
+                '../services/missingDataEmailService'
+              );
+              const res = await maybeSendMissingDataEmail({
+                candidateId: existingCandidateId,
+                trigger: 'cv_parsed_existing',
+              });
+              missingDataEmailSent = !!(res as any)?.sent;
+            } catch (emailErr) {
+              console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
+            }
           } // end !isBackfill
 
           // Notify candidate on CV-extracted phone (WhatsApp-origin CVs only)
@@ -1081,15 +1084,18 @@ export function startCvParserWorker() {
               if (isBackfillNew) {
                 console.log(`[CVParser] Backfill CV — suppressing immediate missing-data email for new candidate ${candidate.id}`);
               } else {
-              try {
-                const { maybeSendMissingDataEmail } = await import(
-                  '../services/missingDataEmailService'
-                );
-                await maybeSendMissingDataEmail({ candidateId: candidate.id, trigger: 'cv_parsed_new' });
-                missingDataEmailSent = true;
-              } catch (emailErr) {
-                console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
-              }
+                try {
+                  const { maybeSendMissingDataEmail } = await import(
+                    '../services/missingDataEmailService'
+                  );
+                  const res = await maybeSendMissingDataEmail({
+                    candidateId: candidate.id,
+                    trigger: 'cv_parsed_new',
+                  });
+                  missingDataEmailSent = !!(res as any)?.sent;
+                } catch (emailErr) {
+                  console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
+                }
               } // end !isBackfillNew
 
               // Notify candidate on CV-extracted phone (WhatsApp-origin CVs only)

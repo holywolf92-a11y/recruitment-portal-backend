@@ -131,42 +131,42 @@ export async function listCandidatesController(req: Request, res: Response) {
 
     const result = await listCandidates(filters, userId);
 
-    // Generate signed URLs for all candidates in the list
-    // This is necessary because the stored profile_photo_url might be expired
+    // Only re-sign photo URLs that are NOT already signed (e.g. old public URLs).
+    // Signed URLs use a 1-year TTL and are stored in profile_photo_url — no need to
+    // re-call Supabase on every list request. Previously this made N HTTP calls to
+    // Supabase per list request (one per candidate), generating significant Railway egress.
+    const signMarker = '/storage/v1/object/sign/';
+    const publicMarker = '/storage/v1/object/public/';
+
     const candidatesWithSignedUrls = await Promise.all(result.candidates.map(async (candidate: any) => {
       try {
+        const storedUrl: string = (candidate as any).profile_photo_url || '';
+
+        // Already a signed URL — return as-is, no extra Supabase call needed
+        if (storedUrl.includes(signMarker)) {
+          return { ...candidate, profile_photo_signed_url: storedUrl };
+        }
+
+        // Public URL or explicit storage path — needs one-time signing
         const db = supabaseAdminClient();
         let bucket: string = (candidate as any).profile_photo_bucket || 'documents';
         let storagePath: string | null = (candidate as any).profile_photo_path || null;
 
-        // Try to derive path from URL if explicit path is missing
-        if (!storagePath && (candidate as any).profile_photo_url) {
-          const url: string = (candidate as any).profile_photo_url;
-          const publicMarker = '/storage/v1/object/public/';
-          const signMarker = '/storage/v1/object/sign/';
-
-          if (url.includes(publicMarker)) {
-            const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
-            const parts = rest.split('/');
-            bucket = parts.shift() || bucket;
-            storagePath = parts.join('/');
-          } else if (url.includes(signMarker)) {
-            const after = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
-            const parts = after.split('/');
-            bucket = parts.shift() || bucket;
-            storagePath = parts.join('/');
-          }
+        if (!storagePath && storedUrl.includes(publicMarker)) {
+          const rest = storedUrl.substring(storedUrl.indexOf(publicMarker) + publicMarker.length);
+          const parts = rest.split('/');
+          bucket = parts.shift() || bucket;
+          storagePath = parts.join('/');
         }
 
         if (storagePath) {
-          const ttlSeconds = 31536000; // 1 year (effectively permanent)
+          const ttlSeconds = 31536000; // 1 year
           const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
           if (!urlError && signedData && (signedData as any).signedUrl) {
-            // Assign to profile_photo_url directly so frontend uses the fresh one
             return {
               ...candidate,
               profile_photo_url: (signedData as any).signedUrl,
-              profile_photo_signed_url: (signedData as any).signedUrl
+              profile_photo_signed_url: (signedData as any).signedUrl,
             };
           }
         }

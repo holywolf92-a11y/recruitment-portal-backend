@@ -332,9 +332,25 @@ export interface CandidateFilters {
   offset?: number;
 }
 
+// Fields returned in list responses — excludes large text columns (skills, previous_employment,
+// professional_summary, education, certifications) that are only needed in the detail view.
+// Narrowing the select cuts list response payload by ~60-80% and reduces Railway egress.
+const LIST_FIELDS = [
+  'id', 'candidate_code', 'name', 'status', 'source', 'ai_score',
+  'position', 'nationality', 'country_of_interest', 'experience_years',
+  'phone', 'email', 'date_of_birth', 'gender', 'marital_status', 'address',
+  'religion', 'salary_expectation', 'date_available', 'interview_date',
+  'passport_normalized', 'cnic_normalized', 'passport_expiry', 'medical_expiry',
+  'license', 'gcc_years', 'languages',
+  'passport_received', 'cnic_received', 'degree_received', 'medical_received',
+  'visa_received', 'cv_received', 'photo_received', 'certificate_received',
+  'profile_photo_url', 'profile_photo_bucket', 'profile_photo_path',
+  'needs_review', 'auto_extracted', 'created_at', 'updated_at',
+].join(',');
+
 export async function listCandidates(filters: CandidateFilters = {}, userId: string) {
   const db = supabaseAdminClient();
-  let query = db.from('candidates').select('*', { count: 'exact' });
+  let query = db.from('candidates').select(LIST_FIELDS, { count: 'exact' });
 
   // By default, exclude deleted candidates (unless explicitly filtering for them)
   if (!filters.status || filters.status !== 'Deleted') {

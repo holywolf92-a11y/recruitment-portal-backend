@@ -30,7 +30,11 @@ async function pingRedis(): Promise<{ ok: boolean; method: string }> {
 const EMPTY_COUNTS = { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
 async function safeJobCounts(q: typeof cvParsingQueue) {
   try {
-    return await q.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed');
+    // Race against a 3 s timeout so the health endpoint doesn't hang on Redis TCP issues
+    return await Promise.race([
+      q.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
+      new Promise<typeof EMPTY_COUNTS>((resolve) => setTimeout(() => resolve(EMPTY_COUNTS), 3_000)),
+    ]);
   } catch {
     return EMPTY_COUNTS;
   }

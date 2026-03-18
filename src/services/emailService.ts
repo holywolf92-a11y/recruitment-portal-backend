@@ -10,6 +10,38 @@ interface EmailOptions {
 class EmailService {
   private transporter: nodemailer.Transporter | null = null;
 
+  /**
+   * Send via Resend HTTP API (HTTPS port 443 — works on Railway).
+   * Railway blocks all outbound SMTP ports (25, 465, 587), so SMTP is not
+   * usable in production. Resend's REST API is the workaround.
+   * Requires RESEND_API_KEY env var and domain falishajobs.com verified on Resend.
+   */
+  private async sendViaResend(options: EmailOptions): Promise<void> {
+    const apiKey = process.env.RESEND_API_KEY!;
+    const fromEmail = process.env.HOSTINGER_SMTP_USER || 'support@falishajobs.com';
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: `Falisha Jobs <${fromEmail}>`,
+        to: [options.to],
+        subject: options.subject,
+        html: options.html,
+        ...(options.text ? { text: options.text } : {}),
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Resend API error ${res.status}: ${body}`);
+    }
+    const data = await res.json() as { id?: string };
+    console.log('[EmailService] Email sent via Resend:', data.id);
+  }
+
   private getTransporter(): nodemailer.Transporter {
     // Lazy-initialize so env vars are available (dotenv loads after imports)
     if (!this.transporter) {
@@ -32,27 +64,32 @@ class EmailService {
         socketTimeout: 30000,      // 30s of inactivity before abort
       });
 
-      console.log('[EmailService] Hostinger SMTP transporter initialized');
+      console.log('[EmailService] Hostinger SMTP transporter initialized (local dev)');
     }
     return this.transporter;
   }
 
   async sendEmail(options: EmailOptions): Promise<boolean> {
-    const fromAddress = process.env.HOSTINGER_SMTP_USER || 'support@falishajobs.com';
-    const fromName = 'Falisha Jobs';
+    // Production: use Resend HTTP API (Railway blocks SMTP ports 25/465/587)
+    if (process.env.RESEND_API_KEY) {
+      await this.sendViaResend(options);
+      return true;
+    }
 
+    // Local dev fallback: Hostinger SMTP (only works outside Railway)
+    const fromAddress = process.env.HOSTINGER_SMTP_USER || 'support@falishajobs.com';
     const transporter = this.getTransporter();
 
     try {
       const info = await transporter.sendMail({
-        from: `"${fromName}" <${fromAddress}>`,
+        from: `"Falisha Jobs" <${fromAddress}>`,
         to: options.to,
         subject: options.subject,
         text: options.text,
         html: options.html,
       });
 
-      console.log('[EmailService] Email sent successfully:', info.messageId);
+      console.log('[EmailService] Email sent via SMTP:', info.messageId);
       return true;
     } catch (error: any) {
       console.error('[EmailService] Failed to send email:', error);

@@ -339,7 +339,7 @@ const LIST_FIELDS = [
   'id', 'candidate_code', 'name', 'status', 'source', 'ai_score',
   'position', 'nationality', 'country_of_interest', 'experience_years',
   'phone', 'email', 'date_of_birth', 'gender', 'marital_status', 'address',
-  'religion', 'salary_expectation', 'date_available', 'interview_date',
+  'salary_expectation', 'date_available', 'interview_date',
   'passport_normalized', 'cnic_normalized', 'passport_expiry', 'medical_expiry',
   'license', 'gcc_years', 'languages',
   'passport_received', 'cnic_received', 'degree_received', 'medical_received',

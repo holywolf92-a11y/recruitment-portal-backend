@@ -48,11 +48,14 @@ if (redisHostForDiagnostics) {
     });
 }
 
+// Upstash (and other managed Redis services) require explicit TLS when using rediss://
+const isTLS = redisUrl.startsWith('rediss://');
 export const redis = new IORedis(redisUrl, {
   maxRetriesPerRequest: null,
-  enableReadyCheck: true,
+  enableReadyCheck: false,
   connectTimeout: 10_000,
   family: redisFamily,
+  ...(isTLS ? { tls: {} } : {}),
 });
 
 redis.on('connect', () => logger.info('Redis socket connected'));

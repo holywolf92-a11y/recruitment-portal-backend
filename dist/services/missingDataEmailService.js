@@ -43,6 +43,40 @@ const crypto_1 = __importDefault(require("crypto"));
 const database_1 = require("../config/database");
 const errorHandling_1 = require("../utils/errorHandling");
 const gmailService_1 = require("./gmailService");
+/**
+ * Resolve the Gmail auth client to use for sending a reply to a candidate.
+ * Looks up the candidate's linked inbox_message to determine which Gmail account
+ * originally received their CV (Account 1 or 2), then returns the correct client.
+ * Falls back to Account 1 (default) if the source account cannot be determined.
+ */
+async function resolveGmailAuthClientForCandidate(candidateId, db) {
+    try {
+        // Find the most recent inbox_attachment linked to this candidate
+        const { data: att } = await db
+            .from('inbox_attachments')
+            .select('inbox_message_id')
+            .eq('candidate_id', candidateId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        const inboxMessageId = att?.inbox_message_id;
+        if (!inboxMessageId)
+            return undefined; // Account 1 default
+        const { data: msg } = await db
+            .from('inbox_messages')
+            .select('payload')
+            .eq('id', inboxMessageId)
+            .maybeSingle();
+        const payload = msg?.payload || {};
+        if (payload.inbox_account === 2 && (0, gmailService_1.isAccount2Configured)()) {
+            return (0, gmailService_1.createOAuth2ClientForAccount2)();
+        }
+        return undefined; // Account 1 default
+    }
+    catch {
+        return undefined; // Safe default — Account 1
+    }
+}
 const logger = (0, errorHandling_1.createLogger)('MissingDataEmailService');
 function sha256(text) {
     return crypto_1.default.createHash('sha256').update(text).digest('hex');
@@ -366,6 +400,8 @@ async function maybeSendMissingDataEmail(args) {
             trackingToken,
         });
         const subject = lastSubject ? `Re: ${lastSubject.replace(/^re:\s*/i, '')}` : rendered.subject;
+        // Route reply through the correct Gmail account (Account 2 if CV came via falishaoep4035@gmail.com)
+        const replyAuthClient = await resolveGmailAuthClientForCandidate(args.candidateId, db);
         await (0, gmailService_1.sendThreadReply)({
             toEmail,
             subject,
@@ -373,7 +409,7 @@ async function maybeSendMissingDataEmail(args) {
             threadId,
             inReplyToMessageId: inReplyTo || undefined,
             referencesMessageId: inReplyTo || undefined,
-        });
+        }, replyAuthClient);
         const newAttempts = attempts + 1;
         const newNextSendAt = addHours(now, 24);
         await db

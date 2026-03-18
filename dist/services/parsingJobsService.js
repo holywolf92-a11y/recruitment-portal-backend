@@ -23,8 +23,9 @@ class ParsingJobsService {
         if (!attempt1.error)
             return attempt1.data;
         const msg1 = String(attempt1.error?.message || attempt1.error);
-        const shouldFallback = /column\s+"?inbox_attachment_id"?\s+does\s+not\s+exist/i.test(msg1) ||
-            /null value in column\s+"?attachment_id"?\s+violates\s+not-null constraint/i.test(msg1);
+        const shouldFallback = /column.*inbox_attachment_id.*does\s+not\s+exist/i.test(msg1) ||
+            /does\s+not\s+exist.*inbox_attachment_id/i.test(msg1) ||
+            /null value in column.*attachment_id.*violates\s+not-null\s+constraint/i.test(msg1);
         if (!shouldFallback) {
             logger.error('Failed to create parsing job', attempt1.error);
             throw new errorHandling_1.AppError('Failed to create parsing job', errorHandling_1.ErrorType.DATABASE, 500);
@@ -48,39 +49,44 @@ class ParsingJobsService {
     }
     async setStatus(jobId, status, extra) {
         const db = (0, database_1.supabaseAdminClient)();
-        // Only update status + one output column.
-        // We intentionally keep this minimal to avoid breaking on schema differences.
-        const payload1 = { status };
-        if (extra && Object.prototype.hasOwnProperty.call(extra, 'result_json')) {
-            payload1.output = extra.result_json;
-        }
-        const attempt1 = await db
-            .from('parsing_jobs')
-            .update(payload1)
-            .eq('id', jobId)
-            .select()
-            .single();
-        if (!attempt1.error)
-            return attempt1.data;
-        const msg1 = String(attempt1.error?.message || attempt1.error);
-        const shouldFallback = /column\s+"?output"?\s+does\s+not\s+exist/i.test(msg1);
-        if (!shouldFallback) {
+        // Progressive payloads: try most-complete first, fall back to minimal on schema errors.
+        // Production table (migration 002) has: id, inbox_attachment_id, status, output, created_at
+        // Newer migrations add: finished_at, error_code, error_message, result_json, etc.
+        const payloads = [
+            // Full modern schema
+            {
+                status,
+                ...(extra?.finished_at != null && { finished_at: extra.finished_at }),
+                ...(extra?.error_code != null && { error_code: extra.error_code }),
+                ...(extra?.error_message != null && { error_message: extra.error_message }),
+                ...(extra?.result_json !== undefined && { output: extra.result_json }),
+            },
+            // Minimal: status + output (migration 002 schema)
+            {
+                status,
+                ...(extra?.result_json !== undefined && { output: extra.result_json }),
+            },
+            // Absolute minimum
+            { status },
+        ];
+        for (const payload of payloads) {
+            const { error } = await db.from('parsing_jobs').update(payload).eq('id', jobId);
+            if (!error)
+                return null;
+            const msg = String(error?.message || error);
+            const code = String(error?.code || '');
+            console.error('[ParsingJobsService] setStatus error:', JSON.stringify(error), '| jobId:', jobId, '| status:', status);
+            // Schema mismatch — try next, simpler payload
+            const isSchemaError = /could not find.*column/i.test(msg) ||
+                /column.*does\s+not\s+exist/i.test(msg) ||
+                code === 'PGRST204';
+            if (isSchemaError)
+                continue;
+            // Non-schema error: stop retrying
+            logger.error('Failed to update parsing job status', { jobId, status, error: msg });
             throw new errorHandling_1.AppError('Failed to update parsing job', errorHandling_1.ErrorType.DATABASE, 500);
         }
-        const payload2 = { status };
-        if (extra && Object.prototype.hasOwnProperty.call(extra, 'result_json')) {
-            payload2.result_json = extra.result_json;
-        }
-        const attempt2 = await db
-            .from('parsing_jobs')
-            .update(payload2)
-            .eq('id', jobId)
-            .select()
-            .single();
-        if (attempt2.error) {
-            throw new errorHandling_1.AppError('Failed to update parsing job', errorHandling_1.ErrorType.DATABASE, 500);
-        }
-        return attempt2.data;
+        return null;
     }
     async getJob(jobId) {
         const db = (0, database_1.supabaseAdminClient)();

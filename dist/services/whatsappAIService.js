@@ -44,7 +44,7 @@ Important:
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+                model: process.env.WHATSAPP_OPENAI_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini',
                 messages,
                 max_tokens: 150,
                 temperature: 0.7,

@@ -66,7 +66,7 @@ if (isTestMode) {
     });
     router.get('/gmail-messages', async (_req, res) => {
         try {
-            const messages = await (0, gmailService_1.listMessages)('filename:pdf OR filename:doc OR filename:docx', 5);
+            const { messages } = await (0, gmailService_1.listMessages)('has:attachment', 5);
             if (!messages || messages.length === 0) {
                 return res.json({ ok: true, count: 0, messages: [] });
             }

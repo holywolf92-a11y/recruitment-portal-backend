@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startGmailPolling = startGmailPolling;
+exports.triggerManualPoll = triggerManualPoll;
 const errorHandling_1 = require("../utils/errorHandling");
 const inboxService_1 = require("../services/inboxService");
 const inboxAttachmentService_1 = require("../services/inboxAttachmentService");
@@ -14,29 +15,48 @@ let isRunning = false;
 let lastHistoryId = 0;
 async function startGmailPolling(intervalMinutes = 5) {
     logger.info('Starting Gmail polling worker', { intervalMinutes });
-    // Run immediately on start
-    await pollGmail();
+    // Account 1 (falishamanpower4035@gmail.com) — handles candidate REPLIES to missing-data emails
+    await pollGmail(undefined, 1);
+    // Account 2 (falishaoep4035@gmail.com) — handles new incoming CVs
+    if ((0, gmailService_1.isAccount2Configured)()) {
+        await pollGmail((0, gmailService_1.createOAuth2ClientForAccount2)(), 2);
+    }
+    else {
+        logger.warn('GMAIL2_REFRESH_TOKEN not set — skipping account 2 poll');
+    }
     // Then run every N minutes
     const intervalMs = intervalMinutes * 60 * 1000;
     setInterval(async () => {
-        await pollGmail();
+        await pollGmail(undefined, 1);
+        if ((0, gmailService_1.isAccount2Configured)()) {
+            await pollGmail((0, gmailService_1.createOAuth2ClientForAccount2)(), 2);
+        }
     }, intervalMs);
 }
-async function pollGmail() {
+/** Manually trigger one poll cycle (used by admin API). */
+async function triggerManualPoll() {
+    const r1 = await pollGmail(undefined, 1);
+    if ((0, gmailService_1.isAccount2Configured)()) {
+        const r2 = await pollGmail((0, gmailService_1.createOAuth2ClientForAccount2)(), 2);
+        return { successCount: r1.successCount + r2.successCount, errorCount: r1.errorCount + r2.errorCount };
+    }
+    return r1;
+}
+async function pollGmail(authClient, accountNum = 1) {
     if (isRunning) {
         logger.debug('Gmail polling already in progress, skipping');
-        return;
+        return { successCount: 0, errorCount: 0 };
     }
     isRunning = true;
     const startTime = Date.now();
     try {
         logger.info('Starting Gmail poll');
-        // Query for messages with attachments (PDFs, DOCs)
-        const messages = await (0, gmailService_1.listMessages)('filename:pdf OR filename:doc OR filename:docx', 10);
+        // Query for messages with attachments (PDFs, DOCs, images)
+        const { messages } = await (0, gmailService_1.listMessages)(gmailService_1.GMAIL_CV_QUERY, 20, undefined, authClient);
         if (!messages || messages.length === 0) {
             logger.info('No new Gmail messages with attachments');
             isRunning = false;
-            return;
+            return { successCount: 0, errorCount: 0 };
         }
         logger.info(`Found ${messages.length} messages to process`);
         let successCount = 0;
@@ -45,7 +65,7 @@ async function pollGmail() {
             if (!msg.id)
                 continue;
             try {
-                const fullMessage = await (0, gmailService_1.getMessage)(msg.id);
+                const fullMessage = await (0, gmailService_1.getMessage)(msg.id, authClient);
                 if (!fullMessage.attachments || fullMessage.attachments.length === 0) {
                     continue;
                 }
@@ -132,6 +152,7 @@ async function pollGmail() {
                         threadId: fullMessage.threadId,
                         messageIdHeader: fullMessage.messageIdHeader,
                         bodyText: fullMessage.bodyText,
+                        inbox_account: accountNum, // which Gmail account received this
                     },
                     status: 'pending',
                     receivedAt: fullMessage.internalDate,
@@ -167,8 +188,15 @@ async function pollGmail() {
                     for (const attachment of fullMessage.attachments) {
                         if (!attachment.id)
                             continue;
+                        // Filter unsupported MIME types consistently across all paths
+                        if (!(0, gmailService_1.isAcceptedCvMime)(attachment.mimeType)) {
+                            logger.warn('Skipping unsupported MIME in reply attachment', {
+                                filename: attachment.filename, mimeType: attachment.mimeType,
+                            });
+                            continue;
+                        }
                         try {
-                            const buffer = await (0, gmailService_1.getAttachment)(fullMessage.id, attachment.id);
+                            const buffer = await (0, gmailService_1.getAttachment)(fullMessage.id, attachment.id, authClient);
                             await (0, candidateDocumentService_1.uploadCandidateDocument)({
                                 candidate_id: resolvedCandidate.id,
                                 file_name: attachment.filename,
@@ -267,7 +295,7 @@ async function pollGmail() {
                             if (!attachment.id)
                                 continue;
                             try {
-                                const buffer = await (0, gmailService_1.getAttachment)(fullMessage.id, attachment.id);
+                                const buffer = await (0, gmailService_1.getAttachment)(fullMessage.id, attachment.id, authClient);
                                 await (0, candidateDocumentService_1.uploadCandidateDocument)({
                                     candidate_id: resolvedCandidateId,
                                     file_name: attachment.filename,
@@ -319,7 +347,7 @@ async function pollGmail() {
                     continue;
                 }
                 // At this point, no candidate was resolved by token/thread/email
-                // Download and store attachments
+                // Download and store attachments  — filter unsupported MIME types first
                 // If resolvedCandidate exists (matched by email in Strategy 3), link attachments directly
                 if (resolvedCandidate?.id) {
                     logger.info('Pre-parse deduplication: linking attachments to existing candidate', {
@@ -331,7 +359,7 @@ async function pollGmail() {
                         if (!attachment.id)
                             continue;
                         try {
-                            const buffer = await (0, gmailService_1.getAttachment)(fullMessage.id, attachment.id);
+                            const buffer = await (0, gmailService_1.getAttachment)(fullMessage.id, attachment.id, authClient);
                             await (0, candidateDocumentService_1.uploadCandidateDocument)({
                                 candidate_id: resolvedCandidate.id,
                                 file_name: attachment.filename,
@@ -371,9 +399,19 @@ async function pollGmail() {
                 for (const attachment of fullMessage.attachments) {
                     if (!attachment.id)
                         continue;
+                    // Reject unsupported file types (ZIP/RAR/EXE and anything we can't parse)
+                    if (!(0, gmailService_1.isAcceptedCvMime)(attachment.mimeType)) {
+                        logger.warn('Skipping unsupported MIME type in Gmail attachment', {
+                            filename: attachment.filename,
+                            mimeType: attachment.mimeType,
+                            messageId: fullMessage.id,
+                        });
+                        continue;
+                    }
                     try {
-                        const buffer = await (0, gmailService_1.getAttachment)(fullMessage.id, attachment.id);
-                        const storagePath = `gmail/${fullMessage.id}/${attachment.filename}`;
+                        const buffer = await (0, gmailService_1.getAttachment)(fullMessage.id, attachment.id, authClient);
+                        // Immutable path: messageId + timestamp ensures no overwrites across different emails
+                        const storagePath = `gmail/${fullMessage.id}/${Date.now()}_${attachment.filename}`;
                         const createdAttachment = await (0, inboxAttachmentService_1.createAttachment)({
                             inboxMessageId: inboxMessage.id,
                             fileBuffer: buffer,
@@ -421,9 +459,11 @@ async function pollGmail() {
         }
         const duration = Date.now() - startTime;
         logger.info('Gmail poll completed', { successCount, errorCount, durationMs: duration });
+        return { successCount, errorCount };
     }
     catch (err) {
         logger.error('Gmail polling failed', err);
+        return { successCount: 0, errorCount: 1 };
     }
     finally {
         isRunning = false;

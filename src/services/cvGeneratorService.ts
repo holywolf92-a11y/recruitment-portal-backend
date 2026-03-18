@@ -1,7 +1,10 @@
 import { supabaseAdminClient } from '../config/database';
 import { getCandidateById } from './candidateService';
 import { listCandidateDocumentsByCandidate } from './candidateDocumentService';
-import puppeteer from 'puppeteer';
+// puppeteer is intentionally NOT statically imported here.
+// A static import loads Chromium bindings into V8 heap at startup (~300-500 MB idle RAM cost).
+// Instead we use a dynamic import() inside generatePDFFromHTML so Chromium is only
+// loaded into memory when a CV is actually being generated.
 import crypto from 'crypto';
 import { getTemplateVersion } from '../config/cvTemplateConfig';
 import { DOCUMENT_CATEGORIES } from '../config/documentCategories';
@@ -871,7 +874,8 @@ async function generatePDFFromHTML(html: string): Promise<Buffer> {
     }
 
     console.log(`[CVGenerator] Launching Puppeteer with options:`, JSON.stringify(launchOptions, null, 2));
-    const browser = await puppeteer.launch(launchOptions);
+    const puppeteer = await import('puppeteer');
+    const browser = await puppeteer.default.launch(launchOptions);
     console.log(`[CVGenerator] Puppeteer launched successfully`);
 
     try {

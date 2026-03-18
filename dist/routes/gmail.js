@@ -35,7 +35,7 @@ router.post('/', rateLimit_1.gmailLimiter, (0, errorHandling_1.asyncHandler)(asy
 async function processGmailNotification(emailAddress, historyId) {
     try {
         // List recent messages with attachments
-        const messages = await (0, gmailService_1.listMessages)('filename:pdf OR filename:doc OR filename:docx', 5);
+        const { messages } = await (0, gmailService_1.listMessages)(gmailService_1.GMAIL_CV_QUERY, 5);
         if (!messages || messages.length === 0) {
             logger.info('No new Gmail messages with attachments');
             return;

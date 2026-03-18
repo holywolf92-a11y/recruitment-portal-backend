@@ -372,7 +372,9 @@ function startWhatsAppAttachmentVerificationWorker() {
             });
         }
         // Mark inbox_attachments as linked (do not overwrite storage_path; it points to raw upload).
-        await db.from('inbox_attachments').update({ linked_candidate_id: candidateId }).eq('id', attachmentId);
+        // Write both linked_candidate_id (identity-first signal) AND candidate_id (required by CV Inbox
+        // UI to show status as "extracted" rather than "queued").
+        await db.from('inbox_attachments').update({ linked_candidate_id: candidateId, candidate_id: candidateId }).eq('id', attachmentId);
         return {
             status: 'linked',
             candidateId,

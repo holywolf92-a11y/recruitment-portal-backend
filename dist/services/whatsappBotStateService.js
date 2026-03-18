@@ -84,5 +84,13 @@ async function resetBotState(phoneNumber) {
         .eq('phone_number', phoneNumber)
         .maybeSingle();
     const welcomed = data?.bot_data?.welcomed ?? false;
-    return setBotState(phoneNumber, null, null, welcomed ? { welcomed: true } : {});
+    const lastMainMenuAt = data?.bot_data?.last_main_menu_at ?? null;
+    const preserved = {};
+    if (welcomed)
+        preserved.welcomed = true;
+    if (lastMainMenuAt)
+        preserved.last_main_menu_at = lastMainMenuAt;
+    // Always clear expected interactive ids on reset to avoid stale-button mismatch
+    preserved.expected_interactive_ids = [];
+    return setBotState(phoneNumber, null, null, preserved);
 }

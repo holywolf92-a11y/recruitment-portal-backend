@@ -50,6 +50,9 @@ exports.uploadCandidatePhotoController = uploadCandidatePhotoController;
 exports.bulkUpdateCandidateStatusController = bulkUpdateCandidateStatusController;
 exports.updateCandidateFieldManuallyController = updateCandidateFieldManuallyController;
 exports.getMissingFieldsController = getMissingFieldsController;
+exports.mergeCandidateController = mergeCandidateController;
+exports.getCandidateMergeHistoryController = getCandidateMergeHistoryController;
+exports.getMatchingMetricsController = getMatchingMetricsController;
 // import { AuthRequest } from '../middleware/auth';
 const candidateService_1 = require("../services/candidateService");
 const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
@@ -823,5 +826,142 @@ async function getMissingFieldsController(req, res) {
         else {
             res.status(500).json({ error: error.message || 'Failed to get missing fields' });
         }
+    }
+}
+/**
+ * POST /api/candidates/:id/merge
+ * Merge another candidate (loserId in body) into this candidate (:id = winner).
+ *
+ * Body:
+ *   - loserId       {string}  required  — candidate to be soft-deleted
+ *   - strategy      {string}  optional  — 'winner_wins' | 'loser_wins' | 'manual' (default: winner_wins)
+ *   - fieldOverrides {object} optional  — explicit field values (only with strategy='manual')
+ *   - reason        {string}  optional  — human-readable explanation
+ */
+async function mergeCandidateController(req, res) {
+    try {
+        const winnerId = req.params.id;
+        const { loserId, strategy, fieldOverrides, reason } = req.body;
+        if (!winnerId)
+            return res.status(400).json({ error: 'Winner candidate ID required in URL' });
+        if (!loserId)
+            return res.status(400).json({ error: 'loserId required in request body' });
+        if (winnerId === loserId)
+            return res.status(400).json({ error: 'Cannot merge a candidate with itself' });
+        const allowedStrategies = ['winner_wins', 'loser_wins', 'manual'];
+        if (strategy && !allowedStrategies.includes(strategy)) {
+            return res.status(400).json({ error: `strategy must be one of: ${allowedStrategies.join(', ')}` });
+        }
+        const { mergeCandidates } = await Promise.resolve().then(() => __importStar(require('../services/mergeCandidateService')));
+        const result = await mergeCandidates(winnerId, loserId, {
+            strategy: strategy || 'winner_wins',
+            fieldOverrides: strategy === 'manual' ? fieldOverrides : undefined,
+            reviewReasons: reason ? [reason] : undefined,
+            mergedBy: 'admin',
+        });
+        res.json({ success: true, merge: result });
+    }
+    catch (error) {
+        console.error('Error merging candidates:', error);
+        if (error.message?.includes('not found')) {
+            res.status(404).json({ error: error.message });
+        }
+        else {
+            res.status(500).json({ error: error.message || 'Failed to merge candidates' });
+        }
+    }
+}
+/**
+ * GET /api/candidates/:id/merges
+ * Returns the merge audit history for a candidate (as winner or former loser).
+ */
+async function getCandidateMergeHistoryController(req, res) {
+    try {
+        const { id } = req.params;
+        if (!id)
+            return res.status(400).json({ error: 'Candidate ID required' });
+        const { getCandidateMergeHistory } = await Promise.resolve().then(() => __importStar(require('../services/mergeCandidateService')));
+        const history = await getCandidateMergeHistory(id);
+        res.json({ merges: history });
+    }
+    catch (error) {
+        console.error('Error fetching merge history:', error);
+        res.status(500).json({ error: error.message || 'Failed to fetch merge history' });
+    }
+}
+/**
+ * GET /api/candidates/matching-metrics
+ *
+ * Returns governance-level matching health statistics for the admin dashboard:
+ *   - Total active candidates
+ *   - Total merges performed
+ *   - Merge breakdown by strategy
+ *   - Confidence score distribution (high / medium / low / unset)
+ *   - Most common match signals across the candidate table
+ */
+async function getMatchingMetricsController(_req, res) {
+    try {
+        const db = (0, database_1.supabaseAdminClient)();
+        // Run all queries in parallel
+        const [{ count: totalActive }, { data: merges }, { data: confidenceRows },] = await Promise.all([
+            db.from('candidates').select('*', { count: 'exact', head: true }).neq('status', 'Deleted'),
+            db.from('candidate_merges').select('merge_strategy, merged_by, created_at'),
+            db.from('candidates')
+                .select('last_match_confidence, last_match_signals')
+                .neq('status', 'Deleted')
+                .not('last_match_confidence', 'is', null),
+        ]);
+        // Merge breakdown by strategy
+        const mergesByStrategy = {};
+        const mergesByMergedBy = {};
+        for (const m of (merges ?? [])) {
+            mergesByStrategy[m.merge_strategy] = (mergesByStrategy[m.merge_strategy] ?? 0) + 1;
+            const actor = m.merged_by === 'system' ? 'system (auto)' : 'admin';
+            mergesByMergedBy[actor] = (mergesByMergedBy[actor] ?? 0) + 1;
+        }
+        // Confidence score distribution
+        const confidenceBuckets = { high: 0, medium: 0, low: 0 };
+        const signalCounts = {};
+        for (const row of (confidenceRows ?? [])) {
+            const conf = parseFloat(row.last_match_confidence);
+            if (conf >= 0.85)
+                confidenceBuckets.high++;
+            else if (conf >= 0.65)
+                confidenceBuckets.medium++;
+            else
+                confidenceBuckets.low++;
+            if (row.last_match_signals && typeof row.last_match_signals === 'object') {
+                for (const signal of Object.keys(row.last_match_signals)) {
+                    signalCounts[signal] = (signalCounts[signal] ?? 0) + 1;
+                }
+            }
+        }
+        // Name-only match count (manually reviewed, confidence < 0.85)
+        const nameOnlyCount = (confidenceRows ?? []).filter((r) => {
+            const sigs = r.last_match_signals;
+            return sigs && Object.keys(sigs).length === 1 && 'name' in sigs;
+        }).length;
+        res.json({
+            totals: {
+                activeCandidates: totalActive ?? 0,
+                totalMerges: merges?.length ?? 0,
+            },
+            merges: {
+                byStrategy: mergesByStrategy,
+                byActor: mergesByMergedBy,
+            },
+            confidence: {
+                high: confidenceBuckets.high,
+                medium: confidenceBuckets.medium,
+                low: confidenceBuckets.low,
+                nameOnlyManualReview: nameOnlyCount,
+                withConfidenceData: (confidenceRows ?? []).length,
+            },
+            signals: signalCounts,
+        });
+    }
+    catch (error) {
+        console.error('Error fetching matching metrics:', error);
+        res.status(500).json({ error: error.message || 'Failed to fetch matching metrics' });
     }
 }

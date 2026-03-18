@@ -160,31 +160,37 @@ async function createCandidate(data, userId) {
             console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
         }
     }
+    // Truncate VARCHAR-limited fields to prevent 22001 overflow errors (safety net for all callers)
+    const VARCHAR_LIMITS_CREATE = {
+        name: 255, email: 255, phone: 50, position: 255, education: 255,
+        nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
+    };
+    const truncCreate = (val, maxLen) => typeof val === 'string' && val.length > maxLen ? val.slice(0, maxLen) : val;
     // Create candidate record
     const candidateData = {
         candidate_code: candidateCode,
-        name: data.name,
+        name: truncCreate(data.name, VARCHAR_LIMITS_CREATE.name),
         father_name: data.father_name,
         status: data.status,
         source: data.source,
         ai_score: data.ai_score,
         auto_extracted: data.auto_extracted,
         needs_review: data.needs_review,
-        email: data.email,
-        phone: phoneNormalized,
+        email: truncCreate(data.email, VARCHAR_LIMITS_CREATE.email),
+        phone: truncCreate(phoneNormalized, VARCHAR_LIMITS_CREATE.phone),
         date_of_birth: data.date_of_birth,
-        gender: data.gender,
-        marital_status: data.marital_status,
+        gender: truncCreate(data.gender, VARCHAR_LIMITS_CREATE.gender),
+        marital_status: truncCreate(data.marital_status, VARCHAR_LIMITS_CREATE.marital_status),
         address: data.address,
         cnic_normalized: cnicNormalized,
         passport_normalized: passportNormalized,
-        nationality: data.nationality,
-        position: data.position,
+        nationality: truncCreate(data.nationality, VARCHAR_LIMITS_CREATE.nationality),
+        position: truncCreate(data.position, VARCHAR_LIMITS_CREATE.position),
         experience_years: data.experience_years,
-        country_of_interest: data.country_of_interest,
+        country_of_interest: truncCreate(data.country_of_interest, VARCHAR_LIMITS_CREATE.country_of_interest),
         skills: data.skills,
         languages: data.languages,
-        education: data.education,
+        education: truncCreate(data.education, VARCHAR_LIMITS_CREATE.education),
         certifications: data.certifications,
         internships: data.internships,
         previous_employment: data.previous_employment,
@@ -638,6 +644,37 @@ async function updateCandidate(id, data, userId) {
         }
     }
     updateData.updated_at = new Date().toISOString();
+    // Truncate VARCHAR-limited fields to prevent 22001 overflow errors
+    const VARCHAR_LIMITS = {
+        name: 255, email: 255, phone: 50, position: 255, education: 255,
+        nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
+    };
+    for (const [col, maxLen] of Object.entries(VARCHAR_LIMITS)) {
+        if (typeof updateData[col] === 'string' && updateData[col].length > maxLen) {
+            updateData[col] = updateData[col].slice(0, maxLen);
+        }
+    }
+    // Strip unknown columns to prevent PGRST204 schema errors
+    const KNOWN_CANDIDATE_COLUMNS_UPDATE = new Set([
+        'name', 'father_name', 'email', 'phone', 'date_of_birth', 'gender',
+        'marital_status', 'address', 'cnic_normalized', 'passport_normalized',
+        'nationality', 'position', 'experience_years', 'country_of_interest',
+        'skills', 'languages', 'education', 'certifications', 'internships',
+        'previous_employment', 'passport_expiry', 'professional_summary',
+        'status', 'source', 'ai_score', 'auto_extracted', 'needs_review',
+        'updated_at', 'field_sources', 'extraction_confidence', 'extraction_source',
+        'extracted_at', 'passport_received', 'cnic_received', 'degree_received',
+        'medical_received', 'visa_received', 'cv_received', 'photo_received',
+        'certificate_received', 'profile_photo_url', 'gcc_years', 'salary_expectation',
+        'available_from', 'religion', 'driving_license', 'medical_expiry',
+        'interview_date',
+    ]);
+    for (const col of Object.keys(updateData)) {
+        if (!KNOWN_CANDIDATE_COLUMNS_UPDATE.has(col)) {
+            console.warn(`[CandidateService] Stripping unknown column '${col}' from updateCandidate`);
+            delete updateData[col];
+        }
+    }
     const { data: candidate, error } = await db
         .from('candidates')
         .update(updateData)

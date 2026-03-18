@@ -20,8 +20,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Puppeteer to use system Chromium
+# NODE_OPTIONS caps the V8 heap to 384 MB, keeping idle memory low.
+# Chromium is launched on-demand only; it does not live in the Node.js heap.
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    NODE_OPTIONS="--max-old-space-size=384"
 
 WORKDIR /app
 

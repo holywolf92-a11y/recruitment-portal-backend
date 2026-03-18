@@ -174,6 +174,12 @@ function parseDate(dateStr, fieldName) {
         return undefined;
     }
 }
+/** Truncate a string to maxLen characters without throwing. */
+function trunc(value, maxLen) {
+    if (!value)
+        return undefined;
+    return value.length > maxLen ? value.slice(0, maxLen) : value;
+}
 // Helper to create candidate from parsed CV data
 async function createCandidateFromParsedData(parsed, attachmentId, identityFields) {
     try {
@@ -237,24 +243,24 @@ async function createCandidateFromParsedData(parsed, attachmentId, identityField
             console.warn('[CVParser] Ignoring PDF profile_photo_url from parser response:', normalizedProfilePhotoUrl);
         }
         const candidateData = {
-            name: resolvedName,
+            name: trunc(resolvedName, 255) || 'Unknown',
             father_name: identityFields?.father_name || candidate.father_name || undefined,
-            email: resolvedEmail,
-            phone: resolvedPhone,
+            email: trunc(resolvedEmail, 255),
+            phone: trunc(resolvedPhone, 50),
             address: candidate.location || undefined,
             date_of_birth: dateOfBirth,
-            marital_status: candidate.marital_status || undefined,
+            marital_status: trunc(candidate.marital_status, 20) || undefined,
             cnic: identityFields?.cnic || candidate.cnic || undefined,
             passport: identityFields?.passport_no || candidate.passport || undefined,
-            nationality: candidate.nationality || identityFields?.nationality || undefined,
-            position: extractedPosition,
+            nationality: trunc(candidate.nationality || identityFields?.nationality, 100) || undefined,
+            position: trunc(extractedPosition, 255),
             experience_years: candidate.experience_years || undefined,
-            country_of_interest: candidate.country_of_interest || undefined,
+            country_of_interest: trunc(candidate.country_of_interest, 100) || undefined,
             skills: Array.isArray(candidate.skills) ? candidate.skills.join(', ') : undefined,
             languages: Array.isArray(candidate.languages) ? candidate.languages.join(', ') : undefined,
-            education: Array.isArray(candidate.education) && candidate.education.length > 0
+            education: trunc(Array.isArray(candidate.education) && candidate.education.length > 0
                 ? candidate.education.map((e) => `${e.degree} from ${e.institution}`).join('; ')
-                : undefined,
+                : undefined, 255),
             certifications: Array.isArray(candidate.certifications) ? candidate.certifications.join(', ') : undefined,
             internships: Array.isArray(candidate.internships) ? candidate.internships.join(', ') : undefined,
             previous_employment: candidate.previous_employment || (Array.isArray(candidate.experience) && candidate.experience.length > 0
@@ -356,6 +362,37 @@ function startCvParserWorker() {
         if (lines.length === 0)
             return undefined;
         return lines.slice(0, 12).join('\n\n');
+    }
+    /**
+     * Read the inbox_message payload for a given attachment.
+     * Used to detect backfill CVs (suppress immediate missing-data emails)
+     * and to identify which Gmail account received the email (for reply routing).
+     */
+    async function getInboxPayloadForAttachment(attachmentId) {
+        try {
+            const db2 = (0, database_1.supabaseAdminClient)();
+            const { data: att } = await db2
+                .from('inbox_attachments')
+                .select('inbox_message_id')
+                .eq('id', attachmentId)
+                .maybeSingle();
+            const inboxMessageId = att?.inbox_message_id;
+            if (!inboxMessageId)
+                return { backfill: false, inbox_account: 1 };
+            const { data: msg } = await db2
+                .from('inbox_messages')
+                .select('payload')
+                .eq('id', inboxMessageId)
+                .maybeSingle();
+            const payload = msg?.payload || {};
+            return {
+                backfill: payload.backfill === true,
+                inbox_account: payload.inbox_account === 2 ? 2 : 1,
+            };
+        }
+        catch {
+            return { backfill: false, inbox_account: 1 };
+        }
     }
     async function isWhatsAppOriginAttachment(attachmentId) {
         const db = (0, database_1.supabaseAdminClient)();
@@ -609,15 +646,72 @@ function startCvParserWorker() {
         });
         try {
             const db = (0, database_1.supabaseAdminClient)();
-            // Fetch attachment metadata and storage location.
+            // Fetch attachment metadata + linked inbox_message to get real Gmail email date.
+            // inbox_attachments.received_at is insertion time (useless for date filtering).
+            // The actual email date lives in inbox_messages.payload->>'internalDate' (Unix ms from Gmail API).
             const { data: attachmentMeta, error: attachmentMetaError } = await db
                 .from('inbox_attachments')
-                .select('file_name, mime_type, storage_bucket, storage_path, sha256')
+                .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status, inbox_message_id, inbox_messages(payload, source)')
                 .eq('id', attachmentId)
                 .maybeSingle();
             if (attachmentMetaError) {
                 throw new Error(`Failed to fetch attachment metadata: ${attachmentMetaError.message}`);
             }
+            // ── Gmail date guard: skip CVs whose email was sent before 2024-01-01 ───────
+            // Only applies to Gmail-sourced attachments (internalDate is Gmail Unix ms).
+            // WhatsApp / web-upload attachments don’t have internalDate — always process.
+            const CV_CUTOFF_MS = new Date('2024-01-01T00:00:00.000Z').getTime();
+            const inboxMsg = attachmentMeta?.inbox_messages;
+            const gmailInternalDate = inboxMsg?.payload?.internalDate;
+            if (gmailInternalDate) {
+                // internalDate can arrive as:
+                // - Unix ms string: "1704067200000"
+                // - Unix sec string: "1704067200"
+                // - ISO string:      "2025-09-28T12:50:50.000Z"
+                let emailDateMs = null;
+                const raw = String(gmailInternalDate).trim();
+                if (/^\d+$/.test(raw)) {
+                    const asNum = Number(raw);
+                    if (Number.isFinite(asNum) && asNum > 0) {
+                        // Heuristic: seconds are <= 10 digits, milliseconds are >= 13 digits
+                        emailDateMs = raw.length <= 10 ? asNum * 1000 : asNum;
+                    }
+                }
+                else {
+                    const parsedIsoMs = Date.parse(raw);
+                    if (Number.isFinite(parsedIsoMs)) {
+                        emailDateMs = parsedIsoMs;
+                    }
+                }
+                if (emailDateMs && emailDateMs < CV_CUTOFF_MS) {
+                    const emailDateStr = new Date(emailDateMs).toISOString().split('T')[0];
+                    console.log(`[CVParser] ⏭  Skipping pre-2024 attachment ${attachmentId} — Gmail email date ${emailDateStr} (before cutoff 2024-01-01)`);
+                    await parsingJobs.setStatus(jobId, 'extracted', {
+                        finished_at: new Date().toISOString(),
+                        skipped_reason: 'pre_2024_cutoff',
+                        error_code: null,
+                        error_message: null,
+                    });
+                    return { skipped: true, reason: 'pre_2024_cutoff', emailDate: emailDateStr };
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────────
+            // ── Idempotency guard ──────────────────────────────────────────────────
+            // If this attachment was already successfully linked to a candidate by a
+            // previous job (e.g., BullMQ retry or Gmail poller picking the same email
+            // twice), skip re-processing to avoid creating a duplicate candidate.
+            // The `force` flag bypasses this check for manual admin reprocessing.
+            if (!force && attachmentMeta?.candidate_id) {
+                const existingId = attachmentMeta.candidate_id;
+                console.log(`[CVParser] ⏭  Skipping attachment ${attachmentId} — already linked to candidate ${existingId} (idempotency guard)`);
+                await parsingJobs.setStatus(jobId, 'extracted', {
+                    finished_at: new Date().toISOString(),
+                    skipped_reason: 'already_linked',
+                    candidate_id: existingId,
+                });
+                return { skipped: true, candidateId: existingId };
+            }
+            // ──────────────────────────────────────────────────────────────────────
             const storageBucket = attachmentMeta?.storage_bucket || STORAGE_BUCKET;
             const storagePath = attachmentMeta?.storage_path;
             if (!storagePath) {
@@ -810,6 +904,8 @@ function startCvParserWorker() {
                     .eq('id', attachmentId);
                 // Persist Gmail thread identity (if this CV came via Gmail)
                 await maybeAttachGmailThreadToCandidate(existingCandidateId, attachmentId);
+                // Detect backfill: suppress immediate missing-data email to avoid mass spam on historical imports
+                const { backfill: isBackfill } = await getInboxPayloadForAttachment(attachmentId);
                 // Fetch updated candidate to check if gmail_thread_id was set
                 const { data: updatedCandidateForEmail } = await db
                     .from('candidates')
@@ -831,23 +927,29 @@ function startCvParserWorker() {
                     console.warn('[CVParser] Failed to set cv_received before email (non-fatal):', flagErr?.message || flagErr);
                 }
                 // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
+                // SKIP for backfill CVs — mass emailing historical candidates on import is not acceptable.
                 let missingDataEmailSent = false;
-                try {
-                    const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
-                    if (updatedCandidateForEmail?.gmail_thread_id) {
-                        await maybeSendMissingDataEmail({ candidateId: existingCandidateId, trigger: 'cv_parsed_existing' });
-                    }
-                    else {
-                        await sendStandaloneMissingDataEmail({
-                            candidateId: existingCandidateId,
-                            trigger: 'cv_parsed_existing_manual',
-                        });
-                    }
-                    missingDataEmailSent = true;
+                if (isBackfill) {
+                    console.log(`[CVParser] Backfill CV — suppressing immediate missing-data email for candidate ${existingCandidateId}`);
                 }
-                catch (emailErr) {
-                    console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
-                }
+                else {
+                    try {
+                        const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
+                        if (updatedCandidateForEmail?.gmail_thread_id) {
+                            await maybeSendMissingDataEmail({ candidateId: existingCandidateId, trigger: 'cv_parsed_existing' });
+                        }
+                        else {
+                            await sendStandaloneMissingDataEmail({
+                                candidateId: existingCandidateId,
+                                trigger: 'cv_parsed_existing_manual',
+                            });
+                        }
+                        missingDataEmailSent = true;
+                    }
+                    catch (emailErr) {
+                        console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
+                    }
+                } // end !isBackfill
                 // Notify candidate on CV-extracted phone (WhatsApp-origin CVs only)
                 await maybeSendCvReceivedWhatsAppNotification({
                     attachmentId,
@@ -871,6 +973,8 @@ function startCvParserWorker() {
                         await updateMissingFields(candidate.id);
                         // Persist Gmail thread identity (if this CV came via Gmail)
                         await maybeAttachGmailThreadToCandidate(candidate.id, attachmentId);
+                        // Detect backfill: suppress immediate missing-data email to avoid mass spam on historical imports
+                        const { backfill: isBackfillNew } = await getInboxPayloadForAttachment(attachmentId);
                         // Fetch updated candidate to check if gmail_thread_id was set
                         const { data: updatedCandidateNew } = await db
                             .from('candidates')
@@ -892,23 +996,29 @@ function startCvParserWorker() {
                             console.warn('[CVParser] Failed to set cv_received before email (non-fatal):', flagErr?.message || flagErr);
                         }
                         // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
+                        // SKIP for backfill CVs — mass emailing historical candidates on import is not acceptable.
                         let missingDataEmailSent = false;
-                        try {
-                            const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
-                            if (updatedCandidateNew?.gmail_thread_id) {
-                                await maybeSendMissingDataEmail({ candidateId: candidate.id, trigger: 'cv_parsed_new' });
-                            }
-                            else {
-                                await sendStandaloneMissingDataEmail({
-                                    candidateId: candidate.id,
-                                    trigger: 'cv_parsed_new_manual',
-                                });
-                            }
-                            missingDataEmailSent = true;
+                        if (isBackfillNew) {
+                            console.log(`[CVParser] Backfill CV — suppressing immediate missing-data email for new candidate ${candidate.id}`);
                         }
-                        catch (emailErr) {
-                            console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
-                        }
+                        else {
+                            try {
+                                const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
+                                if (updatedCandidateNew?.gmail_thread_id) {
+                                    await maybeSendMissingDataEmail({ candidateId: candidate.id, trigger: 'cv_parsed_new' });
+                                }
+                                else {
+                                    await sendStandaloneMissingDataEmail({
+                                        candidateId: candidate.id,
+                                        trigger: 'cv_parsed_new_manual',
+                                    });
+                                }
+                                missingDataEmailSent = true;
+                            }
+                            catch (emailErr) {
+                                console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
+                            }
+                        } // end !isBackfillNew
                         // Notify candidate on CV-extracted phone (WhatsApp-origin CVs only)
                         await maybeSendCvReceivedWhatsAppNotification({
                             attachmentId,

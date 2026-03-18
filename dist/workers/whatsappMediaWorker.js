@@ -37,20 +37,26 @@ function startWhatsAppMediaWorker() {
         if (buffer.length > maxBytes) {
             throw new Error(`Media too large: ${buffer.length} bytes > ${maxBytes}`);
         }
-        const fileName = meta.file_name || meta.id || `${mediaId}.bin`;
+        // WhatsApp media metadata API rarely returns the real filename; the original
+        // filename from the webhook payload (job.data.fileName) is more reliable.
+        const fileName = meta.file_name || job.data.fileName || meta.id || `${mediaId}.bin`;
         const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
         const classification = documentClassifier_1.DocumentClassifier.classify(fileName, undefined, mimeType);
         const normalizedMime = String(mimeType || '').toLowerCase();
         const isCommonCvMime = normalizedMime.includes('application/pdf') ||
             normalizedMime.includes('application/msword') ||
             normalizedMime.includes('application/vnd.openxmlformats-officedocument.wordprocessingml') ||
-            normalizedMime.includes('text/plain');
+            normalizedMime.includes('text/plain') ||
+            normalizedMime.startsWith('image/');
         // WhatsApp often provides generic filenames (e.g. "document.pdf"). If we treat these as "document",
         // the CV Inbox UI shows them as "queued" forever because no parsing job is created.
-        const attachmentType = classification.attachmentKind === 'cv' ||
-            (classification.attachmentKind === 'unknown' && isCommonCvMime)
-            ? 'cv'
-            : 'document';
+        const isUnknownish = classification.attachmentKind === 'unknown' ||
+            (classification.attachmentKind === 'document' &&
+                (!classification.documentType || classification.documentType === 'unknown'));
+        const attachmentType = classification.attachmentKind === 'cv' || (isUnknownish && isCommonCvMime) ? 'cv' : 'document';
+        // Detect unsupported binary formats — video/audio cannot be parsed as CVs or identity docs.
+        const isUnsupportedMedia = normalizedMime.startsWith('video/') ||
+            normalizedMime.startsWith('audio/');
         // Identity-first rule: store raw WhatsApp upload unbound; never create/bind a candidate here.
         const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
         const rawId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -68,7 +74,16 @@ function startWhatsAppMediaWorker() {
             whatsappMediaId: mediaId,
         });
         // CV parsing is keyed off inbox_attachments.attachment_type === 'cv'
-        if (attachment?.attachment_type === 'cv' || attachment?.attachment_kind === 'cv') {
+        if (isUnsupportedMedia) {
+            // Video / audio cannot be parsed as a CV or verified as an identity document.
+            // Store the file (already done) and log — no queue job created.
+            logger.warn('Skipping unsupported media type (video/audio) — no parsing or verification job created', {
+                attachmentId: attachment.id,
+                mimeType,
+                fileName,
+            });
+        }
+        else if (attachment?.attachment_type === 'cv' || attachment?.attachment_kind === 'cv') {
             try {
                 await (0, inboxAttachmentService_1.enqueueCvParsingJobForAttachment)(attachment.id, { force: false, expiresInSeconds: 3600 });
             }

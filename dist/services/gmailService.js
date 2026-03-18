@@ -1,6 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.REJECTED_MIMES = exports.ACCEPTED_CV_MIMES = exports.GMAIL_CV_QUERY = void 0;
+exports.createOAuth2ClientWithToken = createOAuth2ClientWithToken;
+exports.createOAuth2ClientForAccount2 = createOAuth2ClientForAccount2;
+exports.isAccount2Configured = isAccount2Configured;
+exports.isAcceptedCvMime = isAcceptedCvMime;
 exports.listMessages = listMessages;
+exports.listAllMessages = listAllMessages;
 exports.getMessage = getMessage;
 exports.sendThreadReply = sendThreadReply;
 exports.getAttachment = getAttachment;
@@ -23,21 +29,170 @@ function createOAuth2Client() {
     oauth2Client.setCredentials({ refresh_token: refreshToken });
     return oauth2Client;
 }
-async function listMessages(query = 'filename:pdf OR filename:doc OR filename:docx', maxResults = 10) {
-    const auth = createOAuth2Client();
+/** Create an OAuth2 client using a specific refresh token (for multi-account support). */
+function createOAuth2ClientWithToken(refreshToken, clientId, clientSecret) {
+    const id = clientId ?? process.env.GMAIL_CLIENT_ID;
+    const secret = clientSecret ?? process.env.GMAIL_CLIENT_SECRET;
+    if (!id || !secret) {
+        throw new errorHandling_1.AppError('Gmail credentials not configured', errorHandling_1.ErrorType.VALIDATION, 500);
+    }
+    const oauth2Client = new googleapis_1.google.auth.OAuth2(id, secret);
+    oauth2Client.setCredentials({ refresh_token: refreshToken });
+    return oauth2Client;
+}
+/**
+ * Create an OAuth2 client for Account 2 (falishaoep4035@gmail.com).
+ * Uses GMAIL2_CLIENT_ID / GMAIL2_CLIENT_SECRET / GMAIL2_REFRESH_TOKEN.
+ * Falls back to shared GMAIL_CLIENT_ID/SECRET if account-specific ones are not set.
+ */
+function createOAuth2ClientForAccount2() {
+    const refreshToken = process.env.GMAIL2_REFRESH_TOKEN;
+    if (!refreshToken) {
+        throw new errorHandling_1.AppError('GMAIL2_REFRESH_TOKEN not configured', errorHandling_1.ErrorType.VALIDATION, 500);
+    }
+    const clientId = process.env.GMAIL2_CLIENT_ID ?? process.env.GMAIL_CLIENT_ID;
+    const clientSecret = process.env.GMAIL2_CLIENT_SECRET ?? process.env.GMAIL_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+        throw new errorHandling_1.AppError('Gmail credentials not configured for account 2', errorHandling_1.ErrorType.VALIDATION, 500);
+    }
+    const oauth2Client = new googleapis_1.google.auth.OAuth2(clientId, clientSecret);
+    oauth2Client.setCredentials({ refresh_token: refreshToken });
+    return oauth2Client;
+}
+/** Returns true if Account 2 is fully configured. */
+function isAccount2Configured() {
+    return !!(process.env.GMAIL2_REFRESH_TOKEN);
+}
+/** CV-relevant Gmail query — includes all document and image attachment types */
+exports.GMAIL_CV_QUERY = 'has:attachment (filename:pdf OR filename:doc OR filename:docx OR ' +
+    'filename:jpg OR filename:jpeg OR filename:png OR filename:gif OR filename:webp OR ' +
+    'filename:bmp OR filename:txt)';
+/** MIME types we accept for CV processing */
+exports.ACCEPTED_CV_MIMES = new Set([
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/gif',
+    'image/webp',
+    'image/bmp',
+]);
+/** MIME types we explicitly reject */
+exports.REJECTED_MIMES = new Set([
+    'application/zip',
+    'application/x-rar-compressed',
+    'application/x-zip-compressed',
+    'application/rar',
+    'application/x-7z-compressed',
+    'application/x-tar',
+    'application/x-executable',
+    'application/x-msdownload',
+]);
+function isAcceptedCvMime(mimeType) {
+    const m = mimeType.toLowerCase().split(';')[0].trim();
+    if (exports.REJECTED_MIMES.has(m))
+        return false;
+    if (exports.ACCEPTED_CV_MIMES.has(m))
+        return true;
+    // Accept any image/*
+    if (m.startsWith('image/'))
+        return true;
+    return false;
+}
+/**
+ * Retry wrapper for Gmail API calls with exponential backoff.
+ * Handles 429 (rate limit) and 5xx (transient server errors) gracefully.
+ * Gmail API quota: 250 quota units/user/second. Each list/get = 5 units.
+ */
+async function withGmailRetry(fn, maxAttempts = 5, baseDelayMs = 1000) {
+    let lastErr;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            return await fn();
+        }
+        catch (err) {
+            lastErr = err;
+            const status = err?.response?.status ?? err?.code ?? err?.status ?? 0;
+            const isRateLimit = status === 429 ||
+                status === 403 ||
+                String(err?.message || '').toLowerCase().includes('rate') ||
+                String(err?.message || '').toLowerCase().includes('quota');
+            const isTransient = isRateLimit || status === 500 || status === 502 || status === 503;
+            if (!isTransient || attempt === maxAttempts)
+                throw err;
+            const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 500;
+            logger.warn(`Gmail API rate limit / transient error — retrying in ${Math.round(delay)}ms`, {
+                attempt,
+                status,
+                message: err?.message,
+            });
+            await new Promise((r) => setTimeout(r, delay));
+        }
+    }
+    throw lastErr;
+}
+async function listMessages(query = exports.GMAIL_CV_QUERY, maxResults = 10, pageToken, authClient) {
+    const auth = authClient ?? createOAuth2Client();
     const gmail = googleapis_1.google.gmail({ version: 'v1', auth });
-    try {
-        const res = await gmail.users.messages.list({
-            userId: 'me',
-            q: query,
-            maxResults,
-        });
-        return res.data.messages ?? [];
+    return withGmailRetry(async () => {
+        try {
+            const res = await gmail.users.messages.list({
+                userId: 'me',
+                q: query,
+                maxResults,
+                ...(pageToken ? { pageToken } : {}),
+            });
+            return {
+                messages: (res.data.messages ?? []),
+                nextPageToken: res.data.nextPageToken ?? undefined,
+            };
+        }
+        catch (err) {
+            logger.error('Failed to list messages', err);
+            throw new errorHandling_1.AppError('Failed to list Gmail messages', errorHandling_1.ErrorType.EXTERNAL_SERVICE, 502);
+        }
+    });
+}
+/**
+ * Paginate through ALL matching Gmail messages.
+ * Calls onBatch for each page so callers can process incrementally.
+ */
+async function listAllMessages(query = exports.GMAIL_CV_QUERY, options) {
+    let q = query;
+    if (options?.afterDate) {
+        const d = options.afterDate;
+        q += ` after:${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
     }
-    catch (err) {
-        logger.error('Failed to list messages', err);
-        throw new errorHandling_1.AppError('Failed to list Gmail messages', errorHandling_1.ErrorType.EXTERNAL_SERVICE, 502);
+    if (options?.beforeDate) {
+        const d = options.beforeDate;
+        q += ` before:${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
     }
+    const batchSize = options?.batchSize ?? 100;
+    const maxTotal = options?.maxTotal ?? 10000;
+    const pageDelayMs = options?.pageDelayMs ?? 1000; // 1 s between pages = safe quota buffer
+    let pageToken;
+    let pageNum = 0;
+    let total = 0;
+    while (true) {
+        const page = await listMessages(q, Math.min(batchSize, maxTotal - total), pageToken, options?.authClient);
+        const ids = page.messages.map((m) => m.id).filter(Boolean);
+        if (ids.length > 0) {
+            pageNum++;
+            total += ids.length;
+            if (options?.onBatch)
+                await options.onBatch(ids, pageNum, total);
+        }
+        if (!page.nextPageToken || total >= maxTotal || ids.length === 0)
+            break;
+        pageToken = page.nextPageToken;
+        // Respect quota — pause between pages
+        if (pageDelayMs > 0)
+            await new Promise((r) => setTimeout(r, pageDelayMs));
+    }
+    return { total, pageCount: pageNum };
 }
 function decodeGmailBody(data) {
     if (!data)
@@ -81,47 +236,54 @@ function base64UrlEncode(input) {
     const b64 = (Buffer.isBuffer(input) ? input : Buffer.from(input, 'utf8')).toString('base64');
     return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
-async function getMessage(messageId) {
-    const auth = createOAuth2Client();
+async function getMessage(messageId, authClient) {
+    const auth = authClient ?? createOAuth2Client();
     const gmail = googleapis_1.google.gmail({ version: 'v1', auth });
-    try {
-        const res = await gmail.users.messages.get({
-            userId: 'me',
-            id: messageId,
-            format: 'full',
-        });
-        const msg = res.data;
-        const headers = msg.payload?.headers ?? [];
-        const getHeader = (name) => headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? undefined;
-        const bodyText = extractPlainTextFromPayload(msg.payload);
-        const attachments = msg.payload?.parts
-            ?.filter((part) => part.filename)
-            .map((part) => ({
-            id: part.body?.attachmentId ?? '',
-            filename: part.filename ?? '',
-            mimeType: part.mimeType ?? 'application/octet-stream',
-            size: part.body?.size ?? 0,
-        })) ?? [];
-        return {
-            id: msg.id ?? messageId,
-            threadId: msg.threadId ?? '',
-            from: getHeader('from'),
-            to: getHeader('to'),
-            subject: getHeader('subject'),
-            messageIdHeader: getHeader('Message-ID'),
-            internalDate: msg.internalDate ? new Date(parseInt(msg.internalDate, 10)).toISOString() : undefined,
-            attachmentCount: attachments.length,
-            attachments,
-            bodyText,
-        };
-    }
-    catch (err) {
-        logger.error('Failed to get message', err);
-        throw new errorHandling_1.AppError('Failed to get Gmail message', errorHandling_1.ErrorType.EXTERNAL_SERVICE, 502);
-    }
+    return withGmailRetry(async () => {
+        try {
+            const res = await gmail.users.messages.get({
+                userId: 'me',
+                id: messageId,
+                format: 'full',
+            });
+            const msg = res.data;
+            const headers = msg.payload?.headers ?? [];
+            const getHeader = (name) => headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? undefined;
+            const bodyText = extractPlainTextFromPayload(msg.payload);
+            const attachments = msg.payload?.parts
+                ?.filter((part) => part.filename)
+                .map((part) => ({
+                id: part.body?.attachmentId ?? '',
+                filename: part.filename ?? '',
+                mimeType: part.mimeType ?? 'application/octet-stream',
+                size: part.body?.size ?? 0,
+            })) ?? [];
+            return {
+                id: msg.id ?? messageId,
+                threadId: msg.threadId ?? '',
+                from: getHeader('from'),
+                to: getHeader('to'),
+                subject: getHeader('subject'),
+                messageIdHeader: getHeader('Message-ID'),
+                internalDate: msg.internalDate ? new Date(parseInt(msg.internalDate, 10)).toISOString() : undefined,
+                attachmentCount: attachments.length,
+                attachments,
+                bodyText,
+            };
+        }
+        catch (err) {
+            logger.error('Failed to get message', err);
+            throw new errorHandling_1.AppError('Failed to get Gmail message', errorHandling_1.ErrorType.EXTERNAL_SERVICE, 502);
+        }
+    }); // end withGmailRetry
 }
-async function sendThreadReply(args) {
-    const auth = createOAuth2Client();
+/**
+ * Send a reply into an existing Gmail thread.
+ * Pass `authClient` for Account 2 (falishaoep4035@gmail.com) threads;
+ * omit to use Account 1 (falishamanpower4035@gmail.com).
+ */
+async function sendThreadReply(args, authClient) {
+    const auth = authClient ?? createOAuth2Client();
     const gmail = googleapis_1.google.gmail({ version: 'v1', auth });
     try {
         const headers = [];
@@ -153,25 +315,26 @@ async function sendThreadReply(args) {
         throw new errorHandling_1.AppError('Failed to send Gmail email', errorHandling_1.ErrorType.EXTERNAL_SERVICE, 502);
     }
 }
-async function getAttachment(messageId, attachmentId) {
-    const auth = createOAuth2Client();
+async function getAttachment(messageId, attachmentId, authClient) {
+    const auth = authClient ?? createOAuth2Client();
     const gmail = googleapis_1.google.gmail({ version: 'v1', auth });
-    try {
-        const res = await gmail.users.messages.attachments.get({
-            userId: 'me',
-            messageId,
-            id: attachmentId,
-        });
-        const data = res.data.data;
-        if (!data) {
-            throw new Error('No attachment data returned');
+    return withGmailRetry(async () => {
+        try {
+            const res = await gmail.users.messages.attachments.get({
+                userId: 'me',
+                messageId,
+                id: attachmentId,
+            });
+            const data = res.data.data;
+            if (!data)
+                throw new Error('No attachment data returned');
+            return Buffer.from(data, 'base64');
         }
-        return Buffer.from(data, 'base64');
-    }
-    catch (err) {
-        logger.error('Failed to get attachment', err);
-        throw new errorHandling_1.AppError('Failed to download Gmail attachment', errorHandling_1.ErrorType.EXTERNAL_SERVICE, 502);
-    }
+        catch (err) {
+            logger.error('Failed to get attachment', err);
+            throw new errorHandling_1.AppError('Failed to download Gmail attachment', errorHandling_1.ErrorType.EXTERNAL_SERVICE, 502);
+        }
+    });
 }
 async function testConnection() {
     const auth = createOAuth2Client();

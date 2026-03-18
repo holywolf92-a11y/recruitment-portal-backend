@@ -35,6 +35,8 @@ router.get('/', candidateController_1.listCandidatesController);
 router.get('/daily-stats', candidateController_1.dailyStatsController);
 // Export candidates (CSV/Excel)
 router.get('/export', candidateController_1.exportCandidatesController);
+// Matching governance metrics (must be before /:id wildcard)
+router.get('/matching-metrics', candidateController_1.getMatchingMetricsController);
 // Bulk operations
 router.patch('/bulk/status', candidateController_1.bulkUpdateCandidateStatusController);
 // Get single candidate
@@ -58,4 +60,7 @@ router.post('/:id/link-cv', candidateController_1.linkCandidatesCVController);
 // Progressive data completion endpoints
 router.get('/:id/missing-fields', candidateController_1.getMissingFieldsController);
 router.patch('/:id/fields/:field', candidateController_1.updateCandidateFieldManuallyController);
+// Candidate merge
+router.post('/:id/merge', candidateController_1.mergeCandidateController);
+router.get('/:id/merges', candidateController_1.getCandidateMergeHistoryController);
 exports.default = router;

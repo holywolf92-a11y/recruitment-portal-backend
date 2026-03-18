@@ -5,6 +5,7 @@ const errorHandling_1 = require("../utils/errorHandling");
 const rateLimit_1 = require("../middleware/rateLimit");
 const webhookLogger_1 = require("../middleware/webhookLogger");
 const inboxService_1 = require("../services/inboxService");
+const database_1 = require("../config/database");
 const whatsappService_1 = require("../services/whatsappService");
 const whatsappAIService_1 = require("../services/whatsappAIService");
 const errorHandling_2 = require("../utils/errorHandling");
@@ -27,6 +28,20 @@ function extractInteractiveData(body) {
     }
     catch { /* ignore */ }
     return { id: '', title: '' };
+}
+// ── Internal company numbers — skip AI/bot, process docs silently ─────────────
+// Format: international without leading '+' (WhatsApp sends 92xxxxxxxxxx for PK)
+const INTERNAL_NUMBERS = new Set([
+    '923005787762',
+    '923005547806',
+    '923451897011',
+    '923465028305',
+]);
+function isInternalNumber(phone) {
+    const normalized = phone.replace(/^\+/, '').trim();
+    // Also handle if number is stored as 0xxx (convert to 92xxx Pakistan format)
+    const withCountry = normalized.startsWith('0') ? '92' + normalized.slice(1) : normalized;
+    return INTERNAL_NUMBERS.has(normalized) || INTERNAL_NUMBERS.has(withCountry);
 }
 const router = (0, express_1.Router)();
 const logger = (0, errorHandling_1.createLogger)('WhatsAppRoute');
@@ -181,6 +196,7 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, errorHandling
     if (messageData.mediaId && inboxMessage?.id && messageData.from) {
         try {
             const mediaJobId = `whatsapp-media:${messageData.wamid}:${messageData.mediaId}`;
+            const isInternal = isInternalNumber(messageData.from);
             await queue_1.whatsappMediaQueue.add('process', {
                 inboxMessageId: inboxMessage.id,
                 wamid: messageData.wamid,
@@ -189,6 +205,7 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, errorHandling
                 mimeType: messageData.mimeType,
                 fileName: messageData.fileName,
                 receivedAt: receivedAt.toISOString(),
+                source: isInternal ? 'internal_whatsapp_upload' : 'whatsapp',
             }, {
                 jobId: mediaJobId,
                 attempts: 3,
@@ -204,6 +221,34 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, errorHandling
                 mediaId: messageData.mediaId,
             });
         }
+    }
+    // ── Internal number early exit — no AI, no bot, just process + optional confirm ──
+    if (messageData.from && isInternalNumber(messageData.from)) {
+        if (messageData.mediaId) {
+            // Attachment already queued above — send confirmation receipt
+            const confirmMsg = '\u2705 *Document Received*\nYour document has been successfully received and processed.\nThe candidate record has been updated in the system.\n\u2014 Falisha Manpower Automation';
+            try {
+                await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, messageData.from, confirmMsg);
+                logger.info('Sent internal upload confirmation', { to: messageData.from });
+            }
+            catch (err) {
+                logger.warn('Failed to send internal confirmation (non-fatal)', {
+                    err: err instanceof Error ? err.message : String(err),
+                });
+            }
+        }
+        else {
+            // Text-only from internal number — no reply, mark processed silently
+            if (inboxMessage?.id) {
+                try {
+                    const db = (0, database_1.supabaseAdminClient)();
+                    await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessage.id);
+                }
+                catch { /* non-fatal */ }
+            }
+            logger.info('Text-only from internal number — ignored silently', { from: messageData.from });
+        }
+        return res.status(200).json({ status: 'internal_number' });
     }
     // ── WhatsApp Bot intercept (text, interactive buttons/lists, and media in active flows) ──
     // Called BEFORE the AI reply so the bot can handle any message type.
@@ -297,5 +342,21 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, errorHandling
         }
     }
     res.status(200).json({ status: 'received', id: inboxMessage?.id ?? null });
+    // Mark text-only (no-media) legacy inbox_messages as processed immediately.
+    // Media messages are marked 'processed' by whatsappMediaWorker after download.
+    // Without this, every text message stays 'pending' in the legacy table forever.
+    if (!messageData.mediaId && inboxMessage?.id) {
+        try {
+            const db = (0, database_1.supabaseAdminClient)();
+            await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessage.id);
+        }
+        catch (err) {
+            // Non-fatal — legacy table cleanup only
+            logger.warn('Failed to mark text inbox_message as processed (non-fatal)', {
+                inboxMessageId: inboxMessage.id,
+                err: err instanceof Error ? err.message : String(err),
+            });
+        }
+    }
 }));
 exports.default = router;

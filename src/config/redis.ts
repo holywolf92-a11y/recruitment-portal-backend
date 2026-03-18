@@ -1,64 +1,50 @@
 import IORedis from 'ioredis';
-import dns from 'node:dns/promises';
 import { createLogger } from '../utils/errorHandling';
 
 const logger = createLogger('Redis');
 
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-if (!redisUrl && process.env.NODE_ENV === 'production') {
-  throw new Error('REDIS_URL is required in production but was not set');
-}
 
-let redisHostForDiagnostics: string | undefined;
-let redisPortForDiagnostics: number | undefined;
-let redisProtocolForDiagnostics: string | undefined;
+// Parse URL into explicit components — avoids IORedis URL-parsing edge cases
+// and ensures TLS + credentials are passed correctly for Upstash / managed Redis.
+let parsedHost = 'localhost';
+let parsedPort = 6379;
+let parsedPassword: string | undefined;
+let parsedUsername: string | undefined;
+let isTLS = false;
 
 try {
-  const parsed = new URL(redisUrl);
-  redisHostForDiagnostics = parsed.hostname;
-  redisPortForDiagnostics = parsed.port ? Number(parsed.port) : undefined;
-  redisProtocolForDiagnostics = parsed.protocol;
+  const u = new URL(redisUrl);
+  parsedHost = u.hostname;
+  parsedPort = u.port ? Number(u.port) : (u.protocol === 'rediss:' ? 6380 : 6379);
+  parsedPassword = u.password ? decodeURIComponent(u.password) : undefined;
+  parsedUsername = u.username ? decodeURIComponent(u.username) : undefined;
+  isTLS = u.protocol === 'rediss:';
 } catch (e) {
-  logger.warn('Failed to parse REDIS_URL for diagnostics', { message: (e as any)?.message });
+  logger.warn('Failed to parse REDIS_URL — falling back to URL string', { message: (e as any)?.message });
 }
-
-// Default to `0` (auto) so Node can select IPv4/IPv6 as available.
-// Railway/managed services sometimes provide IPv6-only or dual-stack hostnames.
-const redisFamilyRaw = process.env.REDIS_FAMILY;
-const redisFamilyParsed = redisFamilyRaw ? Number(redisFamilyRaw) : 0;
-const redisFamily = Number.isFinite(redisFamilyParsed) ? redisFamilyParsed : 0;
 
 logger.info('Redis connection configuration', {
-  host: redisHostForDiagnostics,
-  port: redisPortForDiagnostics,
-  protocol: redisProtocolForDiagnostics,
-  family: redisFamily,
+  host: parsedHost,
+  port: parsedPort,
+  tls: isTLS,
+  hasPassword: !!parsedPassword,
 });
 
-if (redisHostForDiagnostics) {
-  dns.lookup(redisHostForDiagnostics, { all: true })
-    .then((addresses) => {
-      logger.info('Redis DNS lookup results', {
-        host: redisHostForDiagnostics,
-        addresses: addresses.map((a) => ({ address: a.address, family: a.family })),
-      });
-    })
-    .catch((e) => {
-      logger.warn('Redis DNS lookup failed', { host: redisHostForDiagnostics, message: (e as any)?.message });
-    });
-}
-
-// Upstash (and other managed Redis services) require explicit TLS when using rediss://
-const isTLS = redisUrl.startsWith('rediss://');
-export const redis = new IORedis(redisUrl, {
+export const redis = new IORedis({
+  host: parsedHost,
+  port: parsedPort,
+  username: parsedUsername,
+  password: parsedPassword,
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
-  connectTimeout: 10_000,
-  family: redisFamily,
-  ...(isTLS ? { tls: {} } : {}),
+  connectTimeout: 15_000,
+  family: 4,           // force IPv4 — Railway containers may otherwise try IPv6
+  lazyConnect: true,   // don't connect at module load; connect on first command
+  ...(isTLS ? { tls: { rejectUnauthorized: false } } : {}),
 });
 
 redis.on('connect', () => logger.info('Redis socket connected'));
 redis.on('ready', () => logger.info('Redis client ready'));
-redis.on('error', (e) => logger.error('Redis client error', e));
+redis.on('error', (e) => logger.error('Redis client error', { message: (e as any)?.message }));
 redis.on('close', () => logger.warn('Redis connection closed'));

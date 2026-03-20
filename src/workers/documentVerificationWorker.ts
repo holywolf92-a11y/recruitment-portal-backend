@@ -1375,10 +1375,13 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
 export function startDocumentVerificationWorker() {
   const worker = new Worker('document-verification', processDocumentVerification, {
     connection: redis,
-    concurrency: 3, // Process up to 3 documents concurrently
+    concurrency: 1,
+    drainDelay: 60,          // seconds — idle poll every 60s instead of 5s
+    stalledInterval: 300_000, // check stalled jobs every 5 min instead of 30s
+    lockDuration: 60_000,
     limiter: {
-      max: 10, // Max 10 jobs
-      duration: 60000, // Per 60 seconds (rate limiting to avoid overloading AI service)
+      max: 10,
+      duration: 60000,
     },
   });
 

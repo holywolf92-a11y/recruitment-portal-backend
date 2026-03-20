@@ -91,7 +91,10 @@ export function startDocumentLinkWorker() {
     },
     {
       connection: redis,
-      concurrency: 3,
+      concurrency: 1,
+      drainDelay: 60,          // seconds — idle poll every 60s instead of 5s
+      stalledInterval: 300_000, // check stalled jobs every 5 min instead of 30s
+      lockDuration: 60_000,
       limiter: { max: 10, duration: 60_000 },
     }
   );

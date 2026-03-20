@@ -1607,7 +1607,10 @@ export function startCvParserWorker() {
     },
     {
       connection: redis,
-      concurrency: 5,
+      concurrency: 2,
+      drainDelay: 60,          // seconds — idle poll every 60s instead of 5s
+      stalledInterval: 300_000, // check stalled jobs every 5 min instead of 30s
+      lockDuration: 60_000,    // 1-min lock → renewal every 30s instead of 15s
       limiter: { max: 10, duration: 60_000 },
     }
   );

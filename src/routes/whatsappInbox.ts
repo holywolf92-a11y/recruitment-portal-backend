@@ -32,6 +32,14 @@ router.get(
 );
 
 router.get(
+  '/conversations/:id',
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const conversation = await getConversation(req.params.id);
+    res.json(conversation);
+  })
+);
+
+router.get(
   '/conversations/:id/messages',
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : undefined;

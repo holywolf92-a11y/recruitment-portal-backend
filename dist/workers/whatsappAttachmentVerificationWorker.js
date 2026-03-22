@@ -14,7 +14,7 @@ const candidateService_1 = require("../services/candidateService");
 const documentClassifier_1 = require("../services/documentClassifier");
 const queue_1 = require("../config/queue");
 const logger = (0, errorHandling_1.createLogger)('WhatsAppAttachmentVerificationWorker');
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
+const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 function signHmac(body) {
     return crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
@@ -384,7 +384,10 @@ function startWhatsAppAttachmentVerificationWorker() {
         };
     }, {
         connection: redis_1.redis,
-        concurrency: 3,
+        concurrency: 1,
+        drainDelay: 60, // seconds — idle poll every 60s instead of 5s
+        stalledInterval: 300000, // check stalled jobs every 5 min instead of 30s
+        lockDuration: 60000,
         limiter: { max: 30, duration: 60000 },
     });
     worker.on('completed', (job) => {

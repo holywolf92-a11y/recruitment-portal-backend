@@ -277,7 +277,7 @@ All backend components of the AI Document Upload, Categorization, Identity Match
 ### Environment Variables
 ```env
 # Required for AI verification
-PYTHON_CV_PARSER_URL=https://recruitment-portal-python-parser-production.up.railway.app
+PYTHON_CV_PARSER_URL=https://recruitment-python-parser-production.up.railway.app
 PYTHON_HMAC_SECRET=<secret>
 REDIS_URL=<redis-connection-string>
 RUN_WORKER=true

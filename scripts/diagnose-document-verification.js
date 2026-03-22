@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3000';
-const PYTHON_PARSER_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app';
+const PYTHON_PARSER_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app';
 
 // Colors for output
 const colors = {

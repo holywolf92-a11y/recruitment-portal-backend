@@ -40,7 +40,7 @@ Railway hasn't auto-deployed the latest commit. Possible reasons:
 
 ### Step 4: Verify Environment Variables
 After deployment, check **"Variables"** tab:
-- ✅ `PYTHON_CV_PARSER_URL` = `https://recruitment-portal-python-parser-production.up.railway.app`
+- ✅ `PYTHON_CV_PARSER_URL` = `https://recruitment-python-parser-production.up.railway.app`
 - ✅ `PYTHON_HMAC_SECRET` = (should match parser's secret)
 - ✅ `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, etc.
 

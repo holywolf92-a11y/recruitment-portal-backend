@@ -5,55 +5,48 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.redis = void 0;
 const ioredis_1 = __importDefault(require("ioredis"));
-const promises_1 = __importDefault(require("node:dns/promises"));
 const errorHandling_1 = require("../utils/errorHandling");
 const logger = (0, errorHandling_1.createLogger)('Redis');
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-if (!redisUrl && process.env.NODE_ENV === 'production') {
-    throw new Error('REDIS_URL is required in production but was not set');
-}
-let redisHostForDiagnostics;
-let redisPortForDiagnostics;
-let redisProtocolForDiagnostics;
+// Parse URL into explicit components — avoids IORedis URL-parsing edge cases
+// and ensures TLS + credentials are passed correctly for Upstash / managed Redis.
+let parsedHost = 'localhost';
+let parsedPort = 6379;
+let parsedPassword;
+let parsedUsername;
+let isTLS = false;
 try {
-    const parsed = new URL(redisUrl);
-    redisHostForDiagnostics = parsed.hostname;
-    redisPortForDiagnostics = parsed.port ? Number(parsed.port) : undefined;
-    redisProtocolForDiagnostics = parsed.protocol;
+    const u = new URL(redisUrl);
+    parsedHost = u.hostname;
+    parsedPort = u.port ? Number(u.port) : (u.protocol === 'rediss:' ? 6380 : 6379);
+    parsedPassword = u.password ? decodeURIComponent(u.password) : undefined;
+    parsedUsername = u.username ? decodeURIComponent(u.username) : undefined;
+    isTLS = u.protocol === 'rediss:';
 }
 catch (e) {
-    logger.warn('Failed to parse REDIS_URL for diagnostics', { message: e?.message });
+    logger.warn('Failed to parse REDIS_URL — falling back to URL string', { message: e?.message });
 }
-// Default to `0` (auto) so Node can select IPv4/IPv6 as available.
-// Railway/managed services sometimes provide IPv6-only or dual-stack hostnames.
-const redisFamilyRaw = process.env.REDIS_FAMILY;
-const redisFamilyParsed = redisFamilyRaw ? Number(redisFamilyRaw) : 0;
-const redisFamily = Number.isFinite(redisFamilyParsed) ? redisFamilyParsed : 0;
 logger.info('Redis connection configuration', {
-    host: redisHostForDiagnostics,
-    port: redisPortForDiagnostics,
-    protocol: redisProtocolForDiagnostics,
-    family: redisFamily,
+    host: parsedHost,
+    port: parsedPort,
+    tls: isTLS,
+    hasPassword: !!parsedPassword,
 });
-if (redisHostForDiagnostics) {
-    promises_1.default.lookup(redisHostForDiagnostics, { all: true })
-        .then((addresses) => {
-        logger.info('Redis DNS lookup results', {
-            host: redisHostForDiagnostics,
-            addresses: addresses.map((a) => ({ address: a.address, family: a.family })),
-        });
-    })
-        .catch((e) => {
-        logger.warn('Redis DNS lookup failed', { host: redisHostForDiagnostics, message: e?.message });
-    });
-}
-exports.redis = new ioredis_1.default(redisUrl, {
+exports.redis = new ioredis_1.default({
+    host: parsedHost,
+    port: parsedPort,
+    username: parsedUsername,
+    password: parsedPassword,
     maxRetriesPerRequest: null,
-    enableReadyCheck: true,
-    connectTimeout: 10000,
-    family: redisFamily,
+    enableReadyCheck: false,
+    connectTimeout: 15000,
+    family: 4, // force IPv4 — Railway containers may otherwise try IPv6
+    lazyConnect: true, // don't connect at module load; connect on first command
+    // Give up after 5 retries (~30 s) to avoid hammering a blocked port
+    retryStrategy: (times) => (times >= 5 ? null : Math.min(times * 2000, 10000)),
+    ...(isTLS ? { tls: { rejectUnauthorized: false } } : {}),
 });
 exports.redis.on('connect', () => logger.info('Redis socket connected'));
 exports.redis.on('ready', () => logger.info('Redis client ready'));
-exports.redis.on('error', (e) => logger.error('Redis client error', e));
+exports.redis.on('error', (e) => logger.error('Redis client error', { message: e?.message }));
 exports.redis.on('close', () => logger.warn('Redis connection closed'));

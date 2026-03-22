@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Configuration
-const PYTHON_PARSER_URL = 'https://recruitment-portal-python-parser-production.up.railway.app';
+const PYTHON_PARSER_URL = 'https://recruitment-python-parser-production.up.railway.app';
 const PYTHON_HMAC_SECRET = 'Itbfr/p8ky/dRMAHLdi/DIiQRLEJtm2SqyNfwuXa3r0=';
 
 console.log('╔════════════════════════════════════════════════════════════════════════════╗');

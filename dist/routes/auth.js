@@ -269,4 +269,42 @@ router.post('/seed-admin', async (req, res) => {
         res.status(500).json({ error: 'Failed to seed admin user' });
     }
 });
+// ── Mobile app: update agent online status ──────────────────────────────────
+router.patch('/agent-status', auth_1.authenticate, async (req, res) => {
+    try {
+        const { is_online } = req.body ?? {};
+        if (typeof is_online !== 'boolean') {
+            return res.status(400).json({ error: 'is_online (boolean) is required' });
+        }
+        const supabase = (0, database_1.supabaseAdminClient)();
+        const { error } = await supabase.auth.admin.updateUserById(req.user.id, {
+            user_metadata: { ...req.user, is_online },
+        });
+        if (error)
+            return res.status(400).json({ error: error.message });
+        res.json({ ok: true, is_online });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message ?? 'Failed to update agent status' });
+    }
+});
+// ── Mobile app: register Expo push token ───────────────────────────────────
+router.post('/push-token', auth_1.authenticate, async (req, res) => {
+    try {
+        const { token } = req.body ?? {};
+        if (!token || typeof token !== 'string') {
+            return res.status(400).json({ error: 'token (string) is required' });
+        }
+        const supabase = (0, database_1.supabaseAdminClient)();
+        const { error } = await supabase.auth.admin.updateUserById(req.user.id, {
+            user_metadata: { ...req.user, expo_push_token: token },
+        });
+        if (error)
+            return res.status(400).json({ error: error.message });
+        res.json({ ok: true });
+    }
+    catch (err) {
+        res.status(500).json({ error: err.message ?? 'Failed to register push token' });
+    }
+});
 exports.default = router;

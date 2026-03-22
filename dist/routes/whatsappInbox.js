@@ -15,6 +15,10 @@ router.get('/conversations', (0, errorHandling_1.asyncHandler)(async (req, res) 
     const result = await (0, whatsappInboxService_1.listConversations)({ limit, offset });
     res.json(result);
 }));
+router.get('/conversations/:id', (0, errorHandling_1.asyncHandler)(async (req, res) => {
+    const conversation = await (0, whatsappInboxService_1.getConversation)(req.params.id);
+    res.json(conversation);
+}));
 router.get('/conversations/:id/messages', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : undefined;
     const result = await (0, whatsappInboxService_1.listMessages)(req.params.id, { limit });

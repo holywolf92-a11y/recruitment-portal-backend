@@ -75,7 +75,10 @@ function startDocumentLinkWorker() {
         }
     }, {
         connection: redis_1.redis,
-        concurrency: 3,
+        concurrency: 1,
+        drainDelay: 60, // seconds — idle poll every 60s instead of 5s
+        stalledInterval: 300000, // check stalled jobs every 5 min instead of 30s
+        lockDuration: 60000,
         limiter: { max: 10, duration: 60000 },
     });
     worker.on('completed', (job) => {

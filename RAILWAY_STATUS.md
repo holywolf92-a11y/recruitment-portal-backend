@@ -11,7 +11,7 @@
 - **Evidence:** No `[UploadDocument] PDF detected` messages in logs
 
 ## ✅ Environment Variables (Verified)
-- ✅ `PYTHON_CV_PARSER_URL` = `https://recruitment-portal-python-parser-production.up.railway.app`
+- ✅ `PYTHON_CV_PARSER_URL` = `https://recruitment-python-parser-production.up.railway.app`
 - ✅ `PYTHON_HMAC_SECRET` = Set (matches parser)
 
 ## 🚀 Deployment Triggered

@@ -17,7 +17,7 @@ import {
 } from '../config/documentCategories';
 import { DocumentRejectionService, RejectionContext } from '../services/documentRejectionService';
 
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
+const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 
 if (!HMAC_SECRET && process.env.NODE_ENV === 'production') {

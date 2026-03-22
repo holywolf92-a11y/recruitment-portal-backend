@@ -10,7 +10,7 @@ import { documentVerificationQueue } from '../config/queue';
 
 const logger = createLogger('WhatsAppAttachmentVerificationWorker');
 
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
+const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 
 export interface WhatsAppAttachmentVerificationJobData {

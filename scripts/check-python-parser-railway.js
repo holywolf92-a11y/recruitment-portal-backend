@@ -3,7 +3,7 @@
  * Tests if the service is running and accessible
  */
 
-const PYTHON_PARSER_URL = 'https://recruitment-portal-python-parser-production.up.railway.app';
+const PYTHON_PARSER_URL = 'https://recruitment-python-parser-production.up.railway.app';
 const PYTHON_HMAC_SECRET = 'Itbfr/p8ky/dRMAHLdi/DIiQRLEJtm2SqyNfwuXa3r0=';
 
 console.log('🔍 Checking Python Parser Service on Railway...\n');

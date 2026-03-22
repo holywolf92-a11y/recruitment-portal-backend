@@ -42,41 +42,6 @@ exports.sendStandaloneMissingDataEmail = sendStandaloneMissingDataEmail;
 const crypto_1 = __importDefault(require("crypto"));
 const database_1 = require("../config/database");
 const errorHandling_1 = require("../utils/errorHandling");
-const gmailService_1 = require("./gmailService");
-/**
- * Resolve the Gmail auth client to use for sending a reply to a candidate.
- * Looks up the candidate's linked inbox_message to determine which Gmail account
- * originally received their CV (Account 1 or 2), then returns the correct client.
- * Falls back to Account 1 (default) if the source account cannot be determined.
- */
-async function resolveGmailAuthClientForCandidate(candidateId, db) {
-    try {
-        // Find the most recent inbox_attachment linked to this candidate
-        const { data: att } = await db
-            .from('inbox_attachments')
-            .select('inbox_message_id')
-            .eq('candidate_id', candidateId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-        const inboxMessageId = att?.inbox_message_id;
-        if (!inboxMessageId)
-            return undefined; // Account 1 default
-        const { data: msg } = await db
-            .from('inbox_messages')
-            .select('payload')
-            .eq('id', inboxMessageId)
-            .maybeSingle();
-        const payload = msg?.payload || {};
-        if (payload.inbox_account === 2 && (0, gmailService_1.isAccount2Configured)()) {
-            return (0, gmailService_1.createOAuth2ClientForAccount2)();
-        }
-        return undefined; // Account 1 default
-    }
-    catch {
-        return undefined; // Safe default — Account 1
-    }
-}
 const logger = (0, errorHandling_1.createLogger)('MissingDataEmailService');
 function sha256(text) {
     return crypto_1.default.createHash('sha256').update(text).digest('hex');
@@ -107,63 +72,6 @@ function getCandidatePreferredEmail(candidate) {
     // and may not belong to the candidate.
     const email = safeString(candidate?.email).trim();
     return email || null;
-}
-async function maybeBackfillGmailThreadIdentity(candidateId) {
-    try {
-        const db = (0, database_1.supabaseAdminClient)();
-        const { data: candidate } = await db
-            .from('candidates')
-            .select('id,email,gmail_thread_id,gmail_from_email')
-            .eq('id', candidateId)
-            .maybeSingle();
-        if (!candidate)
-            return { ok: false };
-        if (safeString(candidate.gmail_thread_id).trim())
-            return { ok: false };
-        const { data: rows, error } = await db
-            .from('inbox_attachments')
-            .select('inbox_message_id, created_at, inbox_messages (source, payload)')
-            .eq('candidate_id', candidateId)
-            .order('created_at', { ascending: false })
-            .limit(10);
-        if (error || !rows || rows.length === 0)
-            return { ok: false };
-        for (const row of rows) {
-            const msg = row?.inbox_messages;
-            if (!msg || msg.source !== 'gmail')
-                continue;
-            const payload = msg.payload || {};
-            const threadId = typeof payload.threadId === 'string' ? payload.threadId.trim() : '';
-            if (!threadId)
-                continue;
-            const subject = typeof payload.subject === 'string' ? payload.subject : null;
-            const messageIdHeader = typeof payload.messageIdHeader === 'string'
-                ? payload.messageIdHeader
-                : typeof payload.messageId === 'string'
-                    ? payload.messageId
-                    : null;
-            const fromRaw = typeof payload.from === 'string' ? payload.from : '';
-            const emailMatch = fromRaw.match(/<([^>]+)>/) || fromRaw.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
-            const fromEmail = (emailMatch?.[1] || emailMatch?.[0] || '').trim() || null;
-            const candidateEmail = safeString(candidate.email).trim();
-            const update = {
-                gmail_thread_id: threadId,
-                gmail_last_subject: subject,
-                gmail_last_message_id: messageIdHeader,
-            };
-            // Only set gmail_from_email if candidate has no real email.
-            // This avoids accidentally preferring a forwarding sender over the candidate's actual email.
-            if (!candidateEmail && fromEmail) {
-                update.gmail_from_email = fromEmail;
-            }
-            await db.from('candidates').update(update).eq('id', candidateId);
-            return { ok: true, threadId, subject, messageIdHeader, fromEmail };
-        }
-        return { ok: false };
-    }
-    catch {
-        return { ok: false };
-    }
 }
 async function computeMissingDocsForCandidate(args) {
     const candidate = args.candidate;
@@ -321,32 +229,29 @@ async function maybeSendMissingDataEmail(args) {
             return { sent: false, reason: 'candidate_not_found' };
         }
         const toEmail = getCandidatePreferredEmail(candidate);
-        let threadId = safeString(candidate.gmail_thread_id).trim();
-        const inReplyTo = safeString(candidate.gmail_last_message_id).trim();
-        const lastSubject = safeString(candidate.gmail_last_subject).trim();
         if (!toEmail) {
             return { sent: false, reason: 'missing_email' };
         }
-        if (!threadId) {
-            const backfill = await maybeBackfillGmailThreadIdentity(args.candidateId);
-            if (backfill.ok) {
-                threadId = backfill.threadId;
-            }
-        }
-        if (!threadId)
-            return { sent: false, reason: 'missing_thread' };
         const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await Promise.resolve().then(() => __importStar(require('./progressiveDataCompletionService')));
         const missingFieldsRaw = Array.from(new Set(calculateMissingFields(candidate)));
-        const importantMissingFieldsRaw = missingFieldsRaw.filter((field) => ['country_of_interest', 'salary_expectation'].includes(field));
+        // Priority fields to request from candidate
+        const PRIORITY_FIELDS = ['position', 'country_of_interest'];
+        const FIELD_LABEL_OVERRIDES = {
+            position: 'Profession / Job Title',
+            country_of_interest: 'Country of Interest',
+        };
+        const importantMissingFieldsRaw = missingFieldsRaw.filter((field) => PRIORITY_FIELDS.includes(field));
         const missingFields = importantMissingFieldsRaw.map((field) => ({
             field,
-            label: EXCEL_BROWSER_FIELDS[field] || field,
+            label: FIELD_LABEL_OVERRIDES[field] || EXCEL_BROWSER_FIELDS[field] || field,
         }));
-        const missingDocs = await computeMissingDocsForCandidate({
+        // Priority documents: only passport and police certificate
+        const allMissingDocs = await computeMissingDocsForCandidate({
             candidateId: args.candidateId,
             candidate,
             missingFields: missingFieldsRaw,
         });
+        const missingDocs = allMissingDocs.filter((d) => ['passport', 'police_certificate'].includes(d));
         if (missingFields.length === 0 && missingDocs.length === 0) {
             if (candidate.missing_data_email_status !== 'completed') {
                 await db
@@ -383,7 +288,7 @@ async function maybeSendMissingDataEmail(args) {
                 return { sent: false, reason: 'cooldown' };
             }
         }
-        // Generate or reuse tracking token for reliable email threading
+        // Generate or reuse tracking token for subject-line threading
         let trackingToken = safeString(candidate.email_tracking_token).trim();
         if (!trackingToken) {
             trackingToken = generateTrackingToken();
@@ -399,17 +304,26 @@ async function maybeSendMissingDataEmail(args) {
             missingDocs,
             trackingToken,
         });
-        const subject = lastSubject ? `Re: ${lastSubject.replace(/^re:\s*/i, '')}` : rendered.subject;
-        // Route reply through the correct Gmail account (Account 2 if CV came via falishaoep4035@gmail.com)
-        const replyAuthClient = await resolveGmailAuthClientForCandidate(args.candidateId, db);
-        await (0, gmailService_1.sendThreadReply)({
-            toEmail,
-            subject,
-            bodyText: rendered.bodyText,
-            threadId,
-            inReplyToMessageId: inReplyTo || undefined,
-            referencesMessageId: inReplyTo || undefined,
-        }, replyAuthClient);
+        // Send via EmailService (Resend in production, SMTP in local dev)
+        const { emailService: emailSvc } = await Promise.resolve().then(() => __importStar(require('./emailService')));
+        const sendResult = await emailSvc.sendEmailDetailed({
+            to: toEmail,
+            subject: rendered.subject,
+            html: rendered.bodyHtml,
+            text: rendered.bodyText,
+            auditPayload: {
+                candidateId: args.candidateId,
+                candidateName: candidate.name || null,
+                trackingToken,
+                kind: 'missing_data_request',
+                trigger: args.trigger,
+                missingFields: importantMissingFieldsRaw,
+                missingDocs,
+            },
+        });
+        if (!sendResult.sent) {
+            return { sent: false, reason: 'send_failed' };
+        }
         const newAttempts = attempts + 1;
         const newNextSendAt = addHours(now, 24);
         await db
@@ -425,9 +339,9 @@ async function maybeSendMissingDataEmail(args) {
         try {
             await db.from('candidate_missing_data_email_log').insert({
                 candidate_id: args.candidateId,
-                gmail_thread_id: threadId,
+                provider_message_id: sendResult.providerMessageId || null,
                 to_email: toEmail,
-                subject,
+                subject: rendered.subject,
                 body_text: rendered.bodyText,
                 missing_fields: importantMissingFieldsRaw,
                 missing_docs: missingDocs,
@@ -461,16 +375,22 @@ async function generateMissingDataEmailContent(args) {
     }
     const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await Promise.resolve().then(() => __importStar(require('./progressiveDataCompletionService')));
     const missingFieldsRaw = Array.from(new Set(calculateMissingFields(candidate)));
-    const importantMissingFieldsRaw = missingFieldsRaw.filter((field) => ['country_of_interest', 'salary_expectation'].includes(field));
+    const PRIORITY_FIELDS = ['position', 'country_of_interest'];
+    const FIELD_LABEL_OVERRIDES = {
+        position: 'Profession / Job Title',
+        country_of_interest: 'Country of Interest',
+    };
+    const importantMissingFieldsRaw = missingFieldsRaw.filter((field) => PRIORITY_FIELDS.includes(field));
     const missingFields = importantMissingFieldsRaw.map((field) => ({
         field,
-        label: EXCEL_BROWSER_FIELDS[field] || field,
+        label: FIELD_LABEL_OVERRIDES[field] || EXCEL_BROWSER_FIELDS[field] || field,
     }));
-    const missingDocs = await computeMissingDocsForCandidate({
+    const allMissingDocs = await computeMissingDocsForCandidate({
         candidateId: args.candidateId,
         candidate,
         missingFields: missingFieldsRaw,
     });
+    const missingDocs = allMissingDocs.filter((d) => ['passport', 'police_certificate'].includes(d));
     const rendered = renderMissingDataEmail({
         candidateId: args.candidateId,
         candidateName: candidate.name,
@@ -509,16 +429,23 @@ async function sendStandaloneMissingDataEmail(args) {
         }
         const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await Promise.resolve().then(() => __importStar(require('./progressiveDataCompletionService')));
         const missingFieldsRaw = Array.from(new Set(calculateMissingFields(candidate)));
-        const importantMissingFieldsRaw = missingFieldsRaw.filter((field) => ['country_of_interest', 'salary_expectation'].includes(field));
+        // Priority fields to request from candidate
+        const PRIORITY_FIELDS = ['position', 'country_of_interest'];
+        const FIELD_LABEL_OVERRIDES = {
+            position: 'Profession / Job Title',
+            country_of_interest: 'Country of Interest',
+        };
+        const importantMissingFieldsRaw = missingFieldsRaw.filter((field) => PRIORITY_FIELDS.includes(field));
         const missingFields = importantMissingFieldsRaw.map((field) => ({
             field,
-            label: EXCEL_BROWSER_FIELDS[field] || field,
+            label: FIELD_LABEL_OVERRIDES[field] || EXCEL_BROWSER_FIELDS[field] || field,
         }));
-        const missingDocs = await computeMissingDocsForCandidate({
+        const allMissingDocs = await computeMissingDocsForCandidate({
             candidateId: args.candidateId,
             candidate,
             missingFields: missingFieldsRaw,
         });
+        const missingDocs = allMissingDocs.filter((d) => ['passport', 'police_certificate'].includes(d));
         if (missingFields.length === 0 && missingDocs.length === 0) {
             if (candidate.missing_data_email_status !== 'completed') {
                 await db
@@ -555,21 +482,40 @@ async function sendStandaloneMissingDataEmail(args) {
                 return { sent: false, reason: 'cooldown' };
             }
         }
+        // Generate or reuse tracking token (same as maybeSendMissingDataEmail)
+        let trackingToken = safeString(candidate.email_tracking_token).trim();
+        if (!trackingToken) {
+            trackingToken = generateTrackingToken();
+            await db
+                .from('candidates')
+                .update({ email_tracking_token: trackingToken })
+                .eq('id', args.candidateId);
+        }
         const rendered = renderMissingDataEmail({
             candidateId: args.candidateId,
             candidateName: candidate.name,
             missingFields,
             missingDocs,
+            trackingToken,
         });
-        // Send via Brevo/emailService (SMTP, not Gmail)
+        // Send via Hostinger SMTP
         const { emailService: emailSvc } = await Promise.resolve().then(() => __importStar(require('./emailService')));
-        const brevoResult = await emailSvc.sendEmail({
+        const smtpResult = await emailSvc.sendEmailDetailed({
             to: toEmail,
             subject: rendered.subject,
             html: rendered.bodyHtml,
             text: rendered.bodyText,
+            auditPayload: {
+                candidateId: args.candidateId,
+                candidateName: candidate.name || null,
+                trackingToken,
+                kind: 'missing_data_request',
+                trigger: args.trigger,
+                missingFields: importantMissingFieldsRaw,
+                missingDocs,
+            },
         });
-        if (!brevoResult) {
+        if (!smtpResult.sent) {
             return { sent: false, reason: 'send_failed' };
         }
         const newAttempts = attempts + 1;
@@ -587,7 +533,7 @@ async function sendStandaloneMissingDataEmail(args) {
         try {
             await db.from('candidate_missing_data_email_log').insert({
                 candidate_id: args.candidateId,
-                gmail_thread_id: null,
+                provider_message_id: smtpResult.providerMessageId || null,
                 to_email: toEmail,
                 subject: rendered.subject,
                 body_text: rendered.bodyText,

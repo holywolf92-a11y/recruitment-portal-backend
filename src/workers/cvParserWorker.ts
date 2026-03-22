@@ -17,12 +17,16 @@ import { extractProfilePhotoFromPdfUsingAI } from '../services/aiProfilePhotoExt
 import { sendMessage, sendTemplateMessage } from '../services/whatsappService';
 import { ensureConversationForPhone, recordOutboundMessage } from '../services/whatsappInboxService';
 
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app') as string;
+const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
 const STORAGE_BUCKET = 'documents';
 
 function signHmac(body: string) {
   return crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
+}
+
+function isMissingParseCvRoute(status: number, bodyText: string): boolean {
+  return status === 404 && /Cannot POST \/parse-cv/i.test(bodyText);
 }
 
 function isPlaceholderName(name?: string | null): boolean {
@@ -800,8 +804,10 @@ export function startCvParserWorker() {
         };
         const payload = JSON.stringify(payloadObj);
 
-        // Step 1: Parse CV for professional fields
-        // Note: /parse-cv endpoint expects x-signature (not x-hmac-signature)
+        // Step 1: Parse CV for professional fields.
+        // Prefer the URL-based parser route when it exists, but fall back to the
+        // base64 endpoint for deployments that only expose /parse.
+        let parsed: any;
         const res = await fetch(`${PY_URL}/parse-cv`, {
           method: 'POST',
           headers: {
@@ -811,12 +817,42 @@ export function startCvParserWorker() {
           body: payload,
         });
 
-        if (!res.ok) {
+        if (res.ok) {
+          parsed = await res.json();
+        } else {
           const text = await res.text();
-          throw new Error(`PYTHON_${res.status}: ${text.slice(0, 300)}`);
-        }
+          if (!isMissingParseCvRoute(res.status, text)) {
+            throw new Error(`PYTHON_${res.status}: ${text.slice(0, 300)}`);
+          }
 
-        const parsed = await res.json();
+          console.warn('[CVParser] /parse-cv unavailable, retrying with /parse fallback', {
+            attachmentId,
+            parserUrl: PY_URL,
+          });
+
+          const fallbackPayload = JSON.stringify({
+            file_content: fileBase64,
+            file_name: fileName,
+            mime_type: mimeType,
+          });
+
+          const fallbackRes = await fetch(`${PY_URL}/parse`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-hmac-signature': signHmac(fallbackPayload),
+            },
+            body: fallbackPayload,
+          });
+
+          if (!fallbackRes.ok) {
+            const fallbackText = await fallbackRes.text();
+            throw new Error(`PYTHON_${fallbackRes.status}: ${fallbackText.slice(0, 300)}`);
+          }
+
+          const fallbackParsed = await fallbackRes.json();
+          parsed = fallbackParsed?.data ?? fallbackParsed;
+        }
 
         // Step 2: Also categorize document to extract identity fields (father_name, cnic, passport, date_of_birth, etc.)
         // This is important because CVs often contain personal information

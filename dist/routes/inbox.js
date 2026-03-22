@@ -89,6 +89,23 @@ router.delete('/attachments/:attachmentId', (0, errorHandling_1.asyncHandler)(as
     const deleted = await (0, inboxAttachmentService_1.deleteAttachment)(req.params.attachmentId);
     res.json(deleted);
 }));
+// Download attachment: return signed URL redirect so the file is served directly
+// from Supabase, not proxied through Railway (avoids egress charges).
+router.get('/:messageId/attachments/:attachmentId/download', (0, errorHandling_1.asyncHandler)(async (req, res) => {
+    const attachment = await (0, inboxAttachmentService_1.getAttachmentById)(req.params.attachmentId);
+    if (!attachment || !attachment.storage_path) {
+        return res.status(404).json({ error: 'Attachment not found' });
+    }
+    const { supabaseAdminClient } = require('../config/database');
+    const db = supabaseAdminClient();
+    const bucket = attachment.storage_bucket || 'documents';
+    const { data, error } = await db.storage.from(bucket).createSignedUrl(attachment.storage_path, 300);
+    if (error || !data?.signedUrl) {
+        return res.status(500).json({ error: 'Failed to generate download URL' });
+    }
+    // 302 redirect — browser downloads directly from Supabase, zero Railway egress
+    return res.redirect(302, data.signedUrl);
+}));
 // Trigger parsing job for an attachment
 router.post('/attachments/:attachmentId/process', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const { attachmentId } = req.params;

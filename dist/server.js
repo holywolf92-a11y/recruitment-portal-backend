@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -11,12 +44,9 @@ const env_1 = require("./config/env");
 const database_1 = require("./config/database");
 const routes_1 = __importDefault(require("./routes"));
 const errorHandling_1 = require("./utils/errorHandling");
-const gmailPollingWorker_1 = require("./workers/gmailPollingWorker");
-const cvParserWorker_1 = require("./workers/cvParserWorker");
-const documentLinkWorker_1 = require("./workers/documentLinkWorker");
-const documentVerificationWorker_1 = require("./workers/documentVerificationWorker");
-const whatsappMediaWorker_1 = require("./workers/whatsappMediaWorker");
-const whatsappAttachmentVerificationWorker_1 = require("./workers/whatsappAttachmentVerificationWorker");
+// Workers are lazy-imported inside their `if` guards below.
+// Static imports would load bullmq, ioredis, googleapis & puppeteer
+// into memory at startup even when workers are disabled, wasting ~150-200 MB.
 dotenv_1.default.config();
 (0, env_1.validateEnv)();
 const logger = (0, errorHandling_1.createLogger)('Server');
@@ -87,84 +117,88 @@ try {
     app.use(errorHandling_1.errorHandler);
     app.listen(PORT, '0.0.0.0', () => {
         logger.info(`Server listening on port ${PORT}`);
-        // Start Gmail polling worker only when explicitly enabled.
-        // This prevents noisy log spam (e.g. invalid_client) when creds are present but not valid.
+        // Log email provider status
+        if (process.env.HOSTINGER_SMTP_USER && process.env.HOSTINGER_SMTP_PASSWORD) {
+            logger.info(`Email provider: Hostinger SMTP (${process.env.HOSTINGER_SMTP_USER})`);
+        }
+        else {
+            logger.warn('Email provider: Hostinger SMTP credentials not set (HOSTINGER_SMTP_USER / HOSTINGER_SMTP_PASSWORD)');
+        }
+        if (process.env.RUN_HOSTINGER_POLLING === 'true') {
+            const hasImapUser = !!(process.env.HOSTINGER_IMAP_USER || process.env.HOSTINGER_SMTP_USER);
+            const hasImapPassword = !!(process.env.HOSTINGER_IMAP_PASSWORD || process.env.HOSTINGER_SMTP_PASSWORD);
+            if (hasImapUser && hasImapPassword) {
+                Promise.resolve().then(() => __importStar(require('./workers/hostingerPollingWorker'))).then(({ startHostingerPolling }) => {
+                    startHostingerPolling(5).catch((err) => {
+                        logger.error('Failed to start Hostinger mailbox polling', err);
+                    });
+                }).catch((err) => logger.error('Failed to load Hostinger mailbox polling worker', err));
+            }
+            else {
+                logger.warn('RUN_HOSTINGER_POLLING=true but Hostinger IMAP credentials are missing; polling disabled');
+            }
+        }
+        else {
+            logger.info('Hostinger mailbox polling worker disabled');
+        }
+        // Gmail polling is disabled — outgoing email now uses Hostinger SMTP
         if (process.env.RUN_GMAIL_POLLING === 'true') {
             if (process.env.GMAIL_CLIENT_ID && process.env.GMAIL_REFRESH_TOKEN) {
-                (0, gmailPollingWorker_1.startGmailPolling)(5).catch((err) => {
-                    logger.error('Failed to start Gmail polling', err);
-                });
+                Promise.resolve().then(() => __importStar(require('./workers/gmailPollingWorker'))).then(({ startGmailPolling }) => {
+                    startGmailPolling(5).catch((err) => {
+                        logger.error('Failed to start Gmail polling', err);
+                    });
+                }).catch((err) => logger.error('Failed to load Gmail polling worker', err));
             }
             else {
                 logger.warn('RUN_GMAIL_POLLING=true but Gmail credentials are missing; polling disabled');
             }
         }
         else {
-            logger.info('Gmail polling worker disabled (set RUN_GMAIL_POLLING=true to enable)');
+            logger.info('Gmail polling worker disabled');
         }
         // Start workers if explicitly enabled
         if (process.env.RUN_WORKER === 'true' && process.env.REDIS_URL) {
-            try {
-                // Start CV parser worker (requires Python service)
+            // Workers are lazy-imported here so their heavy dependencies (bullmq,
+            // ioredis, puppeteer) are only loaded into memory when actually needed.
+            Promise.resolve().then(() => __importStar(require('./workers/cvParserWorker'))).then(({ startCvParserWorker }) => {
                 if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
-                    (0, cvParserWorker_1.startCvParserWorker)();
+                    startCvParserWorker();
                     logger.info('CV Parser worker started');
                 }
                 else {
                     logger.warn('CV Parser worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
                 }
-                // Start Document Link worker (only needs Redis)
-                try {
-                    (0, documentLinkWorker_1.startDocumentLinkWorker)();
-                    logger.info('Document Link worker started');
-                }
-                catch (linkErr) {
-                    logger.error('Failed to start Document Link worker:', linkErr);
-                }
-                // Start WhatsApp media worker (requires WhatsApp access token)
-                if (process.env.WHATSAPP_ACCESS_TOKEN) {
-                    try {
-                        (0, whatsappMediaWorker_1.startWhatsAppMediaWorker)();
-                        logger.info('WhatsApp Media worker started');
-                    }
-                    catch (waErr) {
-                        logger.error('Failed to start WhatsApp Media worker:', waErr);
-                    }
-                }
-                else {
-                    logger.warn('WhatsApp Media worker not started (WHATSAPP_ACCESS_TOKEN missing)');
-                }
-                // Start WhatsApp attachment verification worker (requires Python service)
-                if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
-                    try {
-                        (0, whatsappAttachmentVerificationWorker_1.startWhatsAppAttachmentVerificationWorker)();
-                        logger.info('WhatsApp Attachment Verification worker started');
-                    }
-                    catch (waVerifyErr) {
-                        logger.error('Failed to start WhatsApp Attachment Verification worker:', waVerifyErr);
-                    }
-                }
-                else {
-                    logger.warn('WhatsApp Attachment Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
-                }
-                // Start Document Verification worker (requires Python service)
-                if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
-                    try {
-                        (0, documentVerificationWorker_1.startDocumentVerificationWorker)();
-                        logger.info('Document Verification worker started');
-                    }
-                    catch (verifyErr) {
-                        logger.error('Failed to start Document Verification worker:', verifyErr);
-                        logger.warn('Document verification will not run automatically. Use reprocess endpoint to trigger manually.');
-                    }
-                }
-                else {
-                    logger.warn('Document Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
-                    logger.warn('Documents will remain in "Pending" status. Configure Python service or use reprocess endpoint.');
-                }
+            }).catch((err) => logger.error('Failed to load CV Parser worker', err));
+            Promise.resolve().then(() => __importStar(require('./workers/documentLinkWorker'))).then(({ startDocumentLinkWorker }) => {
+                startDocumentLinkWorker();
+                logger.info('Document Link worker started');
+            }).catch((err) => logger.error('Failed to start Document Link worker:', err));
+            if (process.env.WHATSAPP_ACCESS_TOKEN) {
+                Promise.resolve().then(() => __importStar(require('./workers/whatsappMediaWorker'))).then(({ startWhatsAppMediaWorker }) => {
+                    startWhatsAppMediaWorker();
+                    logger.info('WhatsApp Media worker started');
+                }).catch((err) => logger.error('Failed to start WhatsApp Media worker:', err));
             }
-            catch (err) {
-                logger.error('Failed to start workers', err);
+            else {
+                logger.warn('WhatsApp Media worker not started (WHATSAPP_ACCESS_TOKEN missing)');
+            }
+            if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
+                Promise.resolve().then(() => __importStar(require('./workers/whatsappAttachmentVerificationWorker'))).then(({ startWhatsAppAttachmentVerificationWorker }) => {
+                    startWhatsAppAttachmentVerificationWorker();
+                    logger.info('WhatsApp Attachment Verification worker started');
+                }).catch((err) => logger.error('Failed to start WhatsApp Attachment Verification worker:', err));
+                Promise.resolve().then(() => __importStar(require('./workers/documentVerificationWorker'))).then(({ startDocumentVerificationWorker }) => {
+                    startDocumentVerificationWorker();
+                    logger.info('Document Verification worker started');
+                }).catch((err) => {
+                    logger.error('Failed to start Document Verification worker:', err);
+                    logger.warn('Document verification will not run automatically. Use reprocess endpoint to trigger manually.');
+                });
+            }
+            else {
+                logger.warn('Document Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
+                logger.warn('Documents will remain in "Pending" status. Configure Python service or use reprocess endpoint.');
             }
         }
         else {

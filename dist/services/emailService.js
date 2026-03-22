@@ -4,99 +4,156 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.emailService = void 0;
-const node_fetch_1 = __importDefault(require("node-fetch"));
+const crypto_1 = __importDefault(require("crypto"));
 const nodemailer_1 = __importDefault(require("nodemailer"));
+const inboxService_1 = require("./inboxService");
 class EmailService {
     constructor() {
         this.transporter = null;
-        this.initializeTransporter();
     }
-    initializeTransporter() {
-        // Brevo (formerly Sendinblue) SMTP configuration
-        const { BREVO_SMTP_HOST, BREVO_SMTP_PORT, BREVO_SMTP_USER, BREVO_SMTP_PASSWORD, BREVO_FROM_EMAIL, BREVO_FROM_NAME } = process.env;
-        if (process.env.BREVO_API_KEY) {
-            console.log('[EmailService] BREVO_API_KEY detected. SMTP transporter will be skipped.');
-            return;
+    getFromEmail() {
+        // Enforce a single canonical From address system-wide.
+        // Resend domain verification must be completed for this to appear correctly.
+        const configured = (process.env.EMAIL_FROM || '').trim();
+        const fromEmail = configured || EmailService.PRIMARY_FROM_EMAIL;
+        // Hard guarantee: never send from any other address.
+        if (fromEmail.toLowerCase() !== EmailService.PRIMARY_FROM_EMAIL) {
+            throw new Error(`Invalid EMAIL_FROM. This system is locked to ${EmailService.PRIMARY_FROM_EMAIL}. ` +
+                `Got: ${fromEmail}`);
         }
-        if (!BREVO_SMTP_USER || !BREVO_SMTP_PASSWORD) {
-            console.warn('[EmailService] Brevo SMTP credentials not configured. Email sending will be disabled.');
-            return;
-        }
-        this.transporter = nodemailer_1.default.createTransport({
-            host: BREVO_SMTP_HOST || 'smtp-relay.brevo.com',
-            port: parseInt(BREVO_SMTP_PORT || '587'),
-            secure: false, // true for 465, false for other ports
-            auth: {
-                user: BREVO_SMTP_USER,
-                pass: BREVO_SMTP_PASSWORD,
-            },
-        });
-        console.log('[EmailService] Brevo SMTP transporter initialized');
+        return EmailService.PRIMARY_FROM_EMAIL;
     }
-    async sendEmail(options) {
-        const { BREVO_FROM_EMAIL, BREVO_FROM_NAME } = process.env;
-        const fromAddress = BREVO_FROM_EMAIL || 'noreply@recruitment.com';
-        const fromName = BREVO_FROM_NAME || 'Falisha Recruitment';
-        if (process.env.BREVO_API_KEY) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
-            try {
-                const response = await (0, node_fetch_1.default)('https://api.brevo.com/v3/smtp/email', {
-                    method: 'POST',
-                    headers: {
-                        accept: 'application/json',
-                        'content-type': 'application/json',
-                        'api-key': process.env.BREVO_API_KEY,
-                    },
-                    body: JSON.stringify({
-                        sender: {
-                            name: fromName,
-                            email: fromAddress,
-                        },
-                        to: [{ email: options.to }],
-                        subject: options.subject,
-                        htmlContent: options.html,
-                        textContent: options.text,
-                    }),
-                    signal: controller.signal,
-                });
-                if (!response.ok) {
-                    const errorText = await response.text().catch(() => '');
-                    throw new Error(`Brevo API error: ${response.status} ${errorText}`);
-                }
-                console.log('[EmailService] Email sent successfully via Brevo API');
-                return true;
-            }
-            catch (error) {
-                const message = error?.name === 'AbortError'
-                    ? 'Brevo API request timed out'
-                    : error?.message || 'Unknown Brevo API error';
-                console.error('[EmailService] Failed to send email via Brevo API:', message);
-                throw new Error(`Failed to send email: ${message}`);
-            }
-            finally {
-                clearTimeout(timeoutId);
-            }
-        }
-        if (!this.transporter) {
-            console.error('[EmailService] Cannot send email: transporter not initialized');
-            throw new Error('Email service not configured. Please set Brevo SMTP credentials or BREVO_API_KEY.');
-        }
+    /**
+     * Send via Resend HTTP API (HTTPS port 443 — works on Railway).
+     * Railway blocks all outbound SMTP ports (25, 465, 587), so SMTP is not
+     * usable in production. Resend's REST API is the workaround.
+     * Requires RESEND_API_KEY env var and domain falishajobs.com verified on Resend.
+     */
+    async auditOutboundEmail(options, result) {
+        const externalId = `email_outbound_${result.provider}_${result.providerMessageId || crypto_1.default.randomUUID()}`;
         try {
-            const info = await this.transporter.sendMail({
-                from: `"${fromName}" <${fromAddress}>`,
+            await (0, inboxService_1.createInboxMessage)({
+                source: 'email_outbound',
+                externalMessageId: externalId,
+                payload: {
+                    direction: 'outbound',
+                    provider: result.provider,
+                    providerMessageId: result.providerMessageId || null,
+                    from: result.from,
+                    to: result.to,
+                    subject: result.subject,
+                    text: options.text || null,
+                    hasHtml: !!options.html,
+                    sentAt: new Date().toISOString(),
+                    ...(options.auditPayload || {}),
+                },
+                status: 'processed',
+                receivedAt: new Date().toISOString(),
+            });
+        }
+        catch (err) {
+            console.warn('[EmailService] Failed to audit outbound email (non-fatal):', err);
+        }
+    }
+    async sendViaResend(options) {
+        const apiKey = process.env.RESEND_API_KEY;
+        const fromEmail = this.getFromEmail();
+        const res = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                from: `Falisha Jobs <${fromEmail}>`,
+                reply_to: fromEmail,
+                to: [options.to],
+                subject: options.subject,
+                html: options.html,
+                ...(options.text ? { text: options.text } : {}),
+            }),
+        });
+        if (!res.ok) {
+            const body = await res.text();
+            throw new Error(`Resend API error ${res.status}: ${body}`);
+        }
+        const data = (await res.json());
+        console.log('[EmailService] Email sent via Resend', {
+            id: data.id,
+            to: options.to,
+            subject: options.subject,
+            from: fromEmail,
+        });
+        return {
+            sent: true,
+            provider: 'resend',
+            from: fromEmail,
+            to: options.to,
+            subject: options.subject,
+            providerMessageId: data.id,
+        };
+    }
+    getTransporter() {
+        // Lazy-initialize so env vars are available (dotenv loads after imports)
+        if (!this.transporter) {
+            const { HOSTINGER_SMTP_USER, HOSTINGER_SMTP_PASSWORD } = process.env;
+            if (!HOSTINGER_SMTP_USER || !HOSTINGER_SMTP_PASSWORD) {
+                throw new Error('Email service not configured. Please set HOSTINGER_SMTP_USER and HOSTINGER_SMTP_PASSWORD.');
+            }
+            this.transporter = nodemailer_1.default.createTransport({
+                host: 'smtp.hostinger.com',
+                port: 465,
+                secure: true, // SSL on port 465
+                auth: {
+                    user: HOSTINGER_SMTP_USER,
+                    pass: HOSTINGER_SMTP_PASSWORD,
+                },
+                connectionTimeout: 15000, // 15s to establish TCP connection
+                greetingTimeout: 10000, // 10s for SMTP greeting
+                socketTimeout: 30000, // 30s of inactivity before abort
+            });
+            console.log('[EmailService] Hostinger SMTP transporter initialized (local dev)');
+        }
+        return this.transporter;
+    }
+    async sendEmailDetailed(options) {
+        // Production: use Resend HTTP API (Railway blocks SMTP ports 25/465/587)
+        if (process.env.RESEND_API_KEY) {
+            const result = await this.sendViaResend(options);
+            await this.auditOutboundEmail(options, result);
+            return result;
+        }
+        // Local dev fallback: Hostinger SMTP (only works outside Railway)
+        const fromAddress = this.getFromEmail();
+        const transporter = this.getTransporter();
+        try {
+            const info = await transporter.sendMail({
+                from: `"Falisha Jobs" <${fromAddress}>`,
                 to: options.to,
                 subject: options.subject,
                 text: options.text,
                 html: options.html,
             });
-            console.log('[EmailService] Email sent successfully:', info.messageId);
-            return true;
+            console.log('[EmailService] Email sent via SMTP:', info.messageId);
+            const result = {
+                sent: true,
+                provider: 'hostinger-smtp',
+                from: fromAddress,
+                to: options.to,
+                subject: options.subject,
+                providerMessageId: info.messageId || undefined,
+            };
+            await this.auditOutboundEmail(options, result);
+            return result;
         }
         catch (error) {
             console.error('[EmailService] Failed to send email:', error);
             throw new Error(`Failed to send email: ${error.message}`);
         }
+    }
+    async sendEmail(options) {
+        const result = await this.sendEmailDetailed(options);
+        return result.sent;
     }
     /**
      * Send candidate profiles to employer
@@ -200,10 +257,10 @@ class EmailService {
             <div style="background-color: #f9fafb; padding: 24px 32px; border-top: 1px solid #e5e7eb; text-align: center;">
               <p style="margin: 0 0 8px 0; font-size: 14px; color: #6b7280;">
                 Best regards,<br>
-                <strong style="color: #111827;">Falisha Recruitment Agency</strong>
+                <strong style="color: #111827;">Falisha Jobs</strong>
               </p>
               <p style="margin: 8px 0 0 0; font-size: 12px; color: #9ca3af;">
-                This is an automated message. Please do not reply directly to this email.
+                For enquiries, contact us at support@falishajobs.com
               </p>
             </div>
           </div>
@@ -228,7 +285,8 @@ ${candidates.map((c, i) => {
         }).join('\n\n')}
 
 Best regards,
-Falisha Recruitment Agency
+Falisha Jobs
+support@falishajobs.com
     `.trim();
         return this.sendEmail({
             to: employerEmail,
@@ -238,4 +296,5 @@ Falisha Recruitment Agency
         });
     }
 }
+EmailService.PRIMARY_FROM_EMAIL = 'support@falishajobs.com';
 exports.emailService = new EmailService();

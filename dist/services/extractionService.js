@@ -58,8 +58,10 @@ async function extractCandidateData(candidateId, cvUrl, userId) {
  */
 async function callPythonParser(cvUrl) {
     try {
-        const PY_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app';
+        const PY_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app';
         const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
+        const crypto = require('crypto');
+        const sign = (body) => crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
         // If the CV URL is a storage path (not starting with http), convert to signed URL
         let extractUrl = cvUrl;
         if (!cvUrl.startsWith('http')) {
@@ -82,27 +84,63 @@ async function callPythonParser(cvUrl) {
                 throw new Error(`Failed to create signed URL for extraction: ${urlError.message}`);
             }
         }
-        // Create HMAC signature for authentication (matching worker format)
-        const crypto = require('crypto');
         const payload = JSON.stringify({ file_url: extractUrl });
-        const signature = crypto
-            .createHmac('sha256', HMAC_SECRET)
-            .update(payload)
-            .digest('hex');
-        // Call Python parser service via HTTP
+        // Call Python parser service via HTTP.
+        // Fall back to /parse for deployments that do not expose /parse-cv.
         const response = await fetch(`${PY_URL}/parse-cv`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'x-signature': signature,
+                'x-signature': sign(payload),
             },
             body: payload,
         });
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Python parser service error: ${response.status} ${errorText}`);
+        let parsed;
+        if (response.ok) {
+            parsed = await response.json();
         }
-        const parsed = await response.json();
+        else {
+            const errorText = await response.text();
+            const isMissingRoute = response.status === 404 && /Cannot POST \/parse-cv/i.test(errorText);
+            if (!isMissingRoute) {
+                throw new Error(`Python parser service error: ${response.status} ${errorText}`);
+            }
+            const fileResponse = await fetch(extractUrl);
+            if (!fileResponse.ok) {
+                throw new Error(`Failed to fetch CV for parser fallback: ${fileResponse.status} ${fileResponse.statusText}`);
+            }
+            const fileArrayBuffer = await fileResponse.arrayBuffer();
+            const fileBuffer = Buffer.from(fileArrayBuffer);
+            const fileBase64 = fileBuffer.toString('base64');
+            const fileName = extractUrl.split('/').pop()?.split('?')[0] || 'cv.pdf';
+            const lowerName = fileName.toLowerCase();
+            const mimeType = lowerName.endsWith('.pdf')
+                ? 'application/pdf'
+                : lowerName.endsWith('.doc')
+                    ? 'application/msword'
+                    : lowerName.endsWith('.docx')
+                        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                        : 'application/octet-stream';
+            const fallbackPayload = JSON.stringify({
+                file_content: fileBase64,
+                file_name: fileName,
+                mime_type: mimeType,
+            });
+            const fallbackResponse = await fetch(`${PY_URL}/parse`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-hmac-signature': sign(fallbackPayload),
+                },
+                body: fallbackPayload,
+            });
+            if (!fallbackResponse.ok) {
+                const fallbackText = await fallbackResponse.text();
+                throw new Error(`Python parser fallback error: ${fallbackResponse.status} ${fallbackText}`);
+            }
+            const fallbackParsed = await fallbackResponse.json();
+            parsed = fallbackParsed?.data ?? fallbackParsed;
+        }
         // Map the parsed data to ExtractionData format
         const candidateData = parsed.candidate || parsed;
         const extractedData = {

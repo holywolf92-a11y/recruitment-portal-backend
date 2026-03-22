@@ -6,7 +6,7 @@
 require('dotenv').config();
 const crypto = require('crypto');
 
-const PY_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app';
+const PY_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app';
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 
 console.log('🔍 Testing Python Parser Service...\n');

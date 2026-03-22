@@ -1,23 +1,53 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
-const redis_1 = require("../config/redis");
 const queue_1 = require("../config/queue");
 const router = (0, express_1.Router)();
+/** Ping Redis via Upstash REST (HTTPS/443) — avoids TCP port 6380 which may be blocked. */
+async function pingRedis() {
+    const restUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const restToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+    if (restUrl && restToken) {
+        try {
+            const res = await fetch(`${restUrl}/ping`, {
+                headers: { Authorization: `Bearer ${restToken}` },
+                signal: AbortSignal.timeout(5000),
+            });
+            const data = await res.json();
+            return { ok: data.result === 'PONG', method: 'rest' };
+        }
+        catch {
+            return { ok: false, method: 'rest' };
+        }
+    }
+    return { ok: false, method: 'none' };
+}
+const EMPTY_COUNTS = { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
+async function safeJobCounts(q) {
+    try {
+        // Race against a 3 s timeout so the health endpoint doesn't hang on Redis TCP issues
+        return await Promise.race([
+            q.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
+            new Promise((resolve) => setTimeout(() => resolve(EMPTY_COUNTS), 3000)),
+        ]);
+    }
+    catch {
+        return EMPTY_COUNTS;
+    }
+}
 router.get('/queue', async (_req, res) => {
     try {
-        const redisPing = await redis_1.redis.ping();
+        const redisPing = await pingRedis();
         const [cvCounts, docCounts, waMediaCounts, waVerifyCounts] = await Promise.all([
-            queue_1.cvParsingQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
-            queue_1.documentVerificationQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
-            queue_1.whatsappMediaQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
-            queue_1.whatsappAttachmentVerificationQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
+            safeJobCounts(queue_1.cvParsingQueue),
+            safeJobCounts(queue_1.documentVerificationQueue),
+            safeJobCounts(queue_1.whatsappMediaQueue),
+            safeJobCounts(queue_1.whatsappAttachmentVerificationQueue),
         ]);
-        const isOk = redisPing === 'PONG';
+        const isOk = redisPing.ok;
         return res.status(isOk ? 200 : 503).json({
             ok: isOk,
-            redis: { ping: redisPing },
-            // Backward compatible (older checks only look at this)
+            redis: { ping: isOk ? 'PONG' : 'FAILED', method: redisPing.method },
             queue: { name: queue_1.cvParsingQueue.name, counts: cvCounts },
             queues: [
                 { name: queue_1.cvParsingQueue.name, counts: cvCounts },

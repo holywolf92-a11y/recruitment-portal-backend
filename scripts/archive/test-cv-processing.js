@@ -8,7 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const CV_FILE_PATH = path.join(__dirname, '../../FARHAN (1).pdf');
-const PY_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app';
+const PY_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app';
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 
 if (!HMAC_SECRET) {

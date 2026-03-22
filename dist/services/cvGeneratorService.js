@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -9,7 +42,10 @@ exports.generateSingleCV = generateSingleCV;
 const database_1 = require("../config/database");
 const candidateService_1 = require("./candidateService");
 const candidateDocumentService_1 = require("./candidateDocumentService");
-const puppeteer_1 = __importDefault(require("puppeteer"));
+// puppeteer is intentionally NOT statically imported here.
+// A static import loads Chromium bindings into V8 heap at startup (~300-500 MB idle RAM cost).
+// Instead we use a dynamic import() inside generatePDFFromHTML so Chromium is only
+// loaded into memory when a CV is actually being generated.
 const crypto_1 = __importDefault(require("crypto"));
 const cvTemplateConfig_1 = require("../config/cvTemplateConfig");
 const documentCategories_1 = require("../config/documentCategories");
@@ -812,7 +848,8 @@ async function generatePDFFromHTML(html) {
             launchOptions.executablePath = executablePath;
         }
         console.log(`[CVGenerator] Launching Puppeteer with options:`, JSON.stringify(launchOptions, null, 2));
-        const browser = await puppeteer_1.default.launch(launchOptions);
+        const puppeteer = await Promise.resolve().then(() => __importStar(require('puppeteer')));
+        const browser = await puppeteer.default.launch(launchOptions);
         console.log(`[CVGenerator] Puppeteer launched successfully`);
         try {
             const page = await browser.newPage();

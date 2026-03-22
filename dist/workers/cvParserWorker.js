@@ -55,11 +55,14 @@ const progressiveDataCompletionService_1 = require("../services/progressiveDataC
 const aiProfilePhotoExtractionService_1 = require("../services/aiProfilePhotoExtractionService");
 const whatsappService_1 = require("../services/whatsappService");
 const whatsappInboxService_1 = require("../services/whatsappInboxService");
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
+const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 const STORAGE_BUCKET = 'documents';
 function signHmac(body) {
     return crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
+}
+function isMissingParseCvRoute(status, bodyText) {
+    return status === 404 && /Cannot POST \/parse-cv/i.test(bodyText);
 }
 function isPlaceholderName(name) {
     if (!name)
@@ -748,8 +751,10 @@ function startCvParserWorker() {
                 file_hash: resolvedFileHash,
             };
             const payload = JSON.stringify(payloadObj);
-            // Step 1: Parse CV for professional fields
-            // Note: /parse-cv endpoint expects x-signature (not x-hmac-signature)
+            // Step 1: Parse CV for professional fields.
+            // Prefer the URL-based parser route when it exists, but fall back to the
+            // base64 endpoint for deployments that only expose /parse.
+            let parsed;
             const res = await fetch(`${PY_URL}/parse-cv`, {
                 method: 'POST',
                 headers: {
@@ -758,11 +763,38 @@ function startCvParserWorker() {
                 },
                 body: payload,
             });
-            if (!res.ok) {
-                const text = await res.text();
-                throw new Error(`PYTHON_${res.status}: ${text.slice(0, 300)}`);
+            if (res.ok) {
+                parsed = await res.json();
             }
-            const parsed = await res.json();
+            else {
+                const text = await res.text();
+                if (!isMissingParseCvRoute(res.status, text)) {
+                    throw new Error(`PYTHON_${res.status}: ${text.slice(0, 300)}`);
+                }
+                console.warn('[CVParser] /parse-cv unavailable, retrying with /parse fallback', {
+                    attachmentId,
+                    parserUrl: PY_URL,
+                });
+                const fallbackPayload = JSON.stringify({
+                    file_content: fileBase64,
+                    file_name: fileName,
+                    mime_type: mimeType,
+                });
+                const fallbackRes = await fetch(`${PY_URL}/parse`, {
+                    method: 'POST',
+                    headers: {
+                        'content-type': 'application/json',
+                        'x-hmac-signature': signHmac(fallbackPayload),
+                    },
+                    body: fallbackPayload,
+                });
+                if (!fallbackRes.ok) {
+                    const fallbackText = await fallbackRes.text();
+                    throw new Error(`PYTHON_${fallbackRes.status}: ${fallbackText.slice(0, 300)}`);
+                }
+                const fallbackParsed = await fallbackRes.json();
+                parsed = fallbackParsed?.data ?? fallbackParsed;
+            }
             // Step 2: Also categorize document to extract identity fields (father_name, cnic, passport, date_of_birth, etc.)
             // This is important because CVs often contain personal information
             // Note: categorize-document needs file_content (base64), not file_url
@@ -934,17 +966,12 @@ function startCvParserWorker() {
                 }
                 else {
                     try {
-                        const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
-                        if (updatedCandidateForEmail?.gmail_thread_id) {
-                            await maybeSendMissingDataEmail({ candidateId: existingCandidateId, trigger: 'cv_parsed_existing' });
-                        }
-                        else {
-                            await sendStandaloneMissingDataEmail({
-                                candidateId: existingCandidateId,
-                                trigger: 'cv_parsed_existing_manual',
-                            });
-                        }
-                        missingDataEmailSent = true;
+                        const { maybeSendMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
+                        const res = await maybeSendMissingDataEmail({
+                            candidateId: existingCandidateId,
+                            trigger: 'cv_parsed_existing',
+                        });
+                        missingDataEmailSent = !!res?.sent;
                     }
                     catch (emailErr) {
                         console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
@@ -1003,17 +1030,12 @@ function startCvParserWorker() {
                         }
                         else {
                             try {
-                                const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
-                                if (updatedCandidateNew?.gmail_thread_id) {
-                                    await maybeSendMissingDataEmail({ candidateId: candidate.id, trigger: 'cv_parsed_new' });
-                                }
-                                else {
-                                    await sendStandaloneMissingDataEmail({
-                                        candidateId: candidate.id,
-                                        trigger: 'cv_parsed_new_manual',
-                                    });
-                                }
-                                missingDataEmailSent = true;
+                                const { maybeSendMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
+                                const res = await maybeSendMissingDataEmail({
+                                    candidateId: candidate.id,
+                                    trigger: 'cv_parsed_new',
+                                });
+                                missingDataEmailSent = !!res?.sent;
                             }
                             catch (emailErr) {
                                 console.warn('[CVParser] Missing-data email send failed (non-fatal):', emailErr);
@@ -1479,7 +1501,10 @@ function startCvParserWorker() {
         }
     }, {
         connection: redis_1.redis,
-        concurrency: 5,
+        concurrency: 2,
+        drainDelay: 60, // seconds — idle poll every 60s instead of 5s
+        stalledInterval: 300000, // check stalled jobs every 5 min instead of 30s
+        lockDuration: 60000, // 1-min lock → renewal every 30s instead of 15s
         limiter: { max: 10, duration: 60000 },
     });
     worker.on('failed', (job, err) => {

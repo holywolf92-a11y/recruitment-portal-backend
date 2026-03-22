@@ -46,7 +46,7 @@ const identityMatchingService_1 = require("../services/identityMatchingService")
 const candidateMatcher_1 = require("../services/candidateMatcher");
 const documentCategories_1 = require("../config/documentCategories");
 const documentRejectionService_1 = require("../services/documentRejectionService");
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-portal-python-parser-production.up.railway.app');
+const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 if (!HMAC_SECRET && process.env.NODE_ENV === 'production') {
     throw new Error('PYTHON_HMAC_SECRET environment variable is required for document verification worker in production');
@@ -1083,21 +1083,10 @@ async function processDocumentVerification(job) {
                 }
                 // Recalculate missing fields
                 await updateMissingFields(candidateId);
-                // Fetch candidate to check if gmail_thread_id is set
-                const { data: candidateForEmail } = await db
-                    .from('candidates')
-                    .select('gmail_thread_id')
-                    .eq('id', candidateId)
-                    .maybeSingle();
-                // Send missing-data email (Gmail-threaded if thread exists, standalone otherwise)
+                // Send missing-data email via Hostinger SMTP
                 try {
-                    const { maybeSendMissingDataEmail, sendStandaloneMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
-                    if (candidateForEmail?.gmail_thread_id) {
-                        await maybeSendMissingDataEmail({ candidateId, trigger: 'document_verified' });
-                    }
-                    else {
-                        await sendStandaloneMissingDataEmail({ candidateId, trigger: 'document_verified_manual' });
-                    }
+                    const { maybeSendMissingDataEmail } = await Promise.resolve().then(() => __importStar(require('../services/missingDataEmailService')));
+                    await maybeSendMissingDataEmail({ candidateId, trigger: 'document_verified' });
                 }
                 catch (emailErr) {
                     console.warn('[DocumentVerification] Missing-data email send failed (non-fatal):', emailErr);
@@ -1159,10 +1148,13 @@ async function processDocumentVerification(job) {
 function startDocumentVerificationWorker() {
     const worker = new bullmq_1.Worker('document-verification', processDocumentVerification, {
         connection: redis_1.redis,
-        concurrency: 3, // Process up to 3 documents concurrently
+        concurrency: 1,
+        drainDelay: 60, // seconds — idle poll every 60s instead of 5s
+        stalledInterval: 300000, // check stalled jobs every 5 min instead of 30s
+        lockDuration: 60000,
         limiter: {
-            max: 10, // Max 10 jobs
-            duration: 60000, // Per 60 seconds (rate limiting to avoid overloading AI service)
+            max: 10,
+            duration: 60000,
         },
     });
     worker.on('active', (job) => {

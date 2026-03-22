@@ -250,9 +250,24 @@ async function getCandidateById(id, userId) {
         throw error;
     return data;
 }
+// Fields returned in list responses — excludes large text columns (skills, previous_employment,
+// professional_summary, education, certifications) that are only needed in the detail view.
+// Narrowing the select cuts list response payload by ~60-80% and reduces Railway egress.
+const LIST_FIELDS = [
+    'id', 'candidate_code', 'name', 'status', 'source', 'ai_score',
+    'position', 'nationality', 'country_of_interest', 'experience_years',
+    'phone', 'email', 'date_of_birth', 'gender', 'marital_status', 'address',
+    'passport_normalized', 'cnic_normalized', 'passport_expiry',
+    'languages',
+    'passport_received', 'cnic_received', 'degree_received', 'medical_received',
+    'visa_received', 'cv_received', 'photo_received', 'certificate_received',
+    'driving_license_received',
+    'profile_photo_url', 'profile_photo_bucket', 'profile_photo_path',
+    'needs_review', 'auto_extracted', 'created_at', 'updated_at',
+].join(',');
 async function listCandidates(filters = {}, userId) {
     const db = (0, database_1.supabaseAdminClient)();
-    let query = db.from('candidates').select('*', { count: 'exact' });
+    let query = db.from('candidates').select(LIST_FIELDS, { count: 'exact' });
     // By default, exclude deleted candidates (unless explicitly filtering for them)
     if (!filters.status || filters.status !== 'Deleted') {
         query = query.neq('status', 'Deleted');
@@ -665,9 +680,8 @@ async function updateCandidate(id, data, userId) {
         'updated_at', 'field_sources', 'extraction_confidence', 'extraction_source',
         'extracted_at', 'passport_received', 'cnic_received', 'degree_received',
         'medical_received', 'visa_received', 'cv_received', 'photo_received',
-        'certificate_received', 'profile_photo_url', 'gcc_years', 'salary_expectation',
-        'available_from', 'religion', 'driving_license', 'medical_expiry',
-        'interview_date',
+        'certificate_received', 'profile_photo_url',
+        'driving_license_received',
     ]);
     for (const col of Object.keys(updateData)) {
         if (!KNOWN_CANDIDATE_COLUMNS_UPDATE.has(col)) {

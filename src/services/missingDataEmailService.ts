@@ -341,14 +341,23 @@ export async function maybeSendMissingDataEmail(args: {
 
     // Send via EmailService (Resend in production, SMTP in local dev)
     const { emailService: emailSvc } = await import('./emailService');
-    const sent = await emailSvc.sendEmail({
+    const sendResult = await emailSvc.sendEmailDetailed({
       to: toEmail,
       subject: rendered.subject,
       html: rendered.bodyHtml,
       text: rendered.bodyText,
+      auditPayload: {
+        candidateId: args.candidateId,
+        candidateName: candidate.name || null,
+        trackingToken,
+        kind: 'missing_data_request',
+        trigger: args.trigger,
+        missingFields: importantMissingFieldsRaw,
+        missingDocs,
+      },
     });
 
-    if (!sent) {
+    if (!sendResult.sent) {
       return { sent: false, reason: 'send_failed' } as const;
     }
 
@@ -369,7 +378,7 @@ export async function maybeSendMissingDataEmail(args: {
     try {
       await db.from('candidate_missing_data_email_log').insert({
         candidate_id: args.candidateId,
-        gmail_thread_id: null,
+        provider_message_id: sendResult.providerMessageId || null,
         to_email: toEmail,
         subject: rendered.subject,
         body_text: rendered.bodyText,
@@ -581,14 +590,23 @@ export async function sendStandaloneMissingDataEmail(args: {
 
     // Send via Hostinger SMTP
     const { emailService: emailSvc } = await import('./emailService');
-    const smtpResult = await emailSvc.sendEmail({
+    const smtpResult = await emailSvc.sendEmailDetailed({
       to: toEmail,
       subject: rendered.subject,
       html: rendered.bodyHtml,
       text: rendered.bodyText,
+      auditPayload: {
+        candidateId: args.candidateId,
+        candidateName: candidate.name || null,
+        trackingToken,
+        kind: 'missing_data_request',
+        trigger: args.trigger,
+        missingFields: importantMissingFieldsRaw,
+        missingDocs,
+      },
     });
 
-    if (!smtpResult) {
+    if (!smtpResult.sent) {
       return { sent: false, reason: 'send_failed' };
     }
 
@@ -609,7 +627,7 @@ export async function sendStandaloneMissingDataEmail(args: {
     try {
       await db.from('candidate_missing_data_email_log').insert({
         candidate_id: args.candidateId,
-        gmail_thread_id: null,
+        provider_message_id: smtpResult.providerMessageId || null,
         to_email: toEmail,
         subject: rendered.subject,
         body_text: rendered.bodyText,

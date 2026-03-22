@@ -1,6 +1,10 @@
 import express, { Router, Request, Response } from 'express';
 import { supabaseAdminClient } from '../config/database';
 import { emailService } from '../services/emailService';
+import { getMailboxCheckpoint, getWatchdogSummary, HOSTINGER_PROVIDER } from '../services/emailReplyAuditService';
+import { asyncHandler } from '../utils/errorHandling';
+import { countUnreadHostingerMessages, isHostingerImapConfigured } from '../services/hostingerMailboxService';
+import { getPersistentHostingerPollingState, triggerHostingerManualPoll } from '../workers/hostingerPollingWorker';
 
 export const emailRouter = Router();
 
@@ -30,6 +34,330 @@ function resolveFrontendUrl(): string {
 
   return frontendUrl;
 }
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function normalizeFieldSources(value: any): Array<{ field: string; source: string; updated_at?: string; updated_by?: string }> {
+  if (!value || typeof value !== 'object') return [];
+  return Object.entries(value)
+    .map(([field, meta]) => {
+      const data = meta && typeof meta === 'object' ? (meta as Record<string, any>) : {};
+      return {
+        field,
+        source: String(data.source || ''),
+        updated_at: data.updated_at ? String(data.updated_at) : undefined,
+        updated_by: data.updated_by ? String(data.updated_by) : undefined,
+      };
+    })
+    .filter((entry) => entry.source.length > 0);
+}
+
+async function getLastMatchedReplyRecord() {
+  const db = supabaseAdminClient();
+  const { data } = await db
+    .from('email_reply_events')
+    .select('id, candidate_id, subject, from_display, matched_by, received_at, provider_message_id, body_preview')
+    .eq('provider', HOSTINGER_PROVIDER)
+    .eq('match_status', 'matched')
+    .order('received_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!data) return null;
+
+  return {
+    id: data.id,
+    candidateId: data.candidate_id || null,
+    subject: data.subject || null,
+    from: data.from_display || null,
+    matchedBy: data.matched_by || null,
+    receivedAt: data.received_at || null,
+    messageId: data.provider_message_id || null,
+    bodyPreview: data.body_preview || null,
+  };
+}
+
+async function getRecentHostingerPollingRuns(limit = 10) {
+  const db = supabaseAdminClient();
+  const { data } = await db
+    .from('hostinger_polling_runs')
+    .select('id, trigger, status, worker_instance_id, started_at, completed_at, last_heartbeat_at, abandoned_at, duration_ms, unread_count_before, unread_count_after, messages_discovered, messages_processed, messages_matched, messages_unmatched, attachment_upload_success_count, attachment_upload_error_count, success_count, error_count, error_code, error_message')
+    .eq('provider', HOSTINGER_PROVIDER)
+    .order('started_at', { ascending: false })
+    .limit(limit);
+
+  return (data || []).map((row: any) => ({
+    id: row.id,
+    trigger: row.trigger || 'worker',
+    status: row.status || 'completed',
+    workerInstanceId: row.worker_instance_id || null,
+    startedAt: row.started_at || null,
+    completedAt: row.completed_at || null,
+    lastHeartbeatAt: row.last_heartbeat_at || null,
+    abandonedAt: row.abandoned_at || null,
+    durationMs: row.duration_ms || null,
+    unreadCountBefore: Number(row.unread_count_before || 0),
+    unreadCountAfter: Number(row.unread_count_after || 0),
+    messagesDiscovered: Number(row.messages_discovered || 0),
+    messagesProcessed: Number(row.messages_processed || 0),
+    messagesMatched: Number(row.messages_matched || 0),
+    messagesUnmatched: Number(row.messages_unmatched || 0),
+    attachmentUploadSuccessCount: Number(row.attachment_upload_success_count || 0),
+    attachmentUploadErrorCount: Number(row.attachment_upload_error_count || 0),
+    successCount: Number(row.success_count || 0),
+    errorCount: Number(row.error_count || 0),
+    errorCode: row.error_code || null,
+    errorMessage: row.error_message || null,
+  }));
+}
+
+async function getRecentMatchedReplies(limit = 10) {
+  const db = supabaseAdminClient();
+  const { data } = await db
+    .from('email_reply_events')
+    .select('id, candidate_id, subject, from_display, matched_by, received_at, attachment_count, body_preview')
+    .eq('provider', HOSTINGER_PROVIDER)
+    .eq('match_status', 'matched')
+    .order('received_at', { ascending: false })
+    .limit(limit);
+
+  const candidateIds = Array.from(new Set((data || []).map((row: any) => row.candidate_id).filter(Boolean)));
+  let candidateMap = new Map<string, { name: string | null }>();
+
+  if (candidateIds.length > 0) {
+    const { data: candidates } = await db
+      .from('candidates')
+      .select('id, name')
+      .in('id', candidateIds);
+    candidateMap = new Map((candidates || []).map((row: any) => [row.id, { name: row.name || null }]));
+  }
+
+  return (data || []).map((row: any) => ({
+    id: row.id,
+    candidateId: row.candidate_id || null,
+    candidateName: candidateMap.get(row.candidate_id || '')?.name || null,
+    subject: row.subject || null,
+    from: row.from_display || null,
+    matchedBy: row.matched_by || null,
+    receivedAt: row.received_at || null,
+    attachmentCount: Number(row.attachment_count || 0),
+    bodyPreview: row.body_preview || null,
+  }));
+}
+
+async function getRecentHostingerRunItems(limit = 20) {
+  const db = supabaseAdminClient();
+  const { data } = await db
+    .from('hostinger_polling_run_items')
+    .select('id, run_id, provider_message_id, message_uid, candidate_id, matched_by, status, attachment_count, attachment_upload_success_count, attachment_upload_error_count, received_at, completed_at, error_code, error_message')
+    .eq('provider', HOSTINGER_PROVIDER)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  const candidateIds = Array.from(new Set((data || []).map((row: any) => row.candidate_id).filter(Boolean)));
+  let candidateMap = new Map<string, { name: string | null }>();
+
+  if (candidateIds.length > 0) {
+    const { data: candidates } = await db
+      .from('candidates')
+      .select('id, name')
+      .in('id', candidateIds);
+    candidateMap = new Map((candidates || []).map((row: any) => [row.id, { name: row.name || null }]));
+  }
+
+  return (data || []).map((row: any) => ({
+    id: row.id,
+    runId: row.run_id || null,
+    providerMessageId: row.provider_message_id || null,
+    messageUid: row.message_uid || null,
+    candidateId: row.candidate_id || null,
+    candidateName: candidateMap.get(row.candidate_id || '')?.name || null,
+    matchedBy: row.matched_by || null,
+    status: row.status || 'pending',
+    attachmentCount: Number(row.attachment_count || 0),
+    attachmentUploadSuccessCount: Number(row.attachment_upload_success_count || 0),
+    attachmentUploadErrorCount: Number(row.attachment_upload_error_count || 0),
+    receivedAt: row.received_at || null,
+    completedAt: row.completed_at || null,
+    errorCode: row.error_code || null,
+    errorMessage: row.error_message || null,
+  }));
+}
+
+async function buildCandidateReplyTrace(candidateId: string) {
+  const db = supabaseAdminClient();
+
+  const [{ data: candidate }, { data: sentMessages }, { data: replyMessages }, { data: documents }, { data: messageLog }] = await Promise.all([
+    db
+      .from('candidates')
+      .select('id, name, email, email_tracking_token, field_sources, missing_data_email_last_sent_at, missing_data_email_last_reply_processed_at, updated_at')
+      .eq('id', candidateId)
+      .maybeSingle(),
+    db
+      .from('inbox_messages')
+      .select('id, source, status, received_at, payload')
+      .eq('source', 'email_outbound')
+      .eq('payload->>candidateId', candidateId)
+      .order('received_at', { ascending: true })
+      .limit(50),
+    db
+      .from('email_reply_events')
+      .select('id, provider, match_status, matched_by, attachment_count, provider_message_id, body_preview, body_text, received_at, from_display, subject, run_id, run_item_id, attachment_upload_error_count')
+      .eq('candidate_id', candidateId)
+      .order('received_at', { ascending: true })
+      .limit(50),
+    db
+      .from('candidate_documents')
+      .select('id, file_name, document_type, category, verification_status, created_at, source')
+      .eq('candidate_id', candidateId)
+      .eq('source', 'email')
+      .order('created_at', { ascending: true })
+      .limit(100),
+    db
+      .from('candidate_missing_data_email_log')
+      .select('id, to_email, subject, body_text, missing_fields, missing_docs, attempt_no, trigger, sent_at, provider_message_id')
+      .eq('candidate_id', candidateId)
+      .order('sent_at', { ascending: true })
+      .limit(50),
+  ]);
+
+  if (!candidate) {
+    return null;
+  }
+
+  const candidateUpdates = normalizeFieldSources((candidate as any).field_sources)
+    .filter((entry) => ['email_reply', 'manual'].includes(entry.source))
+    .sort((a, b) => String(a.updated_at || '').localeCompare(String(b.updated_at || '')))
+    .map((entry) => ({
+      field: entry.field,
+      source: entry.source,
+      updatedAt: entry.updated_at || null,
+      updatedBy: entry.updated_by || null,
+    }));
+
+  return {
+    candidate: {
+      id: candidate.id,
+      name: (candidate as any).name || null,
+      email: (candidate as any).email || null,
+      emailTrackingToken: (candidate as any).email_tracking_token || null,
+      lastSentAt: (candidate as any).missing_data_email_last_sent_at || null,
+      lastReplyProcessedAt: (candidate as any).missing_data_email_last_reply_processed_at || null,
+      updatedAt: (candidate as any).updated_at || null,
+    },
+    sentMessages: (sentMessages || []).map((row: any) => ({
+      id: row.id,
+      source: row.source,
+      status: row.status,
+      sentAt: row.received_at,
+      provider: row.payload?.provider || null,
+      providerMessageId: row.payload?.providerMessageId || null,
+      subject: row.payload?.subject || null,
+      trigger: row.payload?.trigger || null,
+      missingFields: row.payload?.missingFields || [],
+      missingDocs: row.payload?.missingDocs || [],
+    })),
+    replyMessages: (replyMessages || []).map((row: any) => ({
+      id: row.id,
+      source: row.provider,
+      status: row.match_status,
+      receivedAt: row.received_at,
+      subject: row.subject || null,
+      from: row.from_display || null,
+      matchedBy: row.matched_by || null,
+      attachmentCount: Number(row.attachment_count || 0),
+      messageId: row.provider_message_id || null,
+      bodyPreview: row.body_preview || null,
+      bodyText: row.body_text || null,
+      runId: row.run_id || null,
+      runItemId: row.run_item_id || null,
+      attachmentUploadErrorCount: Number(row.attachment_upload_error_count || 0),
+    })),
+    documents: (documents || []).map((row: any) => ({
+      id: row.id,
+      fileName: row.file_name || null,
+      documentType: row.document_type || row.category || null,
+      category: row.category || null,
+      verificationStatus: row.verification_status || null,
+      createdAt: row.created_at || null,
+      source: row.source || null,
+    })),
+    candidateUpdates,
+    logEntries: (messageLog || []).map((row: any) => ({
+      id: row.id,
+      toEmail: row.to_email || null,
+      subject: row.subject || null,
+      attemptNo: row.attempt_no || null,
+      trigger: row.trigger || null,
+      sentAt: row.sent_at || null,
+      providerMessageId: row.provider_message_id || null,
+      missingFields: row.missing_fields || [],
+      missingDocs: row.missing_docs || [],
+    })),
+  };
+}
+
+emailRouter.get('/hostinger/status', asyncHandler(async (_req: Request, res: Response) => {
+  const unreadCount = isHostingerImapConfigured() ? await countUnreadHostingerMessages() : 0;
+  const [lastMatchedReply, polling, recentRuns, recentMatchedReplies, checkpoint, watchdog, recentRunItems] = await Promise.all([
+    getLastMatchedReplyRecord(),
+    getPersistentHostingerPollingState(),
+    getRecentHostingerPollingRuns(10),
+    getRecentMatchedReplies(10),
+    getMailboxCheckpoint(),
+    getWatchdogSummary(parseInt(process.env.HOSTINGER_POLL_STALE_AFTER_MS || '900000', 10)),
+    getRecentHostingerRunItems(20),
+  ]);
+
+  if (lastMatchedReply) {
+    polling.lastMatchedReply = {
+      candidateId: lastMatchedReply.candidateId || '',
+      messageId: lastMatchedReply.messageId || '',
+      subject: lastMatchedReply.subject || '',
+      from: lastMatchedReply.from || '',
+      matchedBy: lastMatchedReply.matchedBy || 'unknown',
+      receivedAt: lastMatchedReply.receivedAt || '',
+    };
+  }
+
+  return res.json({
+    configured: isHostingerImapConfigured(),
+    enabled: process.env.RUN_HOSTINGER_POLLING === 'true',
+    polling,
+    unreadCount,
+    checkpoint,
+    watchdog,
+    lastMatchedReply,
+    recentRuns,
+    recentRunItems,
+    recentMatchedReplies,
+  });
+}));
+
+emailRouter.post('/hostinger/poll', asyncHandler(async (_req: Request, res: Response) => {
+  const result = await triggerHostingerManualPoll();
+  return res.json({
+    ok: true,
+    result,
+    polling: await getPersistentHostingerPollingState(),
+  });
+}));
+
+emailRouter.get('/reply-trace/:candidateId', asyncHandler(async (req: Request, res: Response) => {
+  const candidateId = String(req.params.candidateId || '').trim();
+  if (!isUuid(candidateId)) {
+    return res.status(400).json({ error: 'Invalid candidateId format (expected UUID)' });
+  }
+
+  const trace = await buildCandidateReplyTrace(candidateId);
+  if (!trace) {
+    return res.status(404).json({ error: 'Candidate not found' });
+  }
+
+  return res.json(trace);
+}));
 
 /**
  * Test Hostinger SMTP configuration

@@ -101,6 +101,23 @@ try {
     } else {
       logger.warn('Email provider: Hostinger SMTP credentials not set (HOSTINGER_SMTP_USER / HOSTINGER_SMTP_PASSWORD)');
     }
+
+    if (process.env.RUN_HOSTINGER_POLLING === 'true') {
+      const hasImapUser = !!(process.env.HOSTINGER_IMAP_USER || process.env.HOSTINGER_SMTP_USER);
+      const hasImapPassword = !!(process.env.HOSTINGER_IMAP_PASSWORD || process.env.HOSTINGER_SMTP_PASSWORD);
+
+      if (hasImapUser && hasImapPassword) {
+        import('./workers/hostingerPollingWorker').then(({ startHostingerPolling }) => {
+          startHostingerPolling(5).catch((err) => {
+            logger.error('Failed to start Hostinger mailbox polling', err);
+          });
+        }).catch((err) => logger.error('Failed to load Hostinger mailbox polling worker', err));
+      } else {
+        logger.warn('RUN_HOSTINGER_POLLING=true but Hostinger IMAP credentials are missing; polling disabled');
+      }
+    } else {
+      logger.info('Hostinger mailbox polling worker disabled');
+    }
     
     // Gmail polling is disabled — outgoing email now uses Hostinger SMTP
     if (process.env.RUN_GMAIL_POLLING === 'true') {

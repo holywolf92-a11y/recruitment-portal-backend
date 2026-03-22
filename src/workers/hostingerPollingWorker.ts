@@ -1,0 +1,777 @@
+import { supabaseAdminClient } from '../config/database';
+import { createInboxMessage } from '../services/inboxService';
+import {
+  HOSTINGER_MAILBOX,
+  HOSTINGER_PROVIDER,
+  completePollingRunItem,
+  createEmailReplyEvent,
+  createPollingRunItem,
+  getMailboxCheckpoint,
+  heartbeatPollingRun,
+  markAbandonedPollingRuns,
+  updateMailboxCheckpoint,
+} from '../services/emailReplyAuditService';
+import {
+  countUnreadHostingerMessages,
+  isHostingerImapConfigured,
+  listHostingerMessagesSinceUid,
+  markHostingerMessageSeen,
+} from '../services/hostingerMailboxService';
+import { processMissingDataEmailReply } from '../services/missingDataEmailReplyService';
+import { maybeSendMissingDataEmail } from '../services/missingDataEmailService';
+import { uploadCandidateDocument } from '../services/candidateDocumentService';
+import { createLogger } from '../utils/errorHandling';
+
+const logger = createLogger('HostingerPollingWorker');
+
+const HEARTBEAT_INTERVAL_MS = Math.max(5000, parseInt(process.env.HOSTINGER_POLL_HEARTBEAT_INTERVAL_MS || '15000', 10));
+const RUN_STALE_AFTER_MS = Math.max(60000, parseInt(process.env.HOSTINGER_POLL_STALE_AFTER_MS || '900000', 10));
+const POLL_BATCH_SIZE = Math.max(1, parseInt(process.env.HOSTINGER_POLL_BATCH_SIZE || '20', 10));
+
+let isRunning = false;
+let activeRunId: string | null = null;
+
+const WORKER_INSTANCE_ID = [
+  process.env.RAILWAY_REPLICA_ID,
+  process.env.HOSTNAME,
+  `pid:${process.pid}`,
+]
+  .filter(Boolean)
+  .join('|') || `pid:${process.pid}`;
+
+interface HostingerPollingState {
+  isRunning: boolean;
+  lastPollStartedAt: string | null;
+  lastPollCompletedAt: string | null;
+  lastHeartbeatAt: string | null;
+  lastResult: { successCount: number; errorCount: number } | null;
+  lastError: string | null;
+  lastMatchedReply: {
+    candidateId: string;
+    messageId: string;
+    subject: string;
+    from: string;
+    matchedBy: string;
+    receivedAt: string;
+  } | null;
+}
+
+const pollingState: HostingerPollingState = {
+  isRunning: false,
+  lastPollStartedAt: null,
+  lastPollCompletedAt: null,
+  lastHeartbeatAt: null,
+  lastResult: null,
+  lastError: null,
+  lastMatchedReply: null,
+};
+
+function startRunHeartbeat(runId: string | null): NodeJS.Timeout | null {
+  if (!runId) return null;
+
+  return setInterval(() => {
+    const heartbeatAt = new Date().toISOString();
+    pollingState.lastHeartbeatAt = heartbeatAt;
+    void heartbeatPollingRun(runId);
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+async function createPollingRun(trigger: 'worker' | 'manual' | 'recovery' | 'backfill' = 'worker'): Promise<string | null> {
+  try {
+    const db = supabaseAdminClient();
+    const now = new Date().toISOString();
+    const { data, error } = await db
+      .from('hostinger_polling_runs')
+      .insert({
+        provider: HOSTINGER_PROVIDER,
+        mailbox: HOSTINGER_MAILBOX,
+        trigger,
+        status: 'running',
+        worker_instance_id: WORKER_INSTANCE_ID,
+        started_at: now,
+        last_heartbeat_at: now,
+      })
+      .select('id')
+      .single();
+
+    if (error) throw error;
+    return data?.id || null;
+  } catch (err) {
+    logger.warn('Failed to create Hostinger polling run record', { error: err });
+    return null;
+  }
+}
+
+async function completePollingRun(args: {
+  runId: string | null;
+  status: 'completed' | 'completed_with_errors' | 'failed';
+  startedAtMs: number;
+  unreadCountBefore: number;
+  unreadCountAfter: number;
+  messagesDiscovered: number;
+  messagesProcessed: number;
+  messagesMatched: number;
+  messagesUnmatched: number;
+  attachmentUploadSuccessCount: number;
+  attachmentUploadErrorCount: number;
+  successCount: number;
+  errorCount: number;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  errorDetails?: Record<string, unknown> | null;
+}) {
+  if (!args.runId) return;
+
+  try {
+    const db = supabaseAdminClient();
+    await db
+      .from('hostinger_polling_runs')
+      .update({
+        status: args.status,
+        completed_at: new Date().toISOString(),
+        last_heartbeat_at: new Date().toISOString(),
+        duration_ms: Date.now() - args.startedAtMs,
+        unread_count_before: args.unreadCountBefore,
+        unread_count_after: args.unreadCountAfter,
+        messages_discovered: args.messagesDiscovered,
+        messages_processed: args.messagesProcessed,
+        messages_matched: args.messagesMatched,
+        messages_unmatched: args.messagesUnmatched,
+        attachment_upload_success_count: args.attachmentUploadSuccessCount,
+        attachment_upload_error_count: args.attachmentUploadErrorCount,
+        success_count: args.successCount,
+        error_count: args.errorCount,
+        error_code: args.errorCode || null,
+        error_message: args.errorMessage || null,
+        error_details: args.errorDetails || null,
+      })
+      .eq('id', args.runId);
+  } catch (err) {
+    logger.warn('Failed to complete Hostinger polling run record', { runId: args.runId, error: err });
+  }
+}
+
+export async function getPersistentHostingerPollingState(): Promise<HostingerPollingState> {
+  const db = supabaseAdminClient();
+  const { data } = await db
+    .from('hostinger_polling_runs')
+    .select('id, status, started_at, completed_at, last_heartbeat_at, success_count, error_count, error_message')
+    .eq('provider', HOSTINGER_PROVIDER)
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return {
+    isRunning: !!data && data.status === 'running',
+    lastPollStartedAt: data?.started_at || null,
+    lastPollCompletedAt: data?.completed_at || null,
+    lastHeartbeatAt: data?.last_heartbeat_at || null,
+    lastResult: data
+      ? {
+          successCount: Number(data.success_count || 0),
+          errorCount: Number(data.error_count || 0),
+        }
+      : null,
+    lastError: data?.error_message || null,
+    lastMatchedReply: null,
+  };
+}
+
+export function getHostingerPollingState(): HostingerPollingState {
+  return {
+    ...pollingState,
+    lastResult: pollingState.lastResult ? { ...pollingState.lastResult } : null,
+    lastMatchedReply: pollingState.lastMatchedReply ? { ...pollingState.lastMatchedReply } : null,
+  };
+}
+
+function extractEmail(raw: string): string {
+  const match = raw.match(/<([^>]+)>/) || raw.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+  return (match?.[1] || match?.[0] || '').trim().toLowerCase();
+}
+
+function extractTrackingToken(subject: string, bodyText: string): string | null {
+  const tokenMatch = `${subject}\n${bodyText}`.match(/\[#([A-Z]{2}\d{6})\]/i);
+  return tokenMatch ? tokenMatch[1].toUpperCase() : null;
+}
+
+async function resolveCandidateMatch(args: {
+  subject: string;
+  bodyText: string;
+  from: string;
+  inReplyTo?: string;
+  references: string[];
+  trackingToken: string | null;
+}): Promise<{ candidateId: string; matchedBy: 'tracking_token' | 'reply_header' | 'sender_email' } | null> {
+  const db = supabaseAdminClient();
+
+  if (args.trackingToken) {
+    const { data } = await db
+      .from('candidates')
+      .select('id')
+      .ilike('email_tracking_token', args.trackingToken)
+      .maybeSingle();
+
+    if (data?.id) {
+      return { candidateId: data.id, matchedBy: 'tracking_token' };
+    }
+  }
+
+  const referenceIds = [args.inReplyTo, ...args.references]
+    .map((value) => String(value || '').trim().replace(/^<|>$/g, ''))
+    .filter(Boolean);
+
+  for (const referenceId of referenceIds) {
+    const { data: outboundMatch } = await db
+      .from('inbox_messages')
+      .select('payload')
+      .eq('source', 'email_outbound')
+      .eq('payload->>providerMessageId', referenceId)
+      .limit(1)
+      .maybeSingle();
+
+    const candidateId = (outboundMatch as any)?.payload?.candidateId;
+    if (typeof candidateId === 'string' && candidateId) {
+      return { candidateId, matchedBy: 'reply_header' };
+    }
+  }
+
+  const fromEmail = extractEmail(args.from);
+  if (fromEmail) {
+    const { data } = await db
+      .from('candidates')
+      .select('id')
+      .ilike('email', fromEmail)
+      .neq('status', 'Deleted')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (data?.id) {
+      return { candidateId: data.id, matchedBy: 'sender_email' };
+    }
+  }
+
+  return null;
+}
+
+export async function triggerHostingerManualPoll(): Promise<{ successCount: number; errorCount: number }> {
+  return pollHostingerMailbox('manual');
+}
+
+export async function startHostingerPolling(intervalMinutes = 5) {
+  logger.info('Starting Hostinger mailbox polling worker', { intervalMinutes });
+  await markAbandonedPollingRuns(RUN_STALE_AFTER_MS);
+  await pollHostingerMailbox('worker');
+
+  const intervalMs = intervalMinutes * 60 * 1000;
+  setInterval(async () => {
+    await pollHostingerMailbox('worker');
+  }, intervalMs);
+}
+
+async function pollHostingerMailbox(trigger: 'worker' | 'manual'): Promise<{ successCount: number; errorCount: number }> {
+  if (!isHostingerImapConfigured()) {
+    logger.warn('Hostinger IMAP credentials missing; mailbox poll skipped');
+    return { successCount: 0, errorCount: 0 };
+  }
+
+  if (isRunning) {
+    logger.debug('Hostinger mailbox polling already running, skipping overlap');
+    return { successCount: 0, errorCount: 0 };
+  }
+
+  const abandonedRuns = await markAbandonedPollingRuns(RUN_STALE_AFTER_MS);
+
+  isRunning = true;
+  const pollStartedAt = new Date().toISOString();
+  activeRunId = await createPollingRun(trigger);
+  const heartbeatTimer = startRunHeartbeat(activeRunId);
+  pollingState.isRunning = true;
+  pollingState.lastPollStartedAt = pollStartedAt;
+  pollingState.lastHeartbeatAt = pollStartedAt;
+  pollingState.lastError = null;
+
+  const startedAtMs = Date.now();
+  const checkpoint = await getMailboxCheckpoint();
+  const unreadCountBefore = await countUnreadHostingerMessages().catch(() => 0);
+  let messagesDiscovered = 0;
+  let messagesProcessed = 0;
+  let messagesMatched = 0;
+  let messagesUnmatched = 0;
+  let attachmentUploadSuccessCount = 0;
+  let attachmentUploadErrorCount = 0;
+
+  await updateMailboxCheckpoint({
+    lastSeenUid: checkpoint.lastSeenUid,
+    lastSeenMessageId: checkpoint.lastSeenMessageId,
+    lastSeenReceivedAt: checkpoint.lastSeenReceivedAt,
+    lastPollRunId: activeRunId,
+    lastPollStartedAt: pollStartedAt,
+    metadata: {
+      lastTrigger: trigger,
+      lastRecoveredAbandonedRuns: abandonedRuns,
+      lastWorkerInstanceId: WORKER_INSTANCE_ID,
+    },
+  }).catch((err) => {
+    logger.warn('Failed to update mailbox checkpoint at poll start', { error: err });
+  });
+
+  try {
+    const messages = await listHostingerMessagesSinceUid(checkpoint.lastSeenUid, POLL_BATCH_SIZE);
+    messagesDiscovered = messages.length;
+
+    if (!messages.length) {
+      logger.info('No Hostinger mailbox messages found beyond current checkpoint', {
+        checkpointUid: checkpoint.lastSeenUid,
+      });
+      pollingState.lastPollCompletedAt = new Date().toISOString();
+      pollingState.lastResult = { successCount: 0, errorCount: 0 };
+      await updateMailboxCheckpoint({
+        lastSeenUid: checkpoint.lastSeenUid,
+        lastSeenMessageId: checkpoint.lastSeenMessageId,
+        lastSeenReceivedAt: checkpoint.lastSeenReceivedAt,
+        lastPollRunId: activeRunId,
+        lastPollStartedAt: pollStartedAt,
+        lastPollCompletedAt: pollingState.lastPollCompletedAt,
+        metadata: {
+          lastTrigger: trigger,
+          lastPollMessageCount: 0,
+        },
+      }).catch((err) => {
+        logger.warn('Failed to update mailbox checkpoint after empty poll', { error: err });
+      });
+      await completePollingRun({
+        runId: activeRunId,
+        status: 'completed',
+        startedAtMs,
+        unreadCountBefore,
+        unreadCountAfter: await countUnreadHostingerMessages().catch(() => 0),
+        messagesDiscovered,
+        messagesProcessed,
+        messagesMatched,
+        messagesUnmatched,
+        attachmentUploadSuccessCount,
+        attachmentUploadErrorCount,
+        successCount: 0,
+        errorCount: 0,
+      });
+      return { successCount: 0, errorCount: 0 };
+    }
+
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const message of messages) {
+      const externalId = `hostinger_${message.messageId}`;
+      const trackingToken = extractTrackingToken(message.subject, message.bodyText);
+      const receivedAt = message.date || new Date().toISOString();
+      const fromEmail = extractEmail(message.from);
+      const toEmail = extractEmail(message.to);
+      const runItemId = activeRunId
+        ? await createPollingRunItem({
+            runId: activeRunId,
+            providerMessageId: message.messageId,
+            externalMessageId: externalId,
+            messageUid: message.uid,
+            attachmentCount: message.attachments.length,
+            receivedAt,
+          })
+        : null;
+
+      try {
+        const inboxMessage = await createInboxMessage({
+          source: HOSTINGER_PROVIDER,
+          externalMessageId: externalId,
+          payload: {
+            provider: HOSTINGER_PROVIDER,
+            mailbox: HOSTINGER_MAILBOX,
+            from: message.from,
+            to: message.to,
+            subject: message.subject,
+            bodyText: message.bodyText,
+            messageId: message.messageId,
+            inReplyTo: message.inReplyTo || null,
+            references: message.references,
+            uid: message.uid,
+          },
+          status: 'pending',
+          receivedAt,
+        }).catch((err) => {
+          if (String(err.message).includes('already exists')) {
+            logger.debug('Hostinger mailbox message already recorded, skipping duplicate event creation', {
+              messageId: message.messageId,
+              uid: message.uid,
+            });
+            return null;
+          }
+          throw err;
+        });
+
+        if (!inboxMessage) {
+          messagesProcessed++;
+          successCount++;
+          if (runItemId) {
+            await completePollingRunItem({
+              runItemId,
+              status: 'duplicate',
+            });
+          }
+          await markHostingerMessageSeen(message.uid).catch((err) => {
+            logger.warn('Failed to mark duplicate Hostinger message as seen', { uid: message.uid, error: err });
+          });
+          await updateMailboxCheckpoint({
+            lastSeenUid: message.uid,
+            lastSeenMessageId: message.messageId,
+            lastSeenReceivedAt: receivedAt,
+            lastPollRunId: activeRunId,
+            lastPollStartedAt: pollStartedAt,
+            metadata: {
+              lastTrigger: trigger,
+              lastMessageStatus: 'duplicate',
+            },
+          }).catch((err) => {
+            logger.warn('Failed to advance mailbox checkpoint for duplicate message', { error: err, uid: message.uid });
+          });
+          continue;
+        }
+
+        const candidateMatch = await resolveCandidateMatch({
+          subject: message.subject,
+          bodyText: message.bodyText,
+          from: message.from,
+          inReplyTo: message.inReplyTo,
+          references: message.references,
+          trackingToken,
+        });
+
+        if (!candidateMatch) {
+          messagesProcessed++;
+          messagesUnmatched++;
+          logger.warn('Hostinger mailbox reply could not be matched to candidate', {
+            subject: message.subject,
+            from: message.from,
+            messageId: message.messageId,
+            uid: message.uid,
+          });
+
+          await supabaseAdminClient()
+            .from('inbox_messages')
+            .update({
+              status: 'failed',
+              payload: {
+                ...(inboxMessage.payload || {}),
+                matched: false,
+                matchedBy: null,
+                candidateId: null,
+                attachmentCount: message.attachments.length,
+                processedAt: new Date().toISOString(),
+              },
+            })
+            .eq('id', inboxMessage.id);
+
+          await createEmailReplyEvent({
+            providerMessageId: message.messageId,
+            externalMessageId: externalId,
+            messageUid: message.uid,
+            inboxMessageId: inboxMessage.id,
+            runId: activeRunId,
+            runItemId,
+            matchStatus: 'unmatched',
+            trackingToken,
+            fromEmail,
+            fromDisplay: message.from,
+            toEmail,
+            subject: message.subject,
+            bodyText: message.bodyText,
+            attachmentCount: message.attachments.length,
+            receivedAt,
+            inReplyTo: message.inReplyTo,
+            referenceIds: message.references,
+            correlationIds: {
+              matched: false,
+              matchedBy: null,
+            },
+          });
+
+          if (runItemId) {
+            await completePollingRunItem({
+              runItemId,
+              status: 'unmatched',
+              inboxMessageId: inboxMessage.id,
+            });
+          }
+
+          await markHostingerMessageSeen(message.uid).catch((err) => {
+            logger.warn('Failed to mark unmatched Hostinger message as seen', { uid: message.uid, error: err });
+          });
+          await updateMailboxCheckpoint({
+            lastSeenUid: message.uid,
+            lastSeenMessageId: message.messageId,
+            lastSeenReceivedAt: receivedAt,
+            lastPollRunId: activeRunId,
+            lastPollStartedAt: pollStartedAt,
+            metadata: {
+              lastTrigger: trigger,
+              lastMessageStatus: 'unmatched',
+            },
+          }).catch((err) => {
+            logger.warn('Failed to advance mailbox checkpoint for unmatched message', { error: err, uid: message.uid });
+          });
+          successCount++;
+          continue;
+        }
+
+        const { candidateId, matchedBy } = candidateMatch;
+        messagesMatched++;
+
+        let messageAttachmentSuccessCount = 0;
+        let messageAttachmentErrorCount = 0;
+
+        for (const attachment of message.attachments) {
+          try {
+            await uploadCandidateDocument({
+              candidate_id: candidateId,
+              file_name: attachment.filename,
+              mime_type: attachment.mimeType,
+              buffer: attachment.content,
+              source: 'email',
+            });
+            attachmentUploadSuccessCount++;
+            messageAttachmentSuccessCount++;
+          } catch (err) {
+            logger.error('Failed to upload Hostinger reply attachment', err, {
+              candidateId,
+              filename: attachment.filename,
+            });
+            attachmentUploadErrorCount++;
+            messageAttachmentErrorCount++;
+            errorCount++;
+          }
+        }
+
+        if (message.bodyText.trim()) {
+          await processMissingDataEmailReply({
+            candidateId,
+            emailBodyText: message.bodyText,
+            hadAttachments: message.attachments.length > 0,
+          });
+        }
+
+        await maybeSendMissingDataEmail({
+          candidateId,
+          trigger: 'hostinger_reply_ingested',
+        });
+
+        await supabaseAdminClient()
+          .from('inbox_messages')
+          .update({
+            status: 'processed',
+            payload: {
+              ...(inboxMessage.payload || {}),
+              matched: true,
+              matchedBy,
+              candidateId,
+              attachmentCount: message.attachments.length,
+              processedAt: new Date().toISOString(),
+            },
+          })
+          .eq('id', inboxMessage.id);
+
+        await createEmailReplyEvent({
+          providerMessageId: message.messageId,
+          externalMessageId: externalId,
+          messageUid: message.uid,
+          inboxMessageId: inboxMessage.id,
+          runId: activeRunId,
+          runItemId,
+          candidateId,
+          matchStatus: 'matched',
+          matchedBy,
+          trackingToken,
+          fromEmail,
+          fromDisplay: message.from,
+          toEmail,
+          subject: message.subject,
+          bodyText: message.bodyText,
+          attachmentCount: message.attachments.length,
+          attachmentUploadSuccessCount: messageAttachmentSuccessCount,
+          attachmentUploadErrorCount: messageAttachmentErrorCount,
+          receivedAt,
+          inReplyTo: message.inReplyTo,
+          referenceIds: message.references,
+          correlationIds: {
+            candidateId,
+            matchedBy,
+            inboxMessageId: inboxMessage.id,
+          },
+        });
+
+        if (runItemId) {
+          await completePollingRunItem({
+            runItemId,
+            status: 'matched',
+            inboxMessageId: inboxMessage.id,
+            candidateId,
+            matchedBy,
+            attachmentUploadSuccessCount: messageAttachmentSuccessCount,
+            attachmentUploadErrorCount: messageAttachmentErrorCount,
+          });
+        }
+
+        pollingState.lastMatchedReply = {
+          candidateId,
+          messageId: message.messageId,
+          subject: message.subject,
+          from: message.from,
+          matchedBy,
+          receivedAt,
+        };
+
+        await markHostingerMessageSeen(message.uid).catch((err) => {
+          logger.warn('Failed to mark Hostinger message as seen', { uid: message.uid, error: err });
+        });
+        await updateMailboxCheckpoint({
+          lastSeenUid: message.uid,
+          lastSeenMessageId: message.messageId,
+          lastSeenReceivedAt: receivedAt,
+          lastPollRunId: activeRunId,
+          lastPollStartedAt: pollStartedAt,
+          metadata: {
+            lastTrigger: trigger,
+            lastMessageStatus: 'matched',
+            lastMatchedCandidateId: candidateId,
+          },
+        }).catch((err) => {
+          logger.warn('Failed to advance mailbox checkpoint for matched message', { error: err, uid: message.uid });
+        });
+
+        messagesProcessed++;
+        successCount++;
+      } catch (err) {
+        messagesProcessed++;
+        errorCount++;
+        pollingState.lastError = err instanceof Error ? err.message : String(err);
+        logger.error('Failed to process Hostinger mailbox message', err, {
+          messageId: message.messageId,
+          uid: message.uid,
+        });
+
+        if (runItemId) {
+          await completePollingRunItem({
+            runItemId,
+            status: 'failed',
+            errorCode: 'HOSTINGER_MESSAGE_PROCESS_FAILED',
+            errorMessage: err instanceof Error ? err.message : String(err),
+            errorDetails: err instanceof Error ? { name: err.name, stack: err.stack || null } : { value: String(err) },
+          });
+        }
+
+        await createEmailReplyEvent({
+          providerMessageId: message.messageId,
+          externalMessageId: externalId,
+          messageUid: message.uid,
+          runId: activeRunId,
+          runItemId,
+          matchStatus: 'failed',
+          trackingToken,
+          fromEmail,
+          fromDisplay: message.from,
+          toEmail,
+          subject: message.subject,
+          bodyText: message.bodyText,
+          attachmentCount: message.attachments.length,
+          receivedAt,
+          inReplyTo: message.inReplyTo,
+          referenceIds: message.references,
+          errorCode: 'HOSTINGER_MESSAGE_PROCESS_FAILED',
+          errorMessage: err instanceof Error ? err.message : String(err),
+          errorDetails: err instanceof Error ? { name: err.name, stack: err.stack || null } : { value: String(err) },
+        });
+
+        break;
+      }
+    }
+
+    logger.info('Hostinger mailbox poll completed', { successCount, errorCount, checkpointUid: checkpoint.lastSeenUid });
+    pollingState.lastPollCompletedAt = new Date().toISOString();
+    pollingState.lastResult = { successCount, errorCount };
+    await updateMailboxCheckpoint({
+      lastSeenUid: checkpoint.lastSeenUid,
+      lastSeenMessageId: checkpoint.lastSeenMessageId,
+      lastSeenReceivedAt: checkpoint.lastSeenReceivedAt,
+      lastPollRunId: activeRunId,
+      lastPollStartedAt: pollStartedAt,
+      lastPollCompletedAt: pollingState.lastPollCompletedAt,
+      metadata: {
+        lastTrigger: trigger,
+        lastPollMessageCount: messagesProcessed,
+        lastPollErrorCount: errorCount,
+      },
+    }).catch((err) => {
+      logger.warn('Failed to finalize mailbox checkpoint after poll', { error: err });
+    });
+    await completePollingRun({
+      runId: activeRunId,
+      status: errorCount > 0 ? 'completed_with_errors' : 'completed',
+      startedAtMs,
+      unreadCountBefore,
+      unreadCountAfter: await countUnreadHostingerMessages().catch(() => 0),
+      messagesDiscovered,
+      messagesProcessed,
+      messagesMatched,
+      messagesUnmatched,
+      attachmentUploadSuccessCount,
+      attachmentUploadErrorCount,
+      successCount,
+      errorCount,
+    });
+    return { successCount, errorCount };
+  } catch (err) {
+    logger.error('Hostinger mailbox polling failed', err);
+    pollingState.lastPollCompletedAt = new Date().toISOString();
+    pollingState.lastResult = { successCount: 0, errorCount: 1 };
+    pollingState.lastError = err instanceof Error ? err.message : String(err);
+    await updateMailboxCheckpoint({
+      lastSeenUid: checkpoint.lastSeenUid,
+      lastSeenMessageId: checkpoint.lastSeenMessageId,
+      lastSeenReceivedAt: checkpoint.lastSeenReceivedAt,
+      lastPollRunId: activeRunId,
+      lastPollStartedAt: pollStartedAt,
+      lastPollCompletedAt: pollingState.lastPollCompletedAt,
+      metadata: {
+        lastTrigger: trigger,
+        lastPollMessageCount: messagesProcessed,
+        lastPollErrorCount: 1,
+      },
+    }).catch((checkpointError) => {
+      logger.warn('Failed to persist mailbox checkpoint after poll failure', { error: checkpointError });
+    });
+    await completePollingRun({
+      runId: activeRunId,
+      status: 'failed',
+      startedAtMs,
+      unreadCountBefore,
+      unreadCountAfter: await countUnreadHostingerMessages().catch(() => unreadCountBefore),
+      messagesDiscovered,
+      messagesProcessed,
+      messagesMatched,
+      messagesUnmatched,
+      attachmentUploadSuccessCount,
+      attachmentUploadErrorCount,
+      successCount: 0,
+      errorCount: 1,
+      errorCode: 'HOSTINGER_POLL_FAILED',
+      errorMessage: err instanceof Error ? err.message : String(err),
+      errorDetails: err instanceof Error ? { name: err.name, stack: err.stack || null } : { value: String(err) },
+    });
+    return { successCount: 0, errorCount: 1 };
+  } finally {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+    }
+    isRunning = false;
+    activeRunId = null;
+    pollingState.isRunning = false;
+  }
+}

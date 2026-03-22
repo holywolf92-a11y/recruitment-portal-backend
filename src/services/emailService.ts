@@ -1,10 +1,22 @@
+import crypto from 'crypto';
 import nodemailer from 'nodemailer';
+import { createInboxMessage } from './inboxService';
 
 interface EmailOptions {
   to: string;
   subject: string;
   html: string;
   text?: string;
+  auditPayload?: Record<string, unknown>;
+}
+
+export interface EmailSendResult {
+  sent: boolean;
+  provider: 'resend' | 'hostinger-smtp';
+  from: string;
+  to: string;
+  subject: string;
+  providerMessageId?: string;
 }
 
 class EmailService {
@@ -35,7 +47,34 @@ class EmailService {
    * usable in production. Resend's REST API is the workaround.
    * Requires RESEND_API_KEY env var and domain falishajobs.com verified on Resend.
    */
-  private async sendViaResend(options: EmailOptions): Promise<void> {
+  private async auditOutboundEmail(options: EmailOptions, result: EmailSendResult): Promise<void> {
+    const externalId = `email_outbound_${result.provider}_${result.providerMessageId || crypto.randomUUID()}`;
+
+    try {
+      await createInboxMessage({
+        source: 'email_outbound',
+        externalMessageId: externalId,
+        payload: {
+          direction: 'outbound',
+          provider: result.provider,
+          providerMessageId: result.providerMessageId || null,
+          from: result.from,
+          to: result.to,
+          subject: result.subject,
+          text: options.text || null,
+          hasHtml: !!options.html,
+          sentAt: new Date().toISOString(),
+          ...(options.auditPayload || {}),
+        },
+        status: 'processed',
+        receivedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('[EmailService] Failed to audit outbound email (non-fatal):', err);
+    }
+  }
+
+  private async sendViaResend(options: EmailOptions): Promise<EmailSendResult> {
     const apiKey = process.env.RESEND_API_KEY!;
     const fromEmail = this.getFromEmail();
     const res = await fetch('https://api.resend.com/emails', {
@@ -65,6 +104,15 @@ class EmailService {
       subject: options.subject,
       from: fromEmail,
     });
+
+    return {
+      sent: true,
+      provider: 'resend',
+      from: fromEmail,
+      to: options.to,
+      subject: options.subject,
+      providerMessageId: data.id,
+    };
   }
 
   private getTransporter(): nodemailer.Transporter {
@@ -94,11 +142,12 @@ class EmailService {
     return this.transporter;
   }
 
-  async sendEmail(options: EmailOptions): Promise<boolean> {
+  async sendEmailDetailed(options: EmailOptions): Promise<EmailSendResult> {
     // Production: use Resend HTTP API (Railway blocks SMTP ports 25/465/587)
     if (process.env.RESEND_API_KEY) {
-      await this.sendViaResend(options);
-      return true;
+      const result = await this.sendViaResend(options);
+      await this.auditOutboundEmail(options, result);
+      return result;
     }
 
     // Local dev fallback: Hostinger SMTP (only works outside Railway)
@@ -115,11 +164,25 @@ class EmailService {
       });
 
       console.log('[EmailService] Email sent via SMTP:', info.messageId);
-      return true;
+      const result: EmailSendResult = {
+        sent: true,
+        provider: 'hostinger-smtp',
+        from: fromAddress,
+        to: options.to,
+        subject: options.subject,
+        providerMessageId: info.messageId || undefined,
+      };
+      await this.auditOutboundEmail(options, result);
+      return result;
     } catch (error: any) {
       console.error('[EmailService] Failed to send email:', error);
       throw new Error(`Failed to send email: ${error.message}`);
     }
+  }
+
+  async sendEmail(options: EmailOptions): Promise<boolean> {
+    const result = await this.sendEmailDetailed(options);
+    return result.sent;
   }
 
   /**

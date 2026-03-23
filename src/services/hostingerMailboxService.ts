@@ -188,7 +188,36 @@ export async function listUnreadHostingerMessages(limit = 20): Promise<Hostinger
 
 export async function listHostingerMessagesSinceUid(lastSeenUid: number, limit = 20): Promise<HostingerMailboxMessage[]> {
   const startUid = Math.max(1, Math.floor(lastSeenUid) + 1);
-  return fetchHostingerMessages(`${startUid}:*`, limit);
+  const cfg = getImapConfig();
+  const client = new ImapFlow({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: {
+      user: cfg.user,
+      pass: cfg.pass,
+    },
+    logger: false,
+  });
+
+  await client.connect();
+  const lock = await client.getMailboxLock('INBOX');
+
+  try {
+    const uidNext = Number(client.mailbox && typeof client.mailbox === 'object' ? client.mailbox.uidNext || 0 : 0);
+
+    // Hostinger rejects FETCH ranges like "9:*" when uidNext is already 9.
+    if (uidNext > 0 && startUid >= uidNext) {
+      return [];
+    }
+
+    return await collectFetchedMessages(client, `${startUid}:*`, limit);
+  } finally {
+    lock.release();
+    await client.logout().catch((err) => {
+      logger.warn('Hostinger IMAP logout failed after fetch-since-uid', { error: err });
+    });
+  }
 }
 
 export async function markHostingerMessageSeen(uid: number): Promise<void> {

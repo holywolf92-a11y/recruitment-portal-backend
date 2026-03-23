@@ -245,10 +245,10 @@ async function getCandidateById(id, userId) {
         .select('*')
         .eq('id', id)
         .neq('status', 'Deleted') // Exclude soft-deleted candidates
-        .single();
+        .maybeSingle();
     if (error)
         throw error;
-    return data;
+    return data ?? null;
 }
 // Fields returned in list responses — excludes large text columns (skills, previous_employment,
 // professional_summary, education, certifications) that are only needed in the detail view.

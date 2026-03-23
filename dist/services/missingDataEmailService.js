@@ -43,6 +43,12 @@ const crypto_1 = __importDefault(require("crypto"));
 const database_1 = require("../config/database");
 const errorHandling_1 = require("../utils/errorHandling");
 const logger = (0, errorHandling_1.createLogger)('MissingDataEmailService');
+const REQUESTED_MISSING_FIELDS = ['country_of_interest', 'salary_expectation'];
+const REQUESTED_MISSING_DOCS = ['passport', 'cnic'];
+const FIELD_LABEL_OVERRIDES = {
+    country_of_interest: 'Country of Interest',
+    salary_expectation: 'Salary Exp.',
+};
 function sha256(text) {
     return crypto_1.default.createHash('sha256').update(text).digest('hex');
 }
@@ -130,20 +136,54 @@ async function computeMissingDocsForCandidate(args) {
 function docLabel(doc) {
     switch (doc) {
         case 'cv':
-            return '📄 CV / Resume';
+            return 'CV / Resume';
         case 'passport':
-            return '🛂 Passport';
+            return 'Passport';
         case 'cnic':
-            return '🪪 CNIC / National ID';
+            return 'CNIC / National ID';
         case 'driving_license':
-            return '🚗 Driving License';
+            return 'Driving License';
         case 'police_certificate':
-            return '👮 Police Character Certificate';
+            return 'Police Character Certificate';
         case 'degree':
-            return '🎓 Educational Documents';
+            return 'Educational Documents';
         default:
             return doc;
     }
+}
+function getRequestedMissingFields(args) {
+    return args.missingFieldsRaw
+        .filter((field) => REQUESTED_MISSING_FIELDS.includes(field))
+        .map((field) => ({
+        field,
+        label: FIELD_LABEL_OVERRIDES[field] || args.fieldLabels[field] || field,
+    }));
+}
+async function getRequestedMissingDocs(args) {
+    const allMissingDocs = await computeMissingDocsForCandidate({
+        candidateId: args.candidateId,
+        candidate: args.candidate,
+        missingFields: args.missingFieldsRaw,
+    });
+    return allMissingDocs.filter((doc) => REQUESTED_MISSING_DOCS.includes(doc));
+}
+async function getRequestedMissingData(args) {
+    const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await Promise.resolve().then(() => __importStar(require('./progressiveDataCompletionService')));
+    const missingFieldsRaw = Array.from(new Set(calculateMissingFields(args.candidate)));
+    const missingFields = getRequestedMissingFields({
+        missingFieldsRaw,
+        fieldLabels: EXCEL_BROWSER_FIELDS,
+    });
+    const missingDocs = await getRequestedMissingDocs({
+        candidateId: args.candidateId,
+        candidate: args.candidate,
+        missingFieldsRaw,
+    });
+    return {
+        missingFieldsRaw,
+        missingFields,
+        missingDocs,
+    };
 }
 function renderMissingDataEmail(args) {
     const name = (args.candidateName || '').trim() || 'Candidate';
@@ -177,7 +217,7 @@ function renderMissingDataEmail(args) {
         fieldsBlockText ? 'Reply with:' : '',
         fieldsBlockText || '',
         '',
-        args.missingDocs.length ? 'Documents needed:' : '',
+        args.missingDocs.length ? 'Please attach:' : '',
         args.missingDocs.length ? docsBlockText : '',
         '',
         'Notes:',
@@ -232,26 +272,11 @@ async function maybeSendMissingDataEmail(args) {
         if (!toEmail) {
             return { sent: false, reason: 'missing_email' };
         }
-        const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await Promise.resolve().then(() => __importStar(require('./progressiveDataCompletionService')));
-        const missingFieldsRaw = Array.from(new Set(calculateMissingFields(candidate)));
-        // Priority fields to request from candidate
-        const PRIORITY_FIELDS = ['position', 'country_of_interest'];
-        const FIELD_LABEL_OVERRIDES = {
-            position: 'Profession / Job Title',
-            country_of_interest: 'Country of Interest',
-        };
-        const importantMissingFieldsRaw = missingFieldsRaw.filter((field) => PRIORITY_FIELDS.includes(field));
-        const missingFields = importantMissingFieldsRaw.map((field) => ({
-            field,
-            label: FIELD_LABEL_OVERRIDES[field] || EXCEL_BROWSER_FIELDS[field] || field,
-        }));
-        // Priority documents: only passport and police certificate
-        const allMissingDocs = await computeMissingDocsForCandidate({
+        const { missingFieldsRaw, missingFields, missingDocs } = await getRequestedMissingData({
             candidateId: args.candidateId,
             candidate,
-            missingFields: missingFieldsRaw,
         });
-        const missingDocs = allMissingDocs.filter((d) => ['passport', 'police_certificate'].includes(d));
+        const importantMissingFieldsRaw = missingFields.map((field) => field.field);
         if (missingFields.length === 0 && missingDocs.length === 0) {
             if (candidate.missing_data_email_status !== 'completed') {
                 await db
@@ -373,24 +398,10 @@ async function generateMissingDataEmailContent(args) {
     if (!toEmail) {
         return { ok: false, reason: 'missing_email' };
     }
-    const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await Promise.resolve().then(() => __importStar(require('./progressiveDataCompletionService')));
-    const missingFieldsRaw = Array.from(new Set(calculateMissingFields(candidate)));
-    const PRIORITY_FIELDS = ['position', 'country_of_interest'];
-    const FIELD_LABEL_OVERRIDES = {
-        position: 'Profession / Job Title',
-        country_of_interest: 'Country of Interest',
-    };
-    const importantMissingFieldsRaw = missingFieldsRaw.filter((field) => PRIORITY_FIELDS.includes(field));
-    const missingFields = importantMissingFieldsRaw.map((field) => ({
-        field,
-        label: FIELD_LABEL_OVERRIDES[field] || EXCEL_BROWSER_FIELDS[field] || field,
-    }));
-    const allMissingDocs = await computeMissingDocsForCandidate({
+    const { missingFields, missingDocs } = await getRequestedMissingData({
         candidateId: args.candidateId,
         candidate,
-        missingFields: missingFieldsRaw,
     });
-    const missingDocs = allMissingDocs.filter((d) => ['passport', 'police_certificate'].includes(d));
     const rendered = renderMissingDataEmail({
         candidateId: args.candidateId,
         candidateName: candidate.name,
@@ -427,25 +438,11 @@ async function sendStandaloneMissingDataEmail(args) {
         if (!toEmail) {
             return { sent: false, reason: 'missing_email' };
         }
-        const { calculateMissingFields, EXCEL_BROWSER_FIELDS } = await Promise.resolve().then(() => __importStar(require('./progressiveDataCompletionService')));
-        const missingFieldsRaw = Array.from(new Set(calculateMissingFields(candidate)));
-        // Priority fields to request from candidate
-        const PRIORITY_FIELDS = ['position', 'country_of_interest'];
-        const FIELD_LABEL_OVERRIDES = {
-            position: 'Profession / Job Title',
-            country_of_interest: 'Country of Interest',
-        };
-        const importantMissingFieldsRaw = missingFieldsRaw.filter((field) => PRIORITY_FIELDS.includes(field));
-        const missingFields = importantMissingFieldsRaw.map((field) => ({
-            field,
-            label: FIELD_LABEL_OVERRIDES[field] || EXCEL_BROWSER_FIELDS[field] || field,
-        }));
-        const allMissingDocs = await computeMissingDocsForCandidate({
+        const { missingFields, missingDocs } = await getRequestedMissingData({
             candidateId: args.candidateId,
             candidate,
-            missingFields: missingFieldsRaw,
         });
-        const missingDocs = allMissingDocs.filter((d) => ['passport', 'police_certificate'].includes(d));
+        const importantMissingFieldsRaw = missingFields.map((field) => field.field);
         if (missingFields.length === 0 && missingDocs.length === 0) {
             if (candidate.missing_data_email_status !== 'completed') {
                 await db

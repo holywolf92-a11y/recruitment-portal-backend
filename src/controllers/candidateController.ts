@@ -55,11 +55,15 @@ export async function getCandidateController(req: Request, res: Response) {
     }
 
     const candidate = await getCandidateById(id, userId);
+    if (!candidate) {
+      return res.status(404).json({ error: 'Candidate not found' });
+    }
+
     // Map passport_normalized to passport for frontend compatibility
-    const mappedCandidate = candidate ? {
+    const mappedCandidate = {
       ...candidate,
       passport: candidate.passport_normalized || (candidate as any).passport || null,
-    } : candidate;
+    };
     // Generate short-lived signed URL for profile photo (best-effort)
     try {
       if (mappedCandidate) {
@@ -102,11 +106,7 @@ export async function getCandidateController(req: Request, res: Response) {
     res.json({ candidate: mappedCandidate });
   } catch (error: any) {
     console.error('Error fetching candidate:', error);
-    if (error.code === 'PGRST116') {
-      res.status(404).json({ error: 'Candidate not found' });
-    } else {
-      res.status(500).json({ error: 'Failed to fetch candidate' });
-    }
+    res.status(500).json({ error: 'Failed to fetch candidate' });
   }
 }
 

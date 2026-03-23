@@ -310,10 +310,10 @@ export async function getCandidateById(id: string, userId: string) {
     .select('*')
     .eq('id', id)
     .neq('status', 'Deleted') // Exclude soft-deleted candidates
-    .single();
+    .maybeSingle();
 
   if (error) throw error;
-  return data;
+  return data ?? null;
 }
 
 export interface CandidateFilters {

@@ -105,10 +105,14 @@ try {
     if (process.env.RUN_HOSTINGER_POLLING === 'true') {
       const hasImapUser = !!(process.env.HOSTINGER_IMAP_USER || process.env.HOSTINGER_SMTP_USER);
       const hasImapPassword = !!(process.env.HOSTINGER_IMAP_PASSWORD || process.env.HOSTINGER_SMTP_PASSWORD);
+      const configuredHostingerPollIntervalMinutes = parseInt(process.env.HOSTINGER_POLL_INTERVAL_MINUTES || '5', 10);
+      const hostingerPollIntervalMinutes = Number.isFinite(configuredHostingerPollIntervalMinutes) && configuredHostingerPollIntervalMinutes > 0
+        ? configuredHostingerPollIntervalMinutes
+        : 5;
 
       if (hasImapUser && hasImapPassword) {
         import('./workers/hostingerPollingWorker').then(({ startHostingerPolling }) => {
-          startHostingerPolling(5).catch((err) => {
+          startHostingerPolling(hostingerPollIntervalMinutes).catch((err) => {
             logger.error('Failed to start Hostinger mailbox polling', err);
           });
         }).catch((err) => logger.error('Failed to load Hostinger mailbox polling worker', err));

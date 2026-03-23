@@ -1,8 +1,8 @@
 # Railway Backend Deployment Status
 
 ## ✅ Connection Status
-- **Project:** gleaming-healing
-- **Service:** recruitment-portal-backend
+- **Project:** glorious-flexibility
+- **Service:** glorious-flexibility
 - **Status:** Connected ✅
 
 ## 🔍 Current Issue
@@ -13,11 +13,12 @@
 ## ✅ Environment Variables (Verified)
 - ✅ `PYTHON_CV_PARSER_URL` = `https://recruitment-python-parser-production.up.railway.app`
 - ✅ `PYTHON_HMAC_SECRET` = Set (matches parser)
+- ✅ `RUN_HOSTINGER_POLLING` / `HOSTINGER_POLL_INTERVAL_MINUTES` can be used to enable background mailbox polling with an explicit cadence
 
 ## 🚀 Deployment Triggered
 - **Action:** `railway up --detach` executed
-- **Build Logs:** https://railway.com/project/54e09ca0-5643-4b5e-a172-8704293ae095/service/7c9d5772-56f3-41a2-b2a8-a94952c39ffb?id=0a9a9ac6-2d90-492e-afe7-fa534d5eeb0f&
-- **Status:** Building...
+- **Public URL:** https://glorious-flexibility-production.up.railway.app
+- **Status:** Connected to the live production backend
 
 ## 📋 What to Check After Deployment
 

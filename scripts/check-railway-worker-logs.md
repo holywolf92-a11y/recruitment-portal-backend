@@ -2,8 +2,8 @@
 
 ## Step 1: Access Railway Logs
 
-1. Go to: https://railway.app/project/gleaming-healing
-2. Click on **"recruitment-portal-backend"** service
+1. Go to: https://railway.app/project/glorious-flexibility
+2. Click on **"glorious-flexibility"** service
 3. Click on **"Logs"** tab
 
 ## Step 2: Look for These Messages

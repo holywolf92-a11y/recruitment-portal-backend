@@ -23,7 +23,7 @@
 - Settings → API → Service Role Key
 - Click "Rotate" to generate new key
 - Update in:
-  - Railway Backend (`gleaming-healing` project) env var: `SUPABASE_SERVICE_ROLE_KEY`
+  - Railway Backend (`glorious-flexibility` project) env var: `SUPABASE_SERVICE_ROLE_KEY`
   - Railway Python Parser env var: `SUPABASE_SERVICE_ROLE_KEY`
   - `.env.example` (keep it safe)
 - Restart services: `railway up` in backend & python-parser folders

@@ -14,13 +14,13 @@
 
 Railway hasn't auto-deployed the latest commit. Possible reasons:
 1. **Auto-deploy disabled** or not configured for backend service
-2. **Railway CLI linked to wrong project** (currently linked to `exquisite-surprise` frontend, not `gleaming-healing` backend)
+2. **Railway CLI linked to wrong project** (must point to `glorious-flexibility` backend service)
 3. **GitHub webhook not firing** or Railway not detecting push
 
 ## ✅ Solution: Manual Deploy via Railway Dashboard
 
 ### Step 1: Open Backend Service Dashboard
-**URL:** https://railway.com/project/54e09ca0-5643-4b5e-a172-8704293ae095/service/7c9d5772-56f3-41a2-b2a8-a94952c39ffb
+**URL:** https://railway.app/project/glorious-flexibility
 
 ### Step 2: Check Current Deployment
 1. Go to **"Deployments"** tab
@@ -67,7 +67,7 @@ If you can link Railway CLI to backend project:
 
 ```bash
 cd d:\falisha\recruitment-portal-backend
-railway link  # Select "gleaming-healing" project, then "recruitment-portal-backend" service
+railway link  # Select "glorious-flexibility" project, then "glorious-flexibility" service
 railway up --detach
 ```
 

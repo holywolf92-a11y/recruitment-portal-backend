@@ -74,6 +74,8 @@ async function main() {
 
   const trace1 = await json(`${base}/email/reply-trace/${candidateId}`);
   writeLog('loaded initial reply trace', trace1);
+  const beforeReplyMessages = trace1.replyMessages?.length || 0;
+  const beforeLastReplyProcessedAt = trace1.candidate?.lastReplyProcessedAt || null;
   const subject = (
     trace1.logEntries?.[trace1.logEntries.length - 1]
     || trace1.sentMessages?.[trace1.sentMessages.length - 1]
@@ -107,11 +109,19 @@ async function main() {
 
   let statusAfter = null;
   let automaticPollObserved = false;
+  let replyProcessedObserved = false;
+  let traceAfter = trace1;
 
   for (let attempt = 1; attempt <= 24; attempt += 1) {
     await sleep(20000);
     statusAfter = await json(statusUrl);
+    traceAfter = await json(`${base}/email/reply-trace/${candidateId}`);
     writeLog('polled status', { attempt, statusAfter });
+    writeLog('polled reply trace', {
+      attempt,
+      replyMessages: traceAfter.replyMessages?.length || 0,
+      lastReplyProcessedAt: traceAfter.candidate?.lastReplyProcessedAt || null,
+    });
 
     const lastPollStartedAt = statusAfter?.polling?.lastPollStartedAt || null;
     const checkpointUid = statusAfter?.checkpoint?.lastSeenUid || null;
@@ -121,24 +131,37 @@ async function main() {
     const advancedUid = typeof beforeCheckpointUid === 'number' && typeof checkpointUid === 'number'
       ? checkpointUid > beforeCheckpointUid
       : false;
+    const replyMessages = traceAfter.replyMessages?.length || 0;
+    const lastReplyProcessedAt = traceAfter.candidate?.lastReplyProcessedAt || null;
+    const advancedReplyMessages = replyMessages > beforeReplyMessages;
+    const advancedLastReplyProcessedAt = !!lastReplyProcessedAt
+      && lastReplyProcessedAt !== beforeLastReplyProcessedAt;
 
     if (advancedPoll || advancedUid) {
       automaticPollObserved = true;
+    }
+
+    if (advancedReplyMessages || advancedLastReplyProcessedAt) {
+      replyProcessedObserved = true;
       break;
     }
   }
 
-  const trace2 = await json(`${base}/email/reply-trace/${candidateId}`);
+  const trace2 = traceAfter.replyMessages?.length || traceAfter.candidate?.lastReplyProcessedAt
+    ? traceAfter
+    : await json(`${base}/email/reply-trace/${candidateId}`);
   const candidate = await json(`${base}/candidates/${candidateId}`);
   const missing = await json(`${base}/candidates/${candidateId}/missing-fields`);
 
-  console.log(JSON.stringify({
+  const summary = {
     candidateId,
     candidateEmail: seedEmail,
     sendResult,
     before: {
       pollStartedAt: beforePollStartedAt,
       checkpointUid: beforeCheckpointUid,
+      replyMessages: beforeReplyMessages,
+      lastReplyProcessedAt: beforeLastReplyProcessedAt,
     },
     after: {
       pollStartedAt: statusAfter?.polling?.lastPollStartedAt || null,
@@ -146,8 +169,11 @@ async function main() {
       schedulerActive: statusAfter?.schedulerActive || null,
       enabled: statusAfter?.enabled || null,
       unreadCount: statusAfter?.unreadCount || null,
+      replyMessages: trace2.replyMessages?.length || 0,
+      lastReplyProcessedAt: trace2.candidate?.lastReplyProcessedAt || null,
     },
     automaticPollObserved,
+    replyProcessedObserved,
     trace: {
       sentMessages: trace2.sentMessages?.length || 0,
       logEntries: trace2.logEntries?.length || 0,
@@ -159,7 +185,14 @@ async function main() {
     candidateCountry: candidate?.candidate?.country_of_interest || null,
     missingFieldsTotal: missing?.total_missing ?? null,
     elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
-  }, null, 2));
+  };
+
+  console.log(JSON.stringify(summary, null, 2));
+
+  if (!replyProcessedObserved) {
+    throw new Error(`Reply processing was not observed before timeout for candidate ${candidateId}`);
+  }
+
   writeLog('completed successfully');
 }
 

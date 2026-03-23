@@ -375,6 +375,17 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
   console.log(`[DocumentVerification] Processing job for document ${documentId}, request ${requestId}`);
 
   const db = supabaseAdminClient();
+  const { data: currentDocument } = await db
+    .from('candidate_documents')
+    .select('candidate_id, source')
+    .eq('id', documentId)
+    .maybeSingle();
+
+  if (currentDocument?.candidate_id) {
+    candidateId = currentDocument.candidate_id;
+  }
+
+  const allowCandidateReassignment = currentDocument?.source !== 'email';
 
   try {
     // =============================================================================
@@ -623,6 +634,82 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
     let requiredRole: 'admin' | 'super_admin' = 'admin';
 
     if (aiResult.extracted_identity && Object.keys(aiResult.extracted_identity).length > 0) {
+      const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory as DocumentCategory, aiResult.extracted_identity);
+
+      if (!allowCandidateReassignment) {
+        console.log(`[DocumentVerification] Preserving matched candidate for email-sourced document ${documentId}; skipping auto-reassignment`);
+
+        try {
+          matchResult = await identityMatchingService.matchIdentity(
+            candidateId,
+            aiResult.extracted_identity,
+            finalCategory as DocumentCategory,
+            aiResult.confidence,
+            aiResult.ocr_confidence,
+            derivedExpiryDate,
+            undefined
+          );
+        } catch (matchError: any) {
+          if (matchError.message?.includes('Candidate not found')) {
+            console.log(`[DocumentVerification] Email-sourced document candidate_id ${candidateId} not found, marking for review`);
+            finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
+            reasonCode = REJECTION_REASON_CODES.CANDIDATE_NOT_FOUND;
+            mismatchFields = ['candidate_not_found'];
+
+            await documentVerificationLogService.logIdentityVerificationCompleted(
+              requestId,
+              documentId,
+              candidateId,
+              VERIFICATION_STATUS.NEEDS_REVIEW,
+              reasonCode,
+              mismatchFields,
+              {
+                notes: 'Email-sourced document candidate could not be found during identity verification.',
+                auto_match_attempted: false,
+              },
+              {
+                rejection_code: rejectionCode || REJECTION_REASON_CODES.CANDIDATE_NOT_FOUND,
+                rejection_reason: rejectionReason || 'Matched email candidate not found',
+                error_stage: 'Matching',
+                retry_possible: false,
+                retry_count: 0,
+                max_retries: 2,
+                rejection_context: {
+                  mismatch_fields: mismatchFields,
+                  error_message: matchError.message,
+                },
+              }
+            );
+          } else {
+            console.error(`[DocumentVerification] Identity matching failed for email-sourced document:`, matchError);
+            finalStatus = VERIFICATION_STATUS.NEEDS_REVIEW;
+            reasonCode = REJECTION_REASON_CODES.NO_ID_FOUND;
+            mismatchFields = ['identity_matching_error'];
+
+            await documentVerificationLogService.logIdentityVerificationCompleted(
+              requestId,
+              documentId,
+              candidateId,
+              VERIFICATION_STATUS.NEEDS_REVIEW,
+              reasonCode,
+              mismatchFields,
+              { notes: `Identity matching error: ${matchError.message}` },
+              {
+                rejection_code: rejectionCode || REJECTION_REASON_CODES.NO_ID_FOUND,
+                rejection_reason: rejectionReason || 'Identity matching failed',
+                error_stage: 'Matching',
+                retry_possible: false,
+                retry_count: 0,
+                max_retries: 2,
+                rejection_context: {
+                  mismatch_fields: mismatchFields,
+                  error_message: matchError.message,
+                },
+              }
+            );
+          }
+        }
+      } else {
       // PRIORITY: Match by extracted identity FIRST (document contains real data, not system-generated ID)
       // The document has name, CNIC, passport, email, phone - use these to find the correct candidate
       console.log(`[DocumentVerification] Attempting to find candidate by extracted identity from document...`);
@@ -654,8 +741,6 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           
           // Now run identity matching with the correct candidate ID
           // Pass document category and confidence scores for detailed rejection
-          const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory as DocumentCategory, aiResult.extracted_identity);
-
           matchResult = await identityMatchingService.matchIdentity(
             candidateId,
             aiResult.extracted_identity,
@@ -672,8 +757,6 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           console.log(`[DocumentVerification] Could not find candidate by extracted identity, trying provided candidate_id ${candidateId}...`);
           
           try {
-            const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory as DocumentCategory, aiResult.extracted_identity);
-
             matchResult = await identityMatchingService.matchIdentity(
               candidateId,
               aiResult.extracted_identity,
@@ -752,8 +835,6 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
         console.error(`[DocumentVerification] Auto-matching failed, trying provided candidate_id:`, autoMatchError);
         
         try {
-          const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory as DocumentCategory, aiResult.extracted_identity);
-
           matchResult = await identityMatchingService.matchIdentity(
             candidateId,
             aiResult.extracted_identity,
@@ -794,12 +875,11 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           );
         }
       }
+      }
 
       // Log identity verification result (only if matching succeeded)
       if (matchResult) {
         // Prepare rejection details from matchResult
-        const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory as DocumentCategory, aiResult.extracted_identity);
-
         const rejectionDetails = matchResult.rejection_code ? {
           rejection_code: matchResult.rejection_code,
           rejection_reason: matchResult.rejection_reason || undefined,

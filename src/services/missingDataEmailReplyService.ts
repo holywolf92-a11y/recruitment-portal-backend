@@ -128,7 +128,7 @@ export async function processMissingDataEmailReply(args: {
     const enrichmentResult = await enrichCandidateData(
       args.candidateId,
       extracted,
-      'other',
+      'email_reply',
       undefined,
       'email_reply'
     );

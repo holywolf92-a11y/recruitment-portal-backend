@@ -63,7 +63,7 @@ export const REQUIRED_FIELDS_FOR_CREATION = [
 ] as const;
 
 // Document types that can provide data
-export type DocumentSource = 'cv' | 'passport' | 'driving_license' | 'medical' | 'certificate' | 'manual' | 'other';
+export type DocumentSource = 'cv' | 'passport' | 'driving_license' | 'medical' | 'certificate' | 'manual' | 'other' | 'email_reply';
 
 // Field source tracking structure
 export interface FieldSource {

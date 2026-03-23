@@ -136,7 +136,7 @@ async function processMissingDataEmailReply(args) {
             schema: buildDynamicSchema(missingFields),
             timeoutMs: 20000,
         });
-        const enrichmentResult = await enrichCandidateData(args.candidateId, extracted, 'other', undefined, 'email_reply');
+        const enrichmentResult = await enrichCandidateData(args.candidateId, extracted, 'email_reply', undefined, 'email_reply');
         await updateMissingFields(args.candidateId);
         await db
             .from('candidates')

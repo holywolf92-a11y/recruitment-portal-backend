@@ -74,6 +74,7 @@ function normalizeFieldSources(value) {
         return {
             field,
             source: String(data.source || ''),
+            document_type: data.document_type ? String(data.document_type) : undefined,
             updated_at: data.updated_at ? String(data.updated_at) : undefined,
             updated_by: data.updated_by ? String(data.updated_by) : undefined,
         };
@@ -239,11 +240,11 @@ async function buildCandidateReplyTrace(candidateId) {
         return null;
     }
     const candidateUpdates = normalizeFieldSources(candidate.field_sources)
-        .filter((entry) => ['email_reply', 'manual'].includes(entry.source))
+        .filter((entry) => entry.source === 'manual' || entry.source === 'email_reply' || (entry.source === 'other' && entry.document_type === 'email_reply'))
         .sort((a, b) => String(a.updated_at || '').localeCompare(String(b.updated_at || '')))
         .map((entry) => ({
         field: entry.field,
-        source: entry.source,
+        source: entry.source === 'other' && entry.document_type === 'email_reply' ? 'email_reply' : entry.source,
         updatedAt: entry.updated_at || null,
         updatedBy: entry.updated_by || null,
     }));

@@ -332,7 +332,8 @@ exports.emailRouter.get('/hostinger/status', (0, errorHandling_1.asyncHandler)(a
     }
     return res.json({
         configured: (0, hostingerMailboxService_1.isHostingerImapConfigured)(),
-        enabled: process.env.RUN_HOSTINGER_POLLING === 'true',
+        enabled: (0, hostingerPollingWorker_1.isHostingerPollingEnabled)(),
+        schedulerActive: (0, hostingerPollingWorker_1.isHostingerPollingSchedulerActive)(),
         polling,
         unreadCount,
         checkpoint,

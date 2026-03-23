@@ -1,8 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getHostingerPollingIntervalMinutes = getHostingerPollingIntervalMinutes;
+exports.isHostingerPollingEnabled = isHostingerPollingEnabled;
+exports.isHostingerPollingSchedulerActive = isHostingerPollingSchedulerActive;
 exports.getPersistentHostingerPollingState = getPersistentHostingerPollingState;
 exports.getHostingerPollingState = getHostingerPollingState;
 exports.triggerHostingerManualPoll = triggerHostingerManualPoll;
+exports.ensureHostingerPollingStarted = ensureHostingerPollingStarted;
 exports.startHostingerPolling = startHostingerPolling;
 const database_1 = require("../config/database");
 const inboxService_1 = require("../services/inboxService");
@@ -18,6 +22,7 @@ const RUN_STALE_AFTER_MS = Math.max(60000, parseInt(process.env.HOSTINGER_POLL_S
 const POLL_BATCH_SIZE = Math.max(1, parseInt(process.env.HOSTINGER_POLL_BATCH_SIZE || '20', 10));
 let isRunning = false;
 let activeRunId = null;
+let pollingIntervalTimer = null;
 const WORKER_INSTANCE_ID = [
     process.env.RAILWAY_REPLICA_ID,
     process.env.HOSTNAME,
@@ -34,6 +39,26 @@ const pollingState = {
     lastError: null,
     lastMatchedReply: null,
 };
+function getHostingerPollingIntervalMinutes() {
+    const configuredIntervalMinutes = parseInt(process.env.HOSTINGER_POLL_INTERVAL_MINUTES || '5', 10);
+    return Number.isFinite(configuredIntervalMinutes) && configuredIntervalMinutes > 0
+        ? configuredIntervalMinutes
+        : 5;
+}
+function isHostingerPollingEnabled() {
+    const configuredValue = String(process.env.RUN_HOSTINGER_POLLING || '').trim().toLowerCase();
+    if (configuredValue === 'true') {
+        return true;
+    }
+    if (configuredValue === 'false') {
+        return false;
+    }
+    const isProductionRuntime = process.env.NODE_ENV === 'production' || !!process.env.RAILWAY_ENVIRONMENT;
+    return isProductionRuntime && (0, hostingerMailboxService_1.isHostingerImapConfigured)();
+}
+function isHostingerPollingSchedulerActive() {
+    return !!pollingIntervalTimer;
+}
 function startRunHeartbeat(runId) {
     if (!runId)
         return null;
@@ -187,14 +212,30 @@ async function resolveCandidateMatch(args) {
 async function triggerHostingerManualPoll() {
     return pollHostingerMailbox('manual');
 }
-async function startHostingerPolling(intervalMinutes = 5) {
+async function ensureHostingerPollingStarted(intervalMinutes = getHostingerPollingIntervalMinutes()) {
+    if (!isHostingerPollingEnabled()) {
+        logger.info('Hostinger mailbox polling worker disabled by configuration');
+        return false;
+    }
+    if (!(0, hostingerMailboxService_1.isHostingerImapConfigured)()) {
+        logger.warn('Hostinger IMAP credentials missing; automatic mailbox polling not started');
+        return false;
+    }
+    if (pollingIntervalTimer) {
+        return false;
+    }
     logger.info('Starting Hostinger mailbox polling worker', { intervalMinutes });
     await (0, emailReplyAuditService_1.markAbandonedPollingRuns)(RUN_STALE_AFTER_MS);
-    await pollHostingerMailbox('worker');
+    await pollHostingerMailbox('recovery');
     const intervalMs = intervalMinutes * 60 * 1000;
-    setInterval(async () => {
+    pollingIntervalTimer = setInterval(async () => {
         await pollHostingerMailbox('worker');
     }, intervalMs);
+    pollingIntervalTimer.unref?.();
+    return true;
+}
+async function startHostingerPolling(intervalMinutes = getHostingerPollingIntervalMinutes()) {
+    await ensureHostingerPollingStarted(intervalMinutes);
 }
 async function pollHostingerMailbox(trigger) {
     if (!(0, hostingerMailboxService_1.isHostingerImapConfigured)()) {
@@ -216,6 +257,11 @@ async function pollHostingerMailbox(trigger) {
     pollingState.lastError = null;
     const startedAtMs = Date.now();
     const checkpoint = await (0, emailReplyAuditService_1.getMailboxCheckpoint)();
+    const latestCheckpoint = {
+        lastSeenUid: checkpoint.lastSeenUid,
+        lastSeenMessageId: checkpoint.lastSeenMessageId,
+        lastSeenReceivedAt: checkpoint.lastSeenReceivedAt,
+    };
     const unreadCountBefore = await (0, hostingerMailboxService_1.countUnreadHostingerMessages)().catch(() => 0);
     let messagesDiscovered = 0;
     let messagesProcessed = 0;
@@ -223,6 +269,20 @@ async function pollHostingerMailbox(trigger) {
     let messagesUnmatched = 0;
     let attachmentUploadSuccessCount = 0;
     let attachmentUploadErrorCount = 0;
+    async function persistCheckpoint(args) {
+        await (0, emailReplyAuditService_1.updateMailboxCheckpoint)({
+            lastSeenUid: args.lastSeenUid,
+            lastSeenMessageId: args.lastSeenMessageId,
+            lastSeenReceivedAt: args.lastSeenReceivedAt,
+            lastPollRunId: activeRunId,
+            lastPollStartedAt: pollStartedAt,
+            lastPollCompletedAt: args.lastPollCompletedAt,
+            metadata: args.metadata,
+        });
+        latestCheckpoint.lastSeenUid = Math.max(latestCheckpoint.lastSeenUid, Math.floor(args.lastSeenUid));
+        latestCheckpoint.lastSeenMessageId = args.lastSeenMessageId || latestCheckpoint.lastSeenMessageId;
+        latestCheckpoint.lastSeenReceivedAt = args.lastSeenReceivedAt || latestCheckpoint.lastSeenReceivedAt;
+    }
     await (0, emailReplyAuditService_1.updateMailboxCheckpoint)({
         lastSeenUid: checkpoint.lastSeenUid,
         lastSeenMessageId: checkpoint.lastSeenMessageId,
@@ -246,12 +306,10 @@ async function pollHostingerMailbox(trigger) {
             });
             pollingState.lastPollCompletedAt = new Date().toISOString();
             pollingState.lastResult = { successCount: 0, errorCount: 0 };
-            await (0, emailReplyAuditService_1.updateMailboxCheckpoint)({
-                lastSeenUid: checkpoint.lastSeenUid,
-                lastSeenMessageId: checkpoint.lastSeenMessageId,
-                lastSeenReceivedAt: checkpoint.lastSeenReceivedAt,
-                lastPollRunId: activeRunId,
-                lastPollStartedAt: pollStartedAt,
+            await persistCheckpoint({
+                lastSeenUid: latestCheckpoint.lastSeenUid,
+                lastSeenMessageId: latestCheckpoint.lastSeenMessageId,
+                lastSeenReceivedAt: latestCheckpoint.lastSeenReceivedAt,
                 lastPollCompletedAt: pollingState.lastPollCompletedAt,
                 metadata: {
                     lastTrigger: trigger,
@@ -335,12 +393,10 @@ async function pollHostingerMailbox(trigger) {
                     await (0, hostingerMailboxService_1.markHostingerMessageSeen)(message.uid).catch((err) => {
                         logger.warn('Failed to mark duplicate Hostinger message as seen', { uid: message.uid, error: err });
                     });
-                    await (0, emailReplyAuditService_1.updateMailboxCheckpoint)({
+                    await persistCheckpoint({
                         lastSeenUid: message.uid,
                         lastSeenMessageId: message.messageId,
                         lastSeenReceivedAt: receivedAt,
-                        lastPollRunId: activeRunId,
-                        lastPollStartedAt: pollStartedAt,
                         metadata: {
                             lastTrigger: trigger,
                             lastMessageStatus: 'duplicate',
@@ -414,12 +470,10 @@ async function pollHostingerMailbox(trigger) {
                     await (0, hostingerMailboxService_1.markHostingerMessageSeen)(message.uid).catch((err) => {
                         logger.warn('Failed to mark unmatched Hostinger message as seen', { uid: message.uid, error: err });
                     });
-                    await (0, emailReplyAuditService_1.updateMailboxCheckpoint)({
+                    await persistCheckpoint({
                         lastSeenUid: message.uid,
                         lastSeenMessageId: message.messageId,
                         lastSeenReceivedAt: receivedAt,
-                        lastPollRunId: activeRunId,
-                        lastPollStartedAt: pollStartedAt,
                         metadata: {
                             lastTrigger: trigger,
                             lastMessageStatus: 'unmatched',
@@ -531,12 +585,10 @@ async function pollHostingerMailbox(trigger) {
                 await (0, hostingerMailboxService_1.markHostingerMessageSeen)(message.uid).catch((err) => {
                     logger.warn('Failed to mark Hostinger message as seen', { uid: message.uid, error: err });
                 });
-                await (0, emailReplyAuditService_1.updateMailboxCheckpoint)({
+                await persistCheckpoint({
                     lastSeenUid: message.uid,
                     lastSeenMessageId: message.messageId,
                     lastSeenReceivedAt: receivedAt,
-                    lastPollRunId: activeRunId,
-                    lastPollStartedAt: pollStartedAt,
                     metadata: {
                         lastTrigger: trigger,
                         lastMessageStatus: 'matched',
@@ -589,15 +641,13 @@ async function pollHostingerMailbox(trigger) {
                 break;
             }
         }
-        logger.info('Hostinger mailbox poll completed', { successCount, errorCount, checkpointUid: checkpoint.lastSeenUid });
+        logger.info('Hostinger mailbox poll completed', { successCount, errorCount, checkpointUid: latestCheckpoint.lastSeenUid });
         pollingState.lastPollCompletedAt = new Date().toISOString();
         pollingState.lastResult = { successCount, errorCount };
-        await (0, emailReplyAuditService_1.updateMailboxCheckpoint)({
-            lastSeenUid: checkpoint.lastSeenUid,
-            lastSeenMessageId: checkpoint.lastSeenMessageId,
-            lastSeenReceivedAt: checkpoint.lastSeenReceivedAt,
-            lastPollRunId: activeRunId,
-            lastPollStartedAt: pollStartedAt,
+        await persistCheckpoint({
+            lastSeenUid: latestCheckpoint.lastSeenUid,
+            lastSeenMessageId: latestCheckpoint.lastSeenMessageId,
+            lastSeenReceivedAt: latestCheckpoint.lastSeenReceivedAt,
             lastPollCompletedAt: pollingState.lastPollCompletedAt,
             metadata: {
                 lastTrigger: trigger,
@@ -629,12 +679,10 @@ async function pollHostingerMailbox(trigger) {
         pollingState.lastPollCompletedAt = new Date().toISOString();
         pollingState.lastResult = { successCount: 0, errorCount: 1 };
         pollingState.lastError = err instanceof Error ? err.message : String(err);
-        await (0, emailReplyAuditService_1.updateMailboxCheckpoint)({
-            lastSeenUid: checkpoint.lastSeenUid,
-            lastSeenMessageId: checkpoint.lastSeenMessageId,
-            lastSeenReceivedAt: checkpoint.lastSeenReceivedAt,
-            lastPollRunId: activeRunId,
-            lastPollStartedAt: pollStartedAt,
+        await persistCheckpoint({
+            lastSeenUid: latestCheckpoint.lastSeenUid,
+            lastSeenMessageId: latestCheckpoint.lastSeenMessageId,
+            lastSeenReceivedAt: latestCheckpoint.lastSeenReceivedAt,
             lastPollCompletedAt: pollingState.lastPollCompletedAt,
             metadata: {
                 lastTrigger: trigger,

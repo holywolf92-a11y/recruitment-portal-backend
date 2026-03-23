@@ -4,7 +4,7 @@ import { emailService } from '../services/emailService';
 import { getMailboxCheckpoint, getWatchdogSummary, HOSTINGER_PROVIDER } from '../services/emailReplyAuditService';
 import { asyncHandler } from '../utils/errorHandling';
 import { countUnreadHostingerMessages, isHostingerImapConfigured } from '../services/hostingerMailboxService';
-import { getPersistentHostingerPollingState, triggerHostingerManualPoll } from '../workers/hostingerPollingWorker';
+import { getPersistentHostingerPollingState, isHostingerPollingEnabled, isHostingerPollingSchedulerActive, triggerHostingerManualPoll } from '../workers/hostingerPollingWorker';
 
 export const emailRouter = Router();
 
@@ -325,7 +325,8 @@ emailRouter.get('/hostinger/status', asyncHandler(async (_req: Request, res: Res
 
   return res.json({
     configured: isHostingerImapConfigured(),
-    enabled: process.env.RUN_HOSTINGER_POLLING === 'true',
+    enabled: isHostingerPollingEnabled(),
+    schedulerActive: isHostingerPollingSchedulerActive(),
     polling,
     unreadCount,
     checkpoint,

@@ -6,6 +6,7 @@ import { validateEnv } from './config/env';
 import { supabaseAdminClient } from './config/database';
 import routes from './routes';
 import { errorHandler, createLogger } from './utils/errorHandling';
+import { isHostingerImapConfigured } from './services/hostingerMailboxService';
 // Workers are lazy-imported inside their `if` guards below.
 // Static imports would load bullmq, ioredis, googleapis & puppeteer
 // into memory at startup even when workers are disabled, wasting ~150-200 MB.
@@ -102,26 +103,21 @@ try {
       logger.warn('Email provider: Hostinger SMTP credentials not set (HOSTINGER_SMTP_USER / HOSTINGER_SMTP_PASSWORD)');
     }
 
-    if (process.env.RUN_HOSTINGER_POLLING === 'true') {
-      const hasImapUser = !!(process.env.HOSTINGER_IMAP_USER || process.env.HOSTINGER_SMTP_USER);
-      const hasImapPassword = !!(process.env.HOSTINGER_IMAP_PASSWORD || process.env.HOSTINGER_SMTP_PASSWORD);
-      const configuredHostingerPollIntervalMinutes = parseInt(process.env.HOSTINGER_POLL_INTERVAL_MINUTES || '5', 10);
-      const hostingerPollIntervalMinutes = Number.isFinite(configuredHostingerPollIntervalMinutes) && configuredHostingerPollIntervalMinutes > 0
-        ? configuredHostingerPollIntervalMinutes
-        : 5;
-
-      if (hasImapUser && hasImapPassword) {
-        import('./workers/hostingerPollingWorker').then(({ startHostingerPolling }) => {
-          startHostingerPolling(hostingerPollIntervalMinutes).catch((err) => {
-            logger.error('Failed to start Hostinger mailbox polling', err);
-          });
-        }).catch((err) => logger.error('Failed to load Hostinger mailbox polling worker', err));
-      } else {
-        logger.warn('RUN_HOSTINGER_POLLING=true but Hostinger IMAP credentials are missing; polling disabled');
+    import('./workers/hostingerPollingWorker').then(({ ensureHostingerPollingStarted, getHostingerPollingIntervalMinutes, isHostingerPollingEnabled }) => {
+      if (!isHostingerPollingEnabled()) {
+        logger.info('Hostinger mailbox polling worker disabled');
+        return;
       }
-    } else {
-      logger.info('Hostinger mailbox polling worker disabled');
-    }
+
+      if (!isHostingerImapConfigured()) {
+        logger.warn('Hostinger mailbox polling enabled but IMAP credentials are missing; polling disabled');
+        return;
+      }
+
+      ensureHostingerPollingStarted(getHostingerPollingIntervalMinutes()).catch((err) => {
+        logger.error('Failed to start Hostinger mailbox polling', err);
+      });
+    }).catch((err) => logger.error('Failed to load Hostinger mailbox polling worker', err));
     
     // Gmail polling is disabled — outgoing email now uses Hostinger SMTP
     if (process.env.RUN_GMAIL_POLLING === 'true') {

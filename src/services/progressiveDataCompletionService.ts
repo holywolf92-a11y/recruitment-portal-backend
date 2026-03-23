@@ -75,6 +75,23 @@ export interface FieldSource {
   updated_by?: string;
 }
 
+const FIELD_TO_DB_COLUMN: Record<string, string> = {
+  cnic: 'cnic_normalized',
+  passport: 'passport_normalized',
+  passport_no: 'passport_normalized',
+  dob: 'date_of_birth',
+  expiry_date: 'passport_expiry',
+};
+
+function resolveCandidateColumn(field: string): string {
+  return FIELD_TO_DB_COLUMN[field] || field;
+}
+
+function candidateHasColumn(candidate: any, field: string): boolean {
+  const column = resolveCandidateColumn(field);
+  return Object.prototype.hasOwnProperty.call(candidate || {}, column);
+}
+
 /**
  * Progressive Data Completion Logic
  * 
@@ -119,6 +136,11 @@ export async function enrichCandidateData(
 
   // Process each extracted field
   for (const [field, extractedValue] of Object.entries(extractedData)) {
+    if (!candidateHasColumn(currentCandidate, field)) {
+      skipped.push(field);
+      continue;
+    }
+
     // Skip null/undefined/empty extracted values
     if (extractedValue === null || extractedValue === undefined || extractedValue === '') {
       continue;
@@ -369,6 +391,10 @@ export function calculateMissingFields(candidate: any): string[] {
     if (field === 'languages') {
       // Languages field might be used for English/Arabic extraction
       // But it's not a required field itself
+      continue;
+    }
+
+    if (!candidateHasColumn(candidate, field)) {
       continue;
     }
 

@@ -7,6 +7,7 @@ import {
   getCandidateController,
   listCandidatesController,
   dailyStatsController,
+  candidateDashboardStatsController,
   exportCandidatesController,
   updateCandidateController,
   deleteCandidateController,
@@ -54,6 +55,9 @@ router.get('/', listCandidatesController);
 
 // Daily stats for Excel-style reports
 router.get('/daily-stats', dailyStatsController);
+
+// Exact KPI stats for Candidates page
+router.get('/dashboard-stats', candidateDashboardStatsController);
 
 // Export candidates (CSV/Excel)
 router.get('/export', exportCandidatesController);

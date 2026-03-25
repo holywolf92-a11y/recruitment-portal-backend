@@ -466,6 +466,14 @@ export interface DailyStats {
   documents_uploaded: number;
 }
 
+export interface CandidateDashboardStats {
+  totalCandidates: number;
+  totalProfessions: number;
+  pendingReview: number;
+  deployed: number;
+  newThisWeek: number;
+}
+
 /** Daily summary for Excel-style report cards. Respects same filters as list (date range, folder, search). */
 export async function getDailyStats(filters: DailyStatsFilters, userId: string): Promise<DailyStats> {
   const db = supabaseAdminClient();
@@ -513,6 +521,39 @@ export async function getDailyStats(filters: DailyStatsFilters, userId: string):
     pending: pendingRes.count ?? 0,
     rejected: rejectedRes.count ?? 0,
     documents_uploaded: docsRes.count ?? 0,
+  };
+}
+
+export async function getCandidateDashboardStats(userId: string): Promise<CandidateDashboardStats> {
+  const db = supabaseAdminClient();
+  const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const [
+    totalCandidatesRes,
+    pendingReviewRes,
+    deployedRes,
+    newThisWeekRes,
+    professionsRes,
+  ] = await Promise.all([
+    db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').limit(0),
+    db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('needs_review', true).limit(0),
+    db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('status', 'Deployed').limit(0),
+    db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').gte('created_at', weekAgoIso).limit(0),
+    db.from('candidates').select('position').neq('status', 'Deleted').not('position', 'is', null),
+  ]);
+
+  const distinctProfessions = new Set(
+    (professionsRes.data || [])
+      .map((row: any) => String(row.position || '').trim())
+      .filter((value: string) => value.length > 0)
+  );
+
+  return {
+    totalCandidates: totalCandidatesRes.count ?? 0,
+    totalProfessions: distinctProfessions.size,
+    pendingReview: pendingReviewRes.count ?? 0,
+    deployed: deployedRes.count ?? 0,
+    newThisWeek: newThisWeekRes.count ?? 0,
   };
 }
 

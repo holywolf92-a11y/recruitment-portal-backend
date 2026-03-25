@@ -5,6 +5,7 @@ import {
   getCandidateById,
   listCandidates,
   getDailyStats,
+  getCandidateDashboardStats,
   exportCandidates,
   updateCandidate,
   deleteCandidate,
@@ -200,6 +201,17 @@ export async function dailyStatsController(req: Request, res: Response) {
   } catch (error: any) {
     console.error('Error fetching daily stats:', error);
     res.status(500).json({ error: 'Failed to fetch daily stats' });
+  }
+}
+
+export async function candidateDashboardStatsController(_req: Request, res: Response) {
+  try {
+    const userId = 'test-user-id';
+    const stats = await getCandidateDashboardStats(userId);
+    res.json(stats);
+  } catch (error: any) {
+    console.error('Error fetching candidate dashboard stats:', error);
+    res.status(500).json({ error: 'Failed to fetch candidate dashboard stats' });
   }
 }
 

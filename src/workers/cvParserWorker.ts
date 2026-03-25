@@ -971,8 +971,15 @@ export function startCvParserWorker() {
           combinedData.passport_expiry = parseDate(combinedData.passport_expiry, 'passport_expiry');
         }
         
+        // WhatsApp CVs are often forwarded by recruiters or agencies on behalf of
+        // multiple candidates, so a shared phone/email is not strong enough to
+        // auto-link on its own.
+        const requireCorroborationForContactSignals = inboxMsg?.source === 'whatsapp';
+
         // Find existing candidate using progressive completion matching
-        const existingCandidateId = await findExistingCandidate(combinedData);
+        const existingCandidateId = await findExistingCandidate(combinedData, {
+          requireCorroborationForContactSignals,
+        });
         
         let candidate;
         if (existingCandidateId) {

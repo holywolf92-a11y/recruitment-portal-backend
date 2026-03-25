@@ -694,7 +694,10 @@ export function isGovernmentEmail(email: string): boolean {
  * Returns the candidate ID to link, or null to create a new record.
  */
 export async function findExistingCandidate(
-  extractedData: Record<string, any>
+  extractedData: Record<string, any>,
+  options?: {
+    requireCorroborationForContactSignals?: boolean;
+  }
 ): Promise<string | null> {
   const AUTO_LINK_CONFIDENCE_THRESHOLD = 0.84;
 
@@ -707,6 +710,20 @@ export async function findExistingCandidate(
     fatherName:  extractedData.father_name,
     dateOfBirth: extractedData.date_of_birth,
   });
+
+  const requireCorroborationForContactSignals =
+    options?.requireCorroborationForContactSignals === true;
+  const isSingleContactSignalMatch =
+    (result.matchedBy === 'email' || result.matchedBy === 'phone') &&
+    result.matchCount === 1;
+
+  if (requireCorroborationForContactSignals && isSingleContactSignalMatch) {
+    console.warn(
+      `[ProgressiveCompletion] Suppressing auto-link on single ${result.matchedBy} signal ` +
+      `(confidence=${result.confidence}). Stronger corroboration required for this source.`
+    );
+    return null;
+  }
 
   // Needs manual review → do not auto-link, but log for visibility
   if (result.needsManualReview) {

@@ -598,8 +598,22 @@ export class CandidateMatcher {
       'info@',
       'contact@',
       'support@',
+      'hr@',
+      'jobs@',
+      'careers@',
       'noreply@',
-      'donotreply@'
+      'donotreply@',
+
+      // Shared agency / recruiter / company-managed inboxes
+      'recruit',
+      'recruitment',
+      'agency',
+      'manpower',
+      'international',
+      'limited',
+      'ltd',
+      'enterprises',
+      'company',
     ];
     
     return governmentPatterns.some(pattern => normalized.includes(pattern));

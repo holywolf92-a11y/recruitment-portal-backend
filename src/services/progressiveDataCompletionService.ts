@@ -675,6 +675,10 @@ export function isGovernmentEmail(email: string): boolean {
     // Generic organizational emails that shouldn't be personal
     'admin@', 'info@', 'contact@', 'support@', 'noinformation',
     'noreply', 'do-not-reply', 'automail',
+
+    // Agency / recruiter / company-managed inboxes commonly embedded in forwarded CVs
+    'hr@', 'jobs@', 'careers@', 'recruit', 'recruitment', 'agency',
+    'manpower', 'international', 'limited', 'ltd', 'enterprises', 'company',
   ];
 
   return patterns.some(pattern => normalized.includes(pattern));

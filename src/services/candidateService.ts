@@ -457,6 +457,7 @@ export interface DailyStatsFilters {
 }
 
 export interface DailyStats {
+  total_candidates: number;
   total: number;
   applied: number;
   verified: number;
@@ -469,19 +470,20 @@ export interface DailyStats {
 export async function getDailyStats(filters: DailyStatsFilters, userId: string): Promise<DailyStats> {
   const db = supabaseAdminClient();
 
-  function buildBaseQuery() {
+  function buildBaseQuery(options?: { includeDateFilters?: boolean }) {
     let q = db.from('candidates').select('id', { count: 'exact' });
+    q = q.neq('status', 'Deleted');
     if (filters.search?.trim()) {
       const search = filters.search.trim();
       q = q.or(`name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,passport_normalized.ilike.%${search}%,cnic_normalized.ilike.%${search}%`);
     }
     if (filters.position && filters.position !== 'all') q = q.eq('position', filters.position);
     if (filters.country_of_interest && filters.country_of_interest !== 'all') q = q.eq('country_of_interest', filters.country_of_interest);
-    if (filters.applied_from) {
+    if (options?.includeDateFilters !== false && filters.applied_from) {
       const from = filters.applied_from.endsWith('Z') || filters.applied_from.includes('T') ? filters.applied_from : `${filters.applied_from}T00:00:00.000Z`;
       q = q.gte('created_at', from);
     }
-    if (filters.applied_to) {
+    if (options?.includeDateFilters !== false && filters.applied_to) {
       const to = filters.applied_to.endsWith('Z') || filters.applied_to.includes('T') ? filters.applied_to : `${filters.applied_to}T23:59:59.999Z`;
       q = q.lte('created_at', to);
     }
@@ -493,7 +495,8 @@ export async function getDailyStats(filters: DailyStatsFilters, userId: string):
     return q.limit(0);
   }
 
-  const [totalRes, appliedRes, verifiedRes, pendingRes, rejectedRes, docsRes] = await Promise.all([
+  const [totalCandidatesRes, totalRes, appliedRes, verifiedRes, pendingRes, rejectedRes, docsRes] = await Promise.all([
+    db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').limit(0),
     buildBaseQuery(),
     buildBaseQuery().eq('status', 'Applied'),
     buildBaseQuery().eq('status', 'Deployed'),
@@ -503,6 +506,7 @@ export async function getDailyStats(filters: DailyStatsFilters, userId: string):
   ]);
 
   return {
+    total_candidates: totalCandidatesRes.count ?? 0,
     total: totalRes.count ?? 0,
     applied: appliedRes.count ?? 0,
     verified: verifiedRes.count ?? 0,

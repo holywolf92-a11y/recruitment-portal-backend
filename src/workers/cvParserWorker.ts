@@ -93,8 +93,9 @@ function buildCvReceivedWhatsAppText(params: {
       ? `We have sent an email to ${email} requesting the missing documents. Please check your inbox/spam and reply to that email with the required documents.`
       : `We will contact you via email at ${email} if any documents are missing.`
     : `If any documents are missing, our team will contact you.`;
+  const linkedinLine = 'For further updates, please follow us on LinkedIn:\nhttps://www.linkedin.com/company/falishaenterprises';
 
-  return `${greeting},\n\nFalisha Manpower: We have received your CV.\n${emailLine}\n\nThank you.`;
+  return `${greeting},\n\nFalisha Manpower: We have received your CV.\n${emailLine}\n\n${linkedinLine}\n\nThank you.`;
 }
 
 // Helper to parse and validate dates from various formats

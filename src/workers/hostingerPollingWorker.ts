@@ -1,5 +1,6 @@
 import { supabaseAdminClient } from '../config/database';
 import { createInboxMessage } from '../services/inboxService';
+import { createAttachment, enqueueCvParsingJobForAttachment } from '../services/inboxAttachmentService';
 import {
   HOSTINGER_MAILBOX,
   HOSTINGER_PROVIDER,
@@ -17,6 +18,7 @@ import {
   listHostingerMessagesSinceUid,
   markHostingerMessageSeen,
 } from '../services/hostingerMailboxService';
+import { isAcceptedCvMime } from '../services/gmailService';
 import { processMissingDataEmailReply } from '../services/missingDataEmailReplyService';
 import { maybeSendMissingDataEmail } from '../services/missingDataEmailService';
 import { uploadCandidateDocument } from '../services/candidateDocumentService';
@@ -519,6 +521,134 @@ async function pollHostingerMailbox(trigger: 'worker' | 'manual' | 'recovery'): 
         if (!candidateMatch) {
           messagesProcessed++;
           messagesUnmatched++;
+          const acceptedAttachments = message.attachments.filter((attachment) => isAcceptedCvMime(attachment.mimeType));
+
+          if (acceptedAttachments.length > 0) {
+            let queuedAttachmentCount = 0;
+            let intakeErrorCount = 0;
+
+            for (let index = 0; index < acceptedAttachments.length; index++) {
+              const attachment = acceptedAttachments[index];
+              try {
+                const storagePath = `hostinger/${message.messageId}/${message.uid}_${index}_${attachment.filename}`;
+                const createdAttachment = await createAttachment({
+                  inboxMessageId: inboxMessage.id,
+                  fileBuffer: attachment.content,
+                  fileName: attachment.filename,
+                  mimeType: attachment.mimeType,
+                  attachmentType: 'cv',
+                  storageBucket: 'documents',
+                  storagePath,
+                  candidateId: undefined,
+                  messageSubject: message.subject,
+                  messageSource: 'email',
+                }).catch((err) => {
+                  if (String(err.message).includes('Duplicate')) {
+                    logger.debug('Hostinger intake attachment already exists, skipping duplicate', {
+                      filename: attachment.filename,
+                      messageId: message.messageId,
+                    });
+                    return null;
+                  }
+                  throw err;
+                });
+
+                if (createdAttachment?.id) {
+                  await enqueueCvParsingJobForAttachment(createdAttachment.id, {
+                    force: false,
+                    expiresInSeconds: 3600,
+                  });
+                  queuedAttachmentCount++;
+                }
+              } catch (err) {
+                logger.error('Failed to enqueue Hostinger intake attachment', err, {
+                  filename: attachment.filename,
+                  messageId: message.messageId,
+                  uid: message.uid,
+                });
+                intakeErrorCount++;
+                attachmentUploadErrorCount++;
+              }
+            }
+
+            attachmentUploadSuccessCount += queuedAttachmentCount;
+
+            await supabaseAdminClient()
+              .from('inbox_messages')
+              .update({
+                status: 'processed',
+                payload: {
+                  ...(inboxMessage.payload || {}),
+                  matched: false,
+                  matchedBy: null,
+                  candidateId: null,
+                  attachmentCount: message.attachments.length,
+                  acceptedAttachmentCount: acceptedAttachments.length,
+                  queuedCvAttachmentCount: queuedAttachmentCount,
+                  processedAt: new Date().toISOString(),
+                  intakeRoutedToCvPipeline: true,
+                },
+              })
+              .eq('id', inboxMessage.id);
+
+            await createEmailReplyEvent({
+              providerMessageId: message.messageId,
+              externalMessageId: externalId,
+              messageUid: message.uid,
+              inboxMessageId: inboxMessage.id,
+              runId: activeRunId,
+              runItemId,
+              matchStatus: 'unmatched',
+              trackingToken,
+              fromEmail,
+              fromDisplay: message.from,
+              toEmail,
+              subject: message.subject,
+              bodyText: message.bodyText,
+              attachmentCount: message.attachments.length,
+              attachmentUploadSuccessCount: queuedAttachmentCount,
+              attachmentUploadErrorCount: intakeErrorCount,
+              receivedAt,
+              inReplyTo: message.inReplyTo,
+              referenceIds: message.references,
+              correlationIds: {
+                matched: false,
+                matchedBy: null,
+                intakeRoutedToCvPipeline: true,
+                queuedCvAttachmentCount: queuedAttachmentCount,
+              },
+            });
+
+            if (runItemId) {
+              await completePollingRunItem({
+                runItemId,
+                status: 'unmatched',
+                inboxMessageId: inboxMessage.id,
+                attachmentUploadSuccessCount: queuedAttachmentCount,
+                attachmentUploadErrorCount: intakeErrorCount,
+              });
+            }
+
+            await markHostingerMessageSeen(message.uid).catch((err) => {
+              logger.warn('Failed to mark Hostinger intake message as seen', { uid: message.uid, error: err });
+            });
+            await persistCheckpoint({
+              lastSeenUid: message.uid,
+              lastSeenMessageId: message.messageId,
+              lastSeenReceivedAt: receivedAt,
+              metadata: {
+                lastTrigger: trigger,
+                lastMessageStatus: 'intake_enqueued',
+                lastQueuedCvAttachmentCount: queuedAttachmentCount,
+              },
+            }).catch((err) => {
+              logger.warn('Failed to advance mailbox checkpoint for Hostinger intake message', { error: err, uid: message.uid });
+            });
+
+            successCount++;
+            continue;
+          }
+
           logger.warn('Hostinger mailbox reply could not be matched to candidate', {
             subject: message.subject,
             from: message.from,

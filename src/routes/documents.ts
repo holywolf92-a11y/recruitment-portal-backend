@@ -24,6 +24,11 @@ const logger = createLogger('DocumentsRouter');
 
 const router = Router();
 
+function isMissingColumnError(error: any, columnName: string): boolean {
+  const message = String(error?.message || '');
+  return message.includes(`column unmatched_documents.${columnName} does not exist`);
+}
+
 // Bulk processing status (reduces per-candidate polling)
 // POST /api/documents/processing-status
 // Body: { candidate_ids: string[] }
@@ -216,38 +221,56 @@ router.get('/unmatched', async (req: Request, res: Response) => {
     const offset = parseInt(req.query.offset as string) || 0;
     const filterStatus = req.query.status as string; // 'pending', 'needs_review', all if not specified
 
-    let query = db
-      .from('unmatched_documents')
-      .select(
-        `
-        id,
-        document_type,
-        file_name,
-        storage_path,
-        received_at,
-        source,
-        extracted_metadata,
-        needs_manual_review,
-        review_reasons
-      `,
-        { count: 'exact' }
-      )
-      .order('received_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+    const buildBaseQuery = (includeReceivedAt: boolean) => {
+      const selectFields = [
+        'id',
+        'document_type',
+        'file_name',
+        'storage_path',
+        'source',
+        'extracted_metadata',
+        'needs_manual_review',
+        'review_reasons',
+      ];
 
-    if (filterStatus === 'needs_review') {
-      query = query.eq('needs_manual_review', true);
-    } else if (filterStatus === 'pending') {
-      query = query.eq('needs_manual_review', false);
+      if (includeReceivedAt) {
+        selectFields.splice(4, 0, 'received_at');
+      }
+
+      let query = db
+        .from('unmatched_documents')
+        .select(selectFields.join(', '), { count: 'exact' })
+        .range(offset, offset + limit - 1);
+
+      if (includeReceivedAt) {
+        query = query.order('received_at', { ascending: false });
+      } else {
+        query = query.order('id', { ascending: false });
+      }
+
+      if (filterStatus === 'needs_review') {
+        query = query.eq('needs_manual_review', true);
+      } else if (filterStatus === 'pending') {
+        query = query.eq('needs_manual_review', false);
+      }
+
+      return query;
+    };
+
+    let { data: documents, error, count } = await buildBaseQuery(true);
+
+    if (error && isMissingColumnError(error, 'received_at')) {
+      logger.warn('unmatched_documents.received_at missing in current schema; falling back to id ordering');
+      ({ data: documents, error, count } = await buildBaseQuery(false));
     }
-
-    const { data: documents, error, count } = await query;
 
     if (error) throw error;
 
     // Generate download URLs
+    const unmatchedDocuments = ((documents || []) as any[]);
+
     const docsWithUrls = await Promise.all(
-      (documents || []).map(async (doc) => {
+      unmatchedDocuments.map(async (doc) => {
         try {
           const { data } = await db.storage
             .from('documents')
@@ -340,7 +363,7 @@ router.post('/unmatched/:documentId/link', async (req: Request, res: Response) =
         file_name: doc.file_name,
         storage_path: resolvedStoragePath,
         source: doc.source,
-        received_at: doc.received_at,
+        ...(doc.received_at ? { received_at: doc.received_at } : {}),
       });
 
     if (linkError) throw linkError;

@@ -24,6 +24,66 @@ const logger = createLogger('DocumentsRouter');
 
 const router = Router();
 
+const UNMATCHED_DOCUMENT_SELECT = [
+  'id',
+  'inbox_attachment_id',
+  'document_type',
+  'storage_bucket',
+  'storage_path',
+  'file_name',
+  'source',
+  'received_at',
+  'needs_manual_review',
+  'review_reasons',
+  'extracted_metadata',
+].join(',');
+
+const LEGACY_UNMATCHED_DOCUMENT_SELECT = [
+  'id',
+  'inbox_attachment_id',
+  'document_type',
+  'storage_path',
+  'file_name',
+  'source',
+].join(',');
+
+function normalizeStorageBucket(bucket: unknown): string {
+  return typeof bucket === 'string' && bucket.trim() ? bucket : 'documents';
+}
+
+function normalizeReviewReasons(value: unknown): string[] | null {
+  if (Array.isArray(value)) {
+    const reasons = value.map((item) => String(item).trim()).filter(Boolean);
+    return reasons.length > 0 ? reasons : null;
+  }
+
+  return null;
+}
+
+function normalizeCandidateDocumentSource(source: unknown): 'gmail' | 'whatsapp' | 'web' | 'manual' {
+  const normalized = String(source || '').trim().toLowerCase();
+
+  if (normalized === 'gmail' || normalized === 'email') {
+    return 'gmail';
+  }
+
+  if (normalized === 'whatsapp') {
+    return 'whatsapp';
+  }
+
+  if (normalized === 'web') {
+    return 'web';
+  }
+
+  return 'manual';
+}
+
+function normalizeCandidateDocumentType(documentType: unknown): string {
+  const normalized = String(documentType || '').trim().toLowerCase();
+  const allowed = new Set(['passport', 'cnic', 'degree', 'medical', 'visa', 'certificate']);
+  return allowed.has(normalized) ? normalized : 'other';
+}
+
 // Bulk processing status (reduces per-candidate polling)
 // POST /api/documents/processing-status
 // Body: { candidate_ids: string[] }
@@ -216,10 +276,10 @@ router.get('/unmatched', async (req: Request, res: Response) => {
     const offset = parseInt(req.query.offset as string) || 0;
     const filterStatus = req.query.status as string; // 'pending', 'needs_review', all if not specified
 
-    const buildBaseQuery = (includeManualReviewFilter: boolean) => {
+    const buildBaseQuery = (includeManualReviewFilter: boolean, selectColumns: string) => {
       let query = db
         .from('unmatched_documents')
-        .select('*', { count: 'exact' })
+        .select(selectColumns, { count: 'exact' })
         .order('id', { ascending: false })
         .range(offset, offset + limit - 1);
 
@@ -232,11 +292,20 @@ router.get('/unmatched', async (req: Request, res: Response) => {
       return query;
     };
 
-    let { data: documents, error, count } = await buildBaseQuery(true);
+    let { data: documents, error, count } = await buildBaseQuery(true, UNMATCHED_DOCUMENT_SELECT);
 
-    if (error && String(error.message || '').includes('column unmatched_documents.needs_manual_review does not exist')) {
-      logger.warn('unmatched_documents.needs_manual_review missing in current schema; returning unfiltered unmatched documents');
-      ({ data: documents, error, count } = await buildBaseQuery(false));
+    const errorMessage = String(error?.message || '');
+
+    if (errorMessage.includes('relation "unmatched_documents" does not exist')) {
+      logger.warn('unmatched_documents table missing in current schema; returning empty unmatched documents list');
+      return res.json({ documents: [], total: 0, limit, offset });
+    }
+
+    if (error && errorMessage.includes('column unmatched_documents.')) {
+      logger.warn('Legacy unmatched_documents schema detected; retrying with compatibility query', {
+        message: errorMessage,
+      });
+      ({ data: documents, error, count } = await buildBaseQuery(false, LEGACY_UNMATCHED_DOCUMENT_SELECT));
     }
 
     if (error) throw error;
@@ -246,34 +315,39 @@ router.get('/unmatched', async (req: Request, res: Response) => {
 
     const docsWithUrls = await Promise.all(
       unmatchedDocuments.map(async (doc) => {
+        const storageBucket = normalizeStorageBucket((doc as any).storage_bucket);
+        const reviewReasons = normalizeReviewReasons((doc as any).review_reasons);
+
         try {
           const { data } = await db.storage
-            .from('documents')
+            .from(storageBucket)
             .createSignedUrl(doc.storage_path, 3600);
           return {
             id: doc.id,
             document_type: doc.document_type,
             file_name: doc.file_name,
+            storage_bucket: storageBucket,
             storage_path: doc.storage_path,
             received_at: doc.received_at || null,
             source: doc.source || null,
             extracted_metadata: doc.extracted_metadata || null,
-            needs_manual_review: doc.needs_manual_review || false,
-            review_reasons: doc.review_reasons || null,
+            needs_manual_review: Boolean(doc.needs_manual_review),
+            review_reasons: reviewReasons,
             downloadUrl: data?.signedUrl || null,
           };
         } catch (err) {
-          logger.warn(`Failed to generate signed URL for ${doc.storage_path}`, err);
+          logger.warn(`Failed to generate signed URL for ${storageBucket}/${doc.storage_path}`, err);
           return {
             id: doc.id,
             document_type: doc.document_type,
             file_name: doc.file_name,
+            storage_bucket: storageBucket,
             storage_path: doc.storage_path,
             received_at: doc.received_at || null,
             source: doc.source || null,
             extracted_metadata: doc.extracted_metadata || null,
-            needs_manual_review: doc.needs_manual_review || false,
-            review_reasons: doc.review_reasons || null,
+            needs_manual_review: Boolean(doc.needs_manual_review),
+            review_reasons: reviewReasons,
             downloadUrl: null,
           };
         }
@@ -330,13 +404,16 @@ router.post('/unmatched/:documentId/link', async (req: Request, res: Response) =
     }
 
     // Move document to candidate folder
-    const newPath = `candidates/${candidateId}/documents/${doc.document_type}/${doc.file_name}`;
+    const storageBucket = normalizeStorageBucket(doc.storage_bucket);
+    const normalizedDocumentType = normalizeCandidateDocumentType(doc.document_type);
+    const normalizedSource = normalizeCandidateDocumentSource(doc.source);
+    const newPath = `candidates/${candidateId}/documents/${normalizedDocumentType}/${doc.file_name}`;
 
     // Prefer Storage-side move to avoid backend download -> re-upload egress.
     // If move fails, keep original storage_path to avoid broken links.
     let resolvedStoragePath = doc.storage_path as string;
     try {
-      const bucket = db.storage.from('documents') as any;
+      const bucket = db.storage.from(storageBucket) as any;
       if (typeof bucket.move === 'function') {
         const { error: moveError } = await bucket.move(doc.storage_path, newPath);
         if (moveError) throw moveError;
@@ -353,10 +430,11 @@ router.post('/unmatched/:documentId/link', async (req: Request, res: Response) =
       .from('candidate_documents')
       .insert({
         candidate_id: candidateId,
-        document_type: doc.document_type,
+        document_type: normalizedDocumentType,
+        storage_bucket: storageBucket,
         file_name: doc.file_name,
         storage_path: resolvedStoragePath,
-        source: doc.source,
+        source: normalizedSource,
         ...(doc.received_at ? { received_at: doc.received_at } : {}),
       });
 

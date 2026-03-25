@@ -24,11 +24,6 @@ const logger = createLogger('DocumentsRouter');
 
 const router = Router();
 
-function isMissingColumnError(error: any, columnName: string): boolean {
-  const message = String(error?.message || '');
-  return message.includes(`column unmatched_documents.${columnName} does not exist`);
-}
-
 // Bulk processing status (reduces per-candidate polling)
 // POST /api/documents/processing-status
 // Body: { candidate_ids: string[] }
@@ -221,36 +216,16 @@ router.get('/unmatched', async (req: Request, res: Response) => {
     const offset = parseInt(req.query.offset as string) || 0;
     const filterStatus = req.query.status as string; // 'pending', 'needs_review', all if not specified
 
-    const buildBaseQuery = (includeReceivedAt: boolean) => {
-      const selectFields = [
-        'id',
-        'document_type',
-        'file_name',
-        'storage_path',
-        'source',
-        'extracted_metadata',
-        'needs_manual_review',
-        'review_reasons',
-      ];
-
-      if (includeReceivedAt) {
-        selectFields.splice(4, 0, 'received_at');
-      }
-
+    const buildBaseQuery = (includeManualReviewFilter: boolean) => {
       let query = db
         .from('unmatched_documents')
-        .select(selectFields.join(', '), { count: 'exact' })
+        .select('*', { count: 'exact' })
+        .order('id', { ascending: false })
         .range(offset, offset + limit - 1);
 
-      if (includeReceivedAt) {
-        query = query.order('received_at', { ascending: false });
-      } else {
-        query = query.order('id', { ascending: false });
-      }
-
-      if (filterStatus === 'needs_review') {
+      if (includeManualReviewFilter && filterStatus === 'needs_review') {
         query = query.eq('needs_manual_review', true);
-      } else if (filterStatus === 'pending') {
+      } else if (includeManualReviewFilter && filterStatus === 'pending') {
         query = query.eq('needs_manual_review', false);
       }
 
@@ -259,8 +234,8 @@ router.get('/unmatched', async (req: Request, res: Response) => {
 
     let { data: documents, error, count } = await buildBaseQuery(true);
 
-    if (error && isMissingColumnError(error, 'received_at')) {
-      logger.warn('unmatched_documents.received_at missing in current schema; falling back to id ordering');
+    if (error && String(error.message || '').includes('column unmatched_documents.needs_manual_review does not exist')) {
+      logger.warn('unmatched_documents.needs_manual_review missing in current schema; returning unfiltered unmatched documents');
       ({ data: documents, error, count } = await buildBaseQuery(false));
     }
 
@@ -276,12 +251,31 @@ router.get('/unmatched', async (req: Request, res: Response) => {
             .from('documents')
             .createSignedUrl(doc.storage_path, 3600);
           return {
-            ...doc,
+            id: doc.id,
+            document_type: doc.document_type,
+            file_name: doc.file_name,
+            storage_path: doc.storage_path,
+            received_at: doc.received_at || null,
+            source: doc.source || null,
+            extracted_metadata: doc.extracted_metadata || null,
+            needs_manual_review: doc.needs_manual_review || false,
+            review_reasons: doc.review_reasons || null,
             downloadUrl: data?.signedUrl || null,
           };
         } catch (err) {
           logger.warn(`Failed to generate signed URL for ${doc.storage_path}`, err);
-          return { ...doc, downloadUrl: null };
+          return {
+            id: doc.id,
+            document_type: doc.document_type,
+            file_name: doc.file_name,
+            storage_path: doc.storage_path,
+            received_at: doc.received_at || null,
+            source: doc.source || null,
+            extracted_metadata: doc.extracted_metadata || null,
+            needs_manual_review: doc.needs_manual_review || false,
+            review_reasons: doc.review_reasons || null,
+            downloadUrl: null,
+          };
         }
       })
     );

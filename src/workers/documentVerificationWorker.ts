@@ -16,6 +16,7 @@ import {
   getRejectionReasonMessage,
 } from '../config/documentCategories';
 import { DocumentRejectionService, RejectionContext } from '../services/documentRejectionService';
+import { inferProfessionFromExperienceCertificate } from '../services/professionInferenceService';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
@@ -112,47 +113,6 @@ function deriveExpiryDateForCategory(
   }
 
   return undefined;
-}
-
-/**
- * Infer profession/position from certificate filename or category
- * Helps populate missing profession data when certificate is uploaded
- */
-function inferProfessionFromCertificate(category: DocumentCategory, fileName: string): string | null {
-  const fileNameLower = (fileName || '').toLowerCase();
-  
-  const professionPatterns: Record<string, string> = {
-    'construction': 'Construction Worker',
-    'electrician': 'Electrician',
-    'plumber': 'Plumber',
-    'carpenter': 'Carpenter',
-    'mechanic': 'Mechanic',
-    'welder': 'Welder',
-    'mason': 'Mason',
-    'painter': 'Painter',
-    'foreman': 'Foreman',
-    'supervisor': 'Supervisor',
-    'engineer': 'Engineer',
-    'technician': 'Technician',
-    'driver': 'Driver',
-    'chef': 'Chef',
-    'cook': 'Cook',
-    'nurse': 'Nurse',
-    'teacher': 'Teacher',
-    'trainer': 'Trainer',
-  };
-  
-  // Common profession patterns in certificate names
-  
-  // Check filename for profession keywords
-  for (const [keyword, profession] of Object.entries(professionPatterns)) {
-    if (fileNameLower.includes(keyword)) {
-      return profession;
-    }
-  }
-  
-  // If no profession found in filename, return null
-  return null;
 }
 
 const CERTIFICATE_CORE_KEYWORDS = [
@@ -1058,12 +1018,12 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
       }
     }
 
-    // Fallback: If no identity fields were extracted, still infer profession from certificate filename
+    // Fallback: If no identity fields were extracted, still infer profession from experience certificate filename
     if (!aiResult.extracted_identity || Object.keys(aiResult.extracted_identity).length === 0) {
       if (candidateId && fileName) {
         const fileNameLower = fileName.toLowerCase();
         const looksLikeCertificate = CERTIFICATE_KEYWORDS.some(keyword => fileNameLower.includes(keyword));
-        if (looksLikeCertificate) {
+        if (looksLikeCertificate && finalCategory === DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES) {
           try {
             const { data: currentCandidate, error: candidateError } = await db
               .from('candidates')
@@ -1072,13 +1032,17 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
               .single();
 
             if (!candidateError && currentCandidate && !currentCandidate.position) {
-              const professionInferred = inferProfessionFromCertificate(finalCategory as DocumentCategory, fileName);
+              const professionInferred = inferProfessionFromExperienceCertificate(fileName, finalCategory as DocumentCategory);
               if (professionInferred) {
-                console.log(`[DocumentVerification] ✅ Inferred profession from certificate filename (no identity): ${professionInferred}`);
-                await db
-                  .from('candidates')
-                  .update({ position: professionInferred })
-                  .eq('id', candidateId);
+                console.log(`[DocumentVerification] ✅ Inferred profession from experience certificate filename (no identity): ${professionInferred}`);
+                const { enrichCandidateData } = await import('../services/progressiveDataCompletionService');
+                await enrichCandidateData(
+                  candidateId,
+                  { position: professionInferred },
+                  'certificate',
+                  documentId,
+                  finalCategory
+                );
               }
             }
           } catch (profError: any) {
@@ -1353,19 +1317,20 @@ async function processDocumentVerification(job: Job<DocumentVerificationJobData>
           source: documentSource,
         });
         
-        // Special handling for certificates: Infer profession from certificate name/title if CV profession is missing
-        // Also handle misclassified certificates that were originally marked as CV
-        if ((documentSource === 'certificate' || documentSource === 'cv') && currentCandidate && !currentCandidate.position) {
-          const professionInferred = inferProfessionFromCertificate(aiResult.category as DocumentCategory, fileName);
+        // Special handling for experience certificates only: infer profession from the certificate filename
+        if (finalCategory === DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES && currentCandidate && !currentCandidate.position) {
+          const professionInferred = inferProfessionFromExperienceCertificate(fileName, aiResult.category as DocumentCategory);
           if (professionInferred) {
-            console.log(`[DocumentVerification] ✅ Inferred profession from ${documentSource === 'certificate' ? 'certificate' : 'filename'}: ${professionInferred}`);
+            console.log(`[DocumentVerification] ✅ Inferred profession from experience certificate: ${professionInferred}`);
             try {
-              await db
-                .from('candidates')
-                .update({
-                  position: professionInferred,
-                })
-                .eq('id', candidateId);
+              const professionResult = await enrichCandidateData(
+                candidateId,
+                { position: professionInferred },
+                'certificate',
+                documentId,
+                aiResult.category
+              );
+              console.log('[DocumentVerification] Profession enrichment result:', professionResult.updated);
             } catch (profError: any) {
               console.error('[DocumentVerification] Failed to update inferred profession:', profError);
               // Don't fail - profession inference is optional

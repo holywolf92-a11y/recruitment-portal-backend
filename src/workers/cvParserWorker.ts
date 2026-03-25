@@ -16,6 +16,7 @@ import { isGovernmentEmail } from '../services/progressiveDataCompletionService'
 import { extractProfilePhotoFromPdfUsingAI } from '../services/aiProfilePhotoExtractionService';
 import { sendMessage, sendTemplateMessage } from '../services/whatsappService';
 import { ensureConversationForPhone, recordOutboundMessage } from '../services/whatsappInboxService';
+import { inferProfessionFromCvData } from '../services/professionInferenceService';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
@@ -197,31 +198,9 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
       console.log(`[CVParser] Filtered out official/government email during extraction: ${extractedEmail}`);
     }
     
-    // Extract profession from certificates if not explicitly mentioned
-    let extractedPosition = candidate.position || undefined;
-    if (!extractedPosition && (candidate.certifications || []).length > 0) {
-      // Try to infer position from certificate names
-      const certNames = Array.isArray(candidate.certifications) ? candidate.certifications : [];
-      const certString = certNames.join(' ').toLowerCase();
-      
-      // Common patterns to extract profession
-      if (certString.includes('construction') || certString.includes('builder')) {
-        extractedPosition = 'Construction Worker';
-      } else if (certString.includes('electrician')) {
-        extractedPosition = 'Electrician';
-      } else if (certString.includes('plumber')) {
-        extractedPosition = 'Plumber';
-      } else if (certString.includes('carpenter')) {
-        extractedPosition = 'Carpenter';
-      } else if (certString.includes('mechanic')) {
-        extractedPosition = 'Mechanic';
-      } else if (certString.includes('welding') || certString.includes('welder')) {
-        extractedPosition = 'Welder';
-      }
-      
-      if (extractedPosition) {
-        console.log(`[CVParser] Inferred position from certificates: ${extractedPosition}`);
-      }
+    const extractedPosition = inferProfessionFromCvData(candidate);
+    if (extractedPosition && !candidate.position) {
+      console.log(`[CVParser] Inferred position from CV content: ${extractedPosition}`);
     }
     
     const rawProfilePhotoUrl = parsed?.candidate?.profile_photo_url || parsed?.profile_photo_url || undefined;
@@ -930,7 +909,7 @@ export function startCvParserWorker() {
           passport_no: parsedCandidate.passport, // For matching
           date_of_birth: parsedCandidate.date_of_birth,
           marital_status: parsedCandidate.marital_status,
-          position: parsedCandidate.position,
+          position: parsedCandidate.position || inferProfessionFromCvData(parsedCandidate),
           experience_years: derivedExperienceYears,
           country_of_interest: parsedCandidate.country_of_interest,
           skills: parsedCandidate.skills,

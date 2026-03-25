@@ -22,9 +22,9 @@ exports.getTemplateConfig = getTemplateConfig;
  * This ensures all users get the updated design without manual cache clearing.
  */
 exports.CV_TEMPLATE_CONFIG = {
-    version: 'v3.0.1',
-    description: 'Modern minimalist two-column layout with profile photo support from profile_photo_url field',
-    lastUpdated: '2026-01-27',
+    version: 'v3.1.0',
+    description: 'Employer CV enrichment layer with inferred role, synthesized summaries/experience, structured skills, and single-page footer layout',
+    lastUpdated: '2026-03-25',
 };
 /**
  * Get the current template version string for cache key generation
@@ -63,4 +63,11 @@ function getTemplateConfig() {
  *   - Basic gradient header
  *   - Simple sections with left border
  *   - Plain text layout
+ *
+ * v3.1.0 (2026-03-25): Employer CV enrichment and page overflow fix
+ *   - Added CV-only enrichment before render
+ *   - Infer target role from skills and experience context
+ *   - Generate stronger summaries and fallback experience bullets
+ *   - Group skills and professionalize language labels
+ *   - Keep footer inside the page wrapper to avoid blank overflow page
  */

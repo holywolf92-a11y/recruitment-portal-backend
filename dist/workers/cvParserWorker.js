@@ -55,6 +55,7 @@ const progressiveDataCompletionService_1 = require("../services/progressiveDataC
 const aiProfilePhotoExtractionService_1 = require("../services/aiProfilePhotoExtractionService");
 const whatsappService_1 = require("../services/whatsappService");
 const whatsappInboxService_1 = require("../services/whatsappInboxService");
+const professionInferenceService_1 = require("../services/professionInferenceService");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 const STORAGE_BUCKET = 'documents';
@@ -121,7 +122,8 @@ function buildCvReceivedWhatsAppText(params) {
             ? `We have sent an email to ${email} requesting the missing documents. Please check your inbox/spam and reply to that email with the required documents.`
             : `We will contact you via email at ${email} if any documents are missing.`
         : `If any documents are missing, our team will contact you.`;
-    return `${greeting},\n\nFalisha Manpower: We have received your CV.\n${emailLine}\n\nThank you.`;
+    const linkedinLine = 'For further updates, please follow us on LinkedIn:\nhttps://www.linkedin.com/company/falishaenterprises';
+    return `${greeting},\n\nFalisha Manpower: We have received your CV.\n${emailLine}\n\n${linkedinLine}\n\nThank you.`;
 }
 // Helper to parse and validate dates from various formats
 function parseDate(dateStr, fieldName) {
@@ -208,34 +210,9 @@ async function createCandidateFromParsedData(parsed, attachmentId, identityField
         if (extractedEmail && !candidateEmail) {
             console.log(`[CVParser] Filtered out official/government email during extraction: ${extractedEmail}`);
         }
-        // Extract profession from certificates if not explicitly mentioned
-        let extractedPosition = candidate.position || undefined;
-        if (!extractedPosition && (candidate.certifications || []).length > 0) {
-            // Try to infer position from certificate names
-            const certNames = Array.isArray(candidate.certifications) ? candidate.certifications : [];
-            const certString = certNames.join(' ').toLowerCase();
-            // Common patterns to extract profession
-            if (certString.includes('construction') || certString.includes('builder')) {
-                extractedPosition = 'Construction Worker';
-            }
-            else if (certString.includes('electrician')) {
-                extractedPosition = 'Electrician';
-            }
-            else if (certString.includes('plumber')) {
-                extractedPosition = 'Plumber';
-            }
-            else if (certString.includes('carpenter')) {
-                extractedPosition = 'Carpenter';
-            }
-            else if (certString.includes('mechanic')) {
-                extractedPosition = 'Mechanic';
-            }
-            else if (certString.includes('welding') || certString.includes('welder')) {
-                extractedPosition = 'Welder';
-            }
-            if (extractedPosition) {
-                console.log(`[CVParser] Inferred position from certificates: ${extractedPosition}`);
-            }
+        const extractedPosition = (0, professionInferenceService_1.inferProfessionFromCvData)(candidate);
+        if (extractedPosition && !candidate.position) {
+            console.log(`[CVParser] Inferred position from CV content: ${extractedPosition}`);
         }
         const rawProfilePhotoUrl = parsed?.candidate?.profile_photo_url || parsed?.profile_photo_url || undefined;
         const normalizedProfilePhotoUrl = typeof rawProfilePhotoUrl === 'string' && rawProfilePhotoUrl.trim()
@@ -863,7 +840,7 @@ function startCvParserWorker() {
                 passport_no: parsedCandidate.passport, // For matching
                 date_of_birth: parsedCandidate.date_of_birth,
                 marital_status: parsedCandidate.marital_status,
-                position: parsedCandidate.position,
+                position: parsedCandidate.position || (0, professionInferenceService_1.inferProfessionFromCvData)(parsedCandidate),
                 experience_years: derivedExperienceYears,
                 country_of_interest: parsedCandidate.country_of_interest,
                 skills: parsedCandidate.skills,
@@ -907,8 +884,14 @@ function startCvParserWorker() {
             if (combinedData.passport_expiry) {
                 combinedData.passport_expiry = parseDate(combinedData.passport_expiry, 'passport_expiry');
             }
+            // WhatsApp CVs are often forwarded by recruiters or agencies on behalf of
+            // multiple candidates, so a shared phone/email is not strong enough to
+            // auto-link on its own.
+            const requireCorroborationForContactSignals = inboxMsg?.source === 'whatsapp';
             // Find existing candidate using progressive completion matching
-            const existingCandidateId = await findExistingCandidate(combinedData);
+            const existingCandidateId = await findExistingCandidate(combinedData, {
+                requireCorroborationForContactSignals,
+            });
             let candidate;
             if (existingCandidateId) {
                 // Update existing candidate using progressive completion

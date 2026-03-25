@@ -241,135 +241,324 @@ async function generateProfilePhotoSignedUrl(candidate) {
         return null;
     }
 }
+function isMeaningfulCvText(value) {
+    if (typeof value !== 'string')
+        return false;
+    const trimmed = value.trim();
+    if (!trimmed)
+        return false;
+    const lower = trimmed.toLowerCase();
+    return !['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided', 'unknown', '[]'].includes(lower);
+}
+function escapeCvHtml(value) {
+    if (value === null || value === undefined)
+        return '';
+    const str = typeof value === 'string' ? value : String(value);
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+function asArray(value) {
+    return Array.isArray(value) ? value : [];
+}
+function toStringArray(value, maxItems = 25) {
+    if (!value)
+        return [];
+    if (Array.isArray(value)) {
+        return value
+            .map((entry) => (typeof entry === 'string' ? entry : (entry?.name || entry?.title || entry?.text || String(entry))))
+            .map((entry) => (typeof entry === 'string' ? entry.trim() : String(entry).trim()))
+            .filter(Boolean)
+            .slice(0, maxItems);
+    }
+    if (typeof value === 'string') {
+        const normalized = value
+            .split(/\r?\n|,|;|\||\u2022|•/)
+            .map((part) => part.trim())
+            .filter(Boolean);
+        return normalized.slice(0, maxItems);
+    }
+    return [String(value)];
+}
+function formatDateRange(start, end) {
+    const s = (start || '').toString().trim();
+    const e = (end || '').toString().trim();
+    if (!s && !e)
+        return '';
+    if (s && !e)
+        return `${s} - Present`;
+    if (!s && e)
+        return e;
+    return `${s} - ${e}`;
+}
+function normalizeSkillLabel(skill) {
+    const trimmed = skill.trim();
+    if (!trimmed)
+        return '';
+    const lower = trimmed.toLowerCase();
+    const aliases = {
+        babysitting: 'Babysitting & Childcare',
+        childcare: 'Babysitting & Childcare',
+        'baby sitting': 'Babysitting & Childcare',
+        cleaning: 'Cleaning & Housekeeping',
+        housekeeping: 'Cleaning & Housekeeping',
+        'house keeping': 'Cleaning & Housekeeping',
+        dusting: 'Cleaning & Housekeeping',
+        washing: 'Washing Clothes',
+        laundry: 'Washing Clothes',
+        ironing: 'Ironing',
+        dishwashing: 'Dishwashing',
+        'dish washing': 'Dishwashing',
+        cooking: 'Cooking & Meal Preparation',
+        cook: 'Cooking & Meal Preparation',
+        driver: 'Driving',
+        driving: 'Driving',
+        'elderly care': 'Elderly Care',
+        'elder care': 'Elderly Care',
+        caregiving: 'Caregiving',
+        'care giving': 'Caregiving',
+        caregiver: 'Caregiving',
+    };
+    if (aliases[lower])
+        return aliases[lower];
+    return trimmed
+        .toLowerCase()
+        .split(/\s+/)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ');
+}
+function inferTargetRole(candidate, parsed, normalizedSkills, experienceTitles) {
+    const explicitRole = [candidate.position, parsed?.position, parsed?.job_title, parsed?.target_role]
+        .find((value) => isMeaningfulCvText(value));
+    if (explicitRole)
+        return String(explicitRole).trim();
+    const corpus = [
+        ...normalizedSkills,
+        ...experienceTitles,
+        candidate.previous_employment || '',
+        parsed?.summary || '',
+    ].join(' ').toLowerCase();
+    const roleRules = [
+        { role: 'Domestic Helper', keywords: ['cleaning', 'housekeeping', 'washing clothes', 'ironing', 'dishwashing', 'babysitting', 'childcare', 'elderly care'] },
+        { role: 'Driver', keywords: ['driving', 'driver', 'chauffeur'] },
+        { role: 'Cook / Kitchen Helper', keywords: ['cooking', 'meal preparation', 'kitchen', 'cook'] },
+        { role: 'Caregiver', keywords: ['caregiving', 'elderly care', 'patient care', 'home care'] },
+        { role: 'Security Guard', keywords: ['security', 'guard', 'patrol'] },
+        { role: 'Housekeeper', keywords: ['housekeeping', 'cleaning & housekeeping'] },
+    ];
+    let bestRole = 'Domestic Helper';
+    let bestScore = 0;
+    for (const rule of roleRules) {
+        const score = rule.keywords.reduce((count, keyword) => count + (corpus.includes(keyword) ? 1 : 0), 0);
+        if (score > bestScore) {
+            bestRole = rule.role;
+            bestScore = score;
+        }
+    }
+    return bestRole;
+}
+function buildSkillBuckets(normalizedSkills) {
+    const buckets = [
+        { title: 'Core Skills', items: [] },
+        { title: 'Household Tasks', items: [] },
+        { title: 'Care Support', items: [] },
+        { title: 'Additional Strengths', items: [] },
+    ];
+    const seen = new Set();
+    for (const skill of normalizedSkills) {
+        if (!skill || seen.has(skill))
+            continue;
+        seen.add(skill);
+        const lower = skill.toLowerCase();
+        if (/(cleaning|housekeeping|driving|cooking|meal preparation)/.test(lower)) {
+            buckets[0].items.push(skill);
+            continue;
+        }
+        if (/(washing clothes|ironing|dishwashing|laundry)/.test(lower)) {
+            buckets[1].items.push(skill);
+            continue;
+        }
+        if (/(childcare|babysitting|elderly care|caregiving)/.test(lower)) {
+            buckets[2].items.push(skill);
+            continue;
+        }
+        buckets[3].items.push(skill);
+    }
+    return buckets.filter((bucket) => bucket.items.length > 0);
+}
+function buildProfessionalLanguages(rawLanguages) {
+    const nativeLanguages = new Set(['luhya', 'swahili', 'kiswahili', 'luganda', 'somali', 'kinyarwanda', 'luo', 'kikuyu', 'kamba']);
+    const basicLanguages = new Set(['english', 'arabic', 'french']);
+    const seen = new Set();
+    return rawLanguages
+        .map((language) => language.trim())
+        .filter(Boolean)
+        .map((language) => {
+        if (/\((.*?)\)/.test(language))
+            return language;
+        const lower = language.toLowerCase();
+        const label = language.charAt(0).toUpperCase() + language.slice(1).toLowerCase();
+        if (nativeLanguages.has(lower))
+            return `${label} (Native)`;
+        if (basicLanguages.has(lower))
+            return `${label} (Basic)`;
+        return `${label} (Conversational)`;
+    })
+        .filter((language) => {
+        const key = language.toLowerCase();
+        if (seen.has(key))
+            return false;
+        seen.add(key);
+        return true;
+    });
+}
+function buildGeneratedExperience(role, skillBuckets, experienceYears) {
+    const years = Number(experienceYears);
+    const yearsLabel = Number.isFinite(years) && years > 0 ? `${years} year${years === 1 ? '' : 's'}` : 'practical';
+    const allSkills = skillBuckets.flatMap((bucket) => bucket.items).map((item) => item.toLowerCase());
+    const bullets = [];
+    if (allSkills.some((skill) => /(cleaning|housekeeping)/.test(skill))) {
+        bullets.push('Performed household cleaning, room organization, and day-to-day housekeeping to maintain a safe and orderly home.');
+    }
+    if (allSkills.some((skill) => /(childcare|babysitting)/.test(skill))) {
+        bullets.push('Supported children with daily routines, supervision, and general childcare assistance in a home environment.');
+    }
+    if (allSkills.some((skill) => /(elderly care|caregiving)/.test(skill))) {
+        bullets.push('Assisted with elderly care and personal support tasks while maintaining a respectful and attentive standard of service.');
+    }
+    if (allSkills.some((skill) => /(washing clothes|ironing|dishwashing|laundry)/.test(skill))) {
+        bullets.push('Managed laundry, ironing, and other household support duties to keep daily operations running smoothly.');
+    }
+    if (allSkills.some((skill) => /(driving)/.test(skill))) {
+        bullets.push('Provided safe and reliable transportation support while maintaining cleanliness and readiness of assigned vehicles.');
+    }
+    if (allSkills.some((skill) => /(cooking|meal preparation)/.test(skill))) {
+        bullets.push('Prepared meals and assisted with kitchen organization, food handling, and routine household support.');
+    }
+    if (bullets.length === 0) {
+        bullets.push('Delivered dependable household support, adapted quickly to employer needs, and maintained a professional work standard.');
+        bullets.push('Worked effectively as a team-oriented helper with focus on cleanliness, safety, and respectful client service.');
+    }
+    return [{
+            title: role,
+            company: 'Private Household / Employer',
+            location: '',
+            dateLabel: `${yearsLabel} experience`,
+            bullets: bullets.slice(0, 5),
+            isGenerated: true,
+        }];
+}
+function buildProfessionalSummary(candidate, role, skillBuckets, experienceYears, existingSummary) {
+    if (isMeaningfulCvText(existingSummary) && !/missing/i.test(existingSummary) && existingSummary.trim().length >= 50) {
+        return existingSummary.trim();
+    }
+    const years = Number(experienceYears);
+    const yearsText = Number.isFinite(years) && years > 0 ? `${years} year${years === 1 ? '' : 's'}` : 'hands-on';
+    const headlineSkills = skillBuckets.flatMap((bucket) => bucket.items).slice(0, 3);
+    const skillsText = headlineSkills.length > 0 ? headlineSkills.join(', ').replace(/, ([^,]*)$/, ', and $1') : 'household support, reliability, and day-to-day service';
+    const market = isMeaningfulCvText(candidate.country_of_interest) ? candidate.country_of_interest.trim() : 'employers seeking dependable support staff';
+    return `Dedicated ${role} with ${yearsText} experience in ${skillsText}. Presents as reliable, adaptable, and focused on maintaining a clean, organized, and supportive environment for ${market}.`;
+}
+function normalizeExperienceEntries(parsedExperience) {
+    return parsedExperience.map((role) => {
+        const title = role?.job_title || role?.title || role?.position || '';
+        const company = role?.company || role?.employer || role?.organization || '';
+        const location = role?.location || role?.city || role?.country || '';
+        const dateLabel = formatDateRange(role?.start_date || role?.from || role?.start, role?.end_date || role?.to || role?.end);
+        const bullets = toStringArray(role?.responsibilities || role?.achievements || role?.duties || role?.highlights, 12);
+        const description = role?.description || role?.summary || '';
+        return {
+            title,
+            company,
+            location,
+            dateLabel,
+            bullets,
+            description,
+            isGenerated: false,
+        };
+    }).filter((entry) => entry.title || entry.company || entry.location || entry.dateLabel || entry.bullets.length > 0 || isMeaningfulCvText(entry.description));
+}
+function buildEducationText(candidate, parsedEducation) {
+    if (parsedEducation.length > 0)
+        return null;
+    if (isMeaningfulCvText(candidate.education))
+        return candidate.education.trim();
+    return 'Details not provided';
+}
+function enrichEmployerCvData(candidate, parsedCv) {
+    const parsed = (parsedCv && (parsedCv.candidate || parsedCv.parsed_data))
+        ? (parsedCv.candidate || parsedCv.parsed_data)
+        : (parsedCv || null);
+    const rawSkills = asArray(parsed?.skills).length > 0
+        ? asArray(parsed?.skills)
+        : toStringArray(candidate.skills, 30);
+    const normalizedSkills = rawSkills.map(normalizeSkillLabel).filter(Boolean);
+    const parsedExperience = normalizeExperienceEntries(asArray(parsed?.experience));
+    const experienceTitles = parsedExperience.map((entry) => entry.title).filter(Boolean);
+    const targetRole = inferTargetRole(candidate, parsed, normalizedSkills, experienceTitles);
+    const skillBuckets = buildSkillBuckets(normalizedSkills);
+    const summary = buildProfessionalSummary(candidate, targetRole, skillBuckets, parsed?.experience_years ?? candidate.experience_years, isMeaningfulCvText(parsed?.professional_summary)
+        ? String(parsed.professional_summary).trim()
+        : (isMeaningfulCvText(candidate.professional_summary) ? candidate.professional_summary.trim() : ''));
+    const languages = buildProfessionalLanguages(asArray(parsed?.languages).length > 0
+        ? asArray(parsed?.languages)
+        : toStringArray(candidate.languages, 12));
+    const experience = parsedExperience.length > 0
+        ? parsedExperience
+        : buildGeneratedExperience(targetRole, skillBuckets, parsed?.experience_years ?? candidate.experience_years);
+    return {
+        parsed,
+        targetRole,
+        summary,
+        skillBuckets,
+        flatSkills: skillBuckets.flatMap((bucket) => bucket.items),
+        languages,
+        experience,
+        parsedEducation: asArray(parsed?.education),
+        parsedCertifications: asArray(parsed?.certifications || parsed?.certificates),
+        parsedLicenses: asArray(parsed?.licenses),
+        educationFallback: buildEducationText(candidate, asArray(parsed?.education)),
+        previousEmployment: isMeaningfulCvText(candidate.previous_employment) ? candidate.previous_employment.trim() : '',
+    };
+}
 /**
  * Generate HTML template for employer-safe CV
  */
 function generateEmployerSafeCVHTML(candidate, documents, parsedCv) {
-    const isMeaningfulText = (value) => {
-        if (typeof value !== 'string')
-            return false;
-        const trimmed = value.trim();
-        if (!trimmed)
-            return false;
-        const lower = trimmed.toLowerCase();
-        return !['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(lower);
-    };
-    const escapeHtml = (value) => {
-        if (value === null || value === undefined)
-            return '';
-        const str = typeof value === 'string' ? value : String(value);
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-    };
-    const asArray = (value) => (Array.isArray(value) ? value : []);
-    // parsing_jobs.output is stored by the worker and commonly wraps the parsed CV
-    // inside { candidate: { ... } }. Some older payloads may use { parsed_data: { ... } }.
-    // Normalize so the template always reads from the same shape.
-    const parsed = (parsedCv && (parsedCv.candidate || parsedCv.parsed_data))
-        ? (parsedCv.candidate || parsedCv.parsed_data)
-        : (parsedCv || null);
-    const toStringArray = (value, maxItems = 25) => {
-        if (!value)
-            return [];
-        if (Array.isArray(value)) {
-            return value
-                .map((v) => (typeof v === 'string' ? v : (v?.name || v?.title || v?.text || String(v))))
-                .map((s) => (typeof s === 'string' ? s.trim() : String(s)))
-                .filter((s) => !!s)
-                .slice(0, maxItems);
-        }
-        if (typeof value === 'string') {
-            const trimmed = value.trim();
-            if (!trimmed)
-                return [];
-            return [trimmed];
-        }
-        return [String(value)];
-    };
-    const formatDateRange = (start, end) => {
-        const s = (start || '').toString().trim();
-        const e = (end || '').toString().trim();
-        if (!s && !e)
-            return '';
-        if (s && !e)
-            return `${s} - Present`;
-        if (!s && e)
-            return e;
-        return `${s} - ${e}`;
-    };
-    // Prefer structured output from parser when present
-    const parsedSkills = asArray(parsed?.skills);
-    const parsedLanguages = asArray(parsed?.languages);
-    // Parse skills - handle JSON array or comma-separated string
-    let skills = [];
-    if (parsedSkills.length > 0) {
-        skills = parsedSkills;
-    }
-    else if (candidate.skills) {
-        try {
-            const parsed = JSON.parse(candidate.skills);
-            if (Array.isArray(parsed)) {
-                skills = parsed;
-            }
-            else {
-                skills = candidate.skills.split(',').map((s) => s.trim());
-            }
-        }
-        catch {
-            skills = candidate.skills.split(',').map((s) => s.trim());
-        }
-    }
-    const languages = parsedLanguages.length > 0
-        ? parsedLanguages
-        : (candidate.languages ? candidate.languages.split(',').map((l) => l.trim()) : []);
-    const initial = (candidate.name || '?').charAt(0).toUpperCase();
-    const professionalSummary = isMeaningfulText(parsed?.professional_summary)
-        ? String(parsed.professional_summary).trim()
-        : (isMeaningfulText(candidate.professional_summary) ? candidate.professional_summary.trim() : '');
-    const previousEmployment = isMeaningfulText(candidate.previous_employment) ? candidate.previous_employment.trim() : '';
-    const parsedExperience = asArray(parsed?.experience);
-    const experienceHtml = parsedExperience.length > 0
+    const enriched = enrichEmployerCvData(candidate, parsedCv);
+    const experienceHtml = enriched.experience.length > 0
         ? `
       <div class="section">
         <h2 class="section-title">Work Experience</h2>
-        ${parsedExperience.map((role) => {
-            const title = role?.job_title || role?.title || role?.position || '';
-            const company = role?.company || role?.employer || role?.organization || '';
-            const location = role?.location || role?.city || role?.country || '';
-            const dates = formatDateRange(role?.start_date || role?.from || role?.start, role?.end_date || role?.to || role?.end);
-            const bullets = toStringArray(role?.responsibilities || role?.achievements || role?.duties || role?.highlights, 12);
-            const description = role?.description || role?.summary || '';
-            return `
+        ${enriched.experience.map((role) => `
           <div class="entry">
-            <div class="entry-title">${escapeHtml([title, company].filter(Boolean).join(' - '))}</div>
-            ${(location || dates) ? `<div class="entry-meta">${escapeHtml([location, dates].filter(Boolean).join(' | '))}</div>` : ''}
-            ${bullets.length > 0
-                ? `<ul class="bullet-list">${bullets.map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>`
-                : (isMeaningfulText(description)
-                    ? `<ul class="bullet-list"><li>${escapeHtml(description)}</li></ul>`
-                    : '')}
-          </div>`;
-        }).join('')}
+            <div class="entry-title">${escapeCvHtml([role.title, role.company].filter(Boolean).join(' - '))}</div>
+            ${(role.location || role.dateLabel) ? `<div class="entry-meta">${escapeCvHtml([role.location, role.dateLabel].filter(Boolean).join(' | '))}</div>` : ''}
+            ${role.bullets?.length > 0
+            ? `<ul class="bullet-list">${role.bullets.map((bullet) => `<li>${escapeCvHtml(bullet)}</li>`).join('')}</ul>`
+            : (isMeaningfulCvText(role.description)
+                ? `<ul class="bullet-list"><li>${escapeCvHtml(role.description)}</li></ul>`
+                : '')}
+          </div>
+        `).join('')}
       </div>
     `
-        : (previousEmployment ? `
+        : (enriched.previousEmployment ? `
       <div class="section">
         <h2 class="section-title">Work Experience</h2>
         <div class="entry">
-          <div class="entry-description" style="white-space: pre-line;">${previousEmployment}</div>
+          <div class="entry-description" style="white-space: pre-line;">${escapeCvHtml(enriched.previousEmployment)}</div>
         </div>
       </div>
     ` : '');
-    const parsedEducation = asArray(parsed?.education);
-    const educationHtml = parsedEducation.length > 0
+    const educationHtml = enriched.parsedEducation.length > 0
         ? `
       <div class="section">
         <h2 class="section-title">Education</h2>
-        ${parsedEducation.map((ed) => {
+        ${enriched.parsedEducation.map((ed) => {
             const degree = ed?.degree || ed?.qualification || ed?.title || '';
             const institution = ed?.institution || ed?.university || ed?.school || '';
             const location = ed?.location || ed?.city || ed?.country || '';
@@ -377,48 +566,39 @@ function generateEmployerSafeCVHTML(candidate, documents, parsedCv) {
             const thesis = ed?.thesis || '';
             return `
           <div class="entry">
-            <div class="entry-title">${escapeHtml([degree, institution].filter(Boolean).join(' - '))}</div>
-            ${(location || dates) ? `<div class="entry-meta">${escapeHtml([location, dates].filter(Boolean).join(' | '))}</div>` : ''}
-            ${isMeaningfulText(thesis) ? `<div class="entry-description" style="white-space: pre-line;">Thesis: ${escapeHtml(thesis)}</div>` : ''}
+            <div class="entry-title">${escapeCvHtml([degree, institution].filter(Boolean).join(' - '))}</div>
+            ${(location || dates) ? `<div class="entry-meta">${escapeCvHtml([location, dates].filter(Boolean).join(' | '))}</div>` : ''}
+            ${isMeaningfulCvText(thesis) ? `<div class="entry-description" style="white-space: pre-line;">${escapeCvHtml(thesis)}</div>` : ''}
           </div>`;
         }).join('')}
       </div>
     `
-        : (candidate.education ? `
+        : `
       <div class="section">
         <h2 class="section-title">Education</h2>
         <div class="entry">
-          <div class="entry-description" style="white-space: pre-line;">${candidate.education}</div>
+          <div class="entry-description">${escapeCvHtml(enriched.educationFallback)}</div>
         </div>
       </div>
-    ` : '');
-    const parsedCerts = asArray(parsed?.certifications || parsed?.certificates);
-    const certificationsHtml = parsedCerts.length > 0
+    `;
+    const certificationsHtml = enriched.parsedCertifications.length > 0
         ? `
       <div class="section">
         <h2 class="section-title">Certifications</h2>
         <div class="entry">
           <ul class="bullet-list">
-            ${parsedCerts.slice(0, 20).map((c) => {
-            const name = c?.name || c?.title || c;
-            const issuer = c?.issuer || c?.authority || '';
-            const date = c?.date || c?.year || '';
-            const parts = [name, issuer, date].filter(Boolean);
-            return `<li>${escapeHtml(parts.join(' - '))}</li>`;
+            ${enriched.parsedCertifications.slice(0, 20).map((cert) => {
+            const name = cert?.name || cert?.title || cert;
+            const issuer = cert?.issuer || cert?.authority || '';
+            const date = cert?.date || cert?.year || '';
+            return `<li>${escapeCvHtml([name, issuer, date].filter(Boolean).join(' - '))}</li>`;
         }).join('')}
           </ul>
         </div>
       </div>
     `
-        : (candidate.certifications ? `
-      <div class="section">
-        <h2 class="section-title">Certifications</h2>
-        <div class="entry">
-          <div class="entry-description" style="white-space: pre-line;">${candidate.certifications}</div>
-        </div>
-      </div>
-    ` : '');
-    const parsedLicenses = asArray(parsed?.licenses);
+        : '';
+    const parsedLicenses = enriched.parsedLicenses;
     const licensesHtml = parsedLicenses.length > 0
         ? `
       <div class="section">
@@ -433,9 +613,9 @@ function generateEmployerSafeCVHTML(candidate, documents, parsedCv) {
             const meta = [authority, country, reg ? `Reg#: ${reg}` : '', expiry ? `Expiry: ${expiry}` : ''].filter(Boolean).join(' | ');
             return `
           <div class="entry">
-            <div class="entry-title">${escapeHtml(name)}</div>
-            ${meta ? `<div class="entry-meta">${escapeHtml(meta)}</div>` : ''}
-            ${isMeaningfulText(notes) ? `<div class="entry-description" style="white-space: pre-line;">${escapeHtml(notes)}</div>` : ''}
+            <div class="entry-title">${escapeCvHtml(name)}</div>
+            ${meta ? `<div class="entry-meta">${escapeCvHtml(meta)}</div>` : ''}
+            ${isMeaningfulCvText(notes) ? `<div class="entry-description" style="white-space: pre-line;">${escapeCvHtml(notes)}</div>` : ''}
           </div>`;
         }).join('')}
       </div>
@@ -472,12 +652,20 @@ function generateEmployerSafeCVHTML(candidate, documents, parsedCv) {
       margin: 0;
       padding: 0;
     }
+
+    .page {
+      width: 210mm;
+      min-height: 297mm;
+      display: flex;
+      flex-direction: column;
+      background: #ffffff;
+    }
     
     .container { 
       width: 100%; 
       background: white;
       display: flex;
-      min-height: 297mm;
+      flex: 1;
     }
     
     /* Left Sidebar - Dark Accent */
@@ -574,6 +762,8 @@ function generateEmployerSafeCVHTML(candidate, documents, parsedCv) {
       flex: 1;
       padding: 15mm 15mm 15mm 12mm;
       background: #ffffff;
+      display: flex;
+      flex-direction: column;
     }
     
     /* Header in Main Content */
@@ -723,7 +913,6 @@ function generateEmployerSafeCVHTML(candidate, documents, parsedCv) {
       background: #f1f5f9;
       border-top: 2pt solid #cbd5e1;
       padding: 8pt 15mm;
-      margin-top: auto;
       font-size: 7pt;
       color: #64748b;
       text-align: center;
@@ -735,79 +924,77 @@ function generateEmployerSafeCVHTML(candidate, documents, parsedCv) {
   </style>
 </head>
 <body>
-  <div class="container">
-    <!-- Left Sidebar - Contact & Skills -->
-    <div class="sidebar">
-      <!-- Profile Photo -->
-      ${candidate.profile_photo_signed_url ? `<img src="${candidate.profile_photo_signed_url}" alt="Profile" class="profile-photo">` : ''}
-      
-      <!-- Contact Information (Protected) -->
-      <div class="sidebar-section">
-        <h3>Contact</h3>
-        <p style="font-size: 7.5pt; color: #94a3b8; font-style: italic; margin-bottom: 4pt;">
-          Contact via Recruitment Agency
-        </p>
-        <p>📧 falishamanpower4035@gmail.com</p>
-        <p>📱 +92330 3333335</p>
-      </div>
-      
-      <!-- Personal Details -->
-      <div class="sidebar-section">
-        <h3>Details</h3>
-        ${candidate.nationality ? `<p><strong style="color: #94a3b8;">Nationality:</strong><br>${candidate.nationality}</p>` : ''}
-        ${candidate.country_of_interest ? `<p style="margin-top: 4pt;"><strong style="color: #94a3b8;">Seeking:</strong><br>${candidate.country_of_interest}</p>` : ''}
-        ${candidate.experience_years ? `<p style="margin-top: 4pt;"><strong style="color: #94a3b8;">Experience:</strong><br>${candidate.experience_years} Years</p>` : ''}
-        ${candidate.ai_score ? `<p style="margin-top: 4pt;"><strong style="color: #94a3b8;">Match Score:</strong><br>${typeof candidate.ai_score === 'number' ? candidate.ai_score.toFixed(1) : candidate.ai_score}/10</p>` : ''}
-      </div>
-      
-      <!-- Skills in Sidebar -->
-      ${skills.length > 0 ? `
-      <div class="sidebar-section">
-        <h3>Skills</h3>
-        <ul>
-          ${skills.slice(0, 10).map((skill) => `<li>${skill}</li>`).join('')}
-        </ul>
-      </div>
-      ` : ''}
-      
-      <!-- Languages in Sidebar -->
-      ${languages.length > 0 ? `
-      <div class="sidebar-section">
-        <h3>Languages</h3>
-        <ul>
-          ${languages.map((lang) => `<li>${lang}</li>`).join('')}
-        </ul>
-      </div>
-      ` : ''}
-    </div>
-    
-    <!-- Main Content Area -->
-    <div class="main-content">
-      <!-- Header -->
-      <div class="main-header">
-        <h1>${candidate.name || 'Candidate'}</h1>
-        <p class="position">${candidate.position || 'Professional'}</p>
-      </div>
-      
-      <!-- Professional Summary -->
-      <div class="section">
-        <h2 class="section-title">Professional Summary</h2>
-        <div class="section-content">
-          <p>${professionalSummary || `Highly skilled ${candidate.position || 'professional'}${candidate.experience_years ? ` with ${candidate.experience_years} years of professional experience` : ''} seeking opportunities in ${candidate.country_of_interest || 'various markets'} to contribute expertise and drive excellence.`}</p>
-        </div>
-      </div>
-      
-      ${experienceHtml}
-      ${educationHtml}
-      ${licensesHtml}
-      ${certificationsHtml}
-    </div>
-  </div>
+  <div class="page">
+    <div class="container">
+      <div class="sidebar">
+        ${candidate.profile_photo_signed_url ? `<img src="${candidate.profile_photo_signed_url}" alt="Profile" class="profile-photo">` : ''}
 
-  <!-- Footer -->
-  <div class="cv-footer">
-    <p><strong>Privacy Protected:</strong> This employer-safe CV generated by Falisha Manpower. Contact details secured. | ID: ${candidate.id}</p>
-    <p style="margin-top: 4pt;">To connect with this candidate, contact Falisha Manpower: falishamanpower4035@gmail.com | +92330 3333335</p>
+        <div class="sidebar-section">
+          <h3>Contact</h3>
+          <p style="font-size: 7.5pt; color: #94a3b8; font-style: italic; margin-bottom: 4pt;">
+            Contact via Recruitment Agency
+          </p>
+          <p>support@falishajobs.com</p>
+          <p>+923303333335</p>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>Details</h3>
+          <p><strong style="color: #94a3b8;">Target Role:</strong><br>${escapeCvHtml(enriched.targetRole)}</p>
+          ${candidate.nationality ? `<p style="margin-top: 4pt;"><strong style="color: #94a3b8;">Nationality:</strong><br>${escapeCvHtml(candidate.nationality)}</p>` : ''}
+          ${isMeaningfulCvText(candidate.country_of_interest) ? `<p style="margin-top: 4pt;"><strong style="color: #94a3b8;">Preferred Market:</strong><br>${escapeCvHtml(candidate.country_of_interest)}</p>` : ''}
+          ${(candidate.experience_years || enriched.experience.length > 0) ? `<p style="margin-top: 4pt;"><strong style="color: #94a3b8;">Experience:</strong><br>${candidate.experience_years ? `${escapeCvHtml(candidate.experience_years)} Years` : 'Relevant Experience'}</p>` : ''}
+          ${candidate.ai_score ? `<p style="margin-top: 4pt;"><strong style="color: #94a3b8;">Match Score:</strong><br>${typeof candidate.ai_score === 'number' ? candidate.ai_score.toFixed(1) : escapeCvHtml(candidate.ai_score)}/10</p>` : ''}
+        </div>
+
+        ${enriched.skillBuckets.length > 0 ? `
+        <div class="sidebar-section">
+          <h3>Skills</h3>
+          ${enriched.skillBuckets.map((bucket) => `
+            <div style="margin-bottom: 8pt;">
+              <p style="font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.4pt; color: #93c5fd; margin-bottom: 3pt;">${escapeCvHtml(bucket.title)}</p>
+              <ul>
+                ${bucket.items.map((skill) => `<li>${escapeCvHtml(skill)}</li>`).join('')}
+              </ul>
+            </div>
+          `).join('')}
+        </div>
+        ` : ''}
+
+        ${enriched.languages.length > 0 ? `
+        <div class="sidebar-section">
+          <h3>Languages</h3>
+          <ul>
+            ${enriched.languages.map((lang) => `<li>${escapeCvHtml(lang)}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+      </div>
+
+      <div class="main-content">
+        <div class="main-header">
+          <h1>${escapeCvHtml(candidate.name || 'Candidate')}</h1>
+          <p class="position">${escapeCvHtml(enriched.targetRole)}</p>
+        </div>
+
+        <div class="section">
+          <h2 class="section-title">Professional Summary</h2>
+          <div class="section-content">
+            <p>${escapeCvHtml(enriched.summary)}</p>
+          </div>
+        </div>
+
+        ${experienceHtml}
+        ${educationHtml}
+        ${licensesHtml}
+        ${certificationsHtml}
+      </div>
+    </div>
+
+    <div class="cv-footer">
+      <p><strong>Privacy Protected:</strong> This employer-safe CV generated by Falisha Manpower. Contact details secured. | ID: ${escapeCvHtml(candidate.id)}</p>
+      <p style="margin-top: 4pt;">To connect with this candidate, contact Falisha Manpower: support@falishajobs.com | +923303333335</p>
+    </div>
   </div>
 </body>
 </html>

@@ -46,6 +46,7 @@ const identityMatchingService_1 = require("../services/identityMatchingService")
 const candidateMatcher_1 = require("../services/candidateMatcher");
 const documentCategories_1 = require("../config/documentCategories");
 const documentRejectionService_1 = require("../services/documentRejectionService");
+const professionInferenceService_1 = require("../services/professionInferenceService");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 if (!HMAC_SECRET && process.env.NODE_ENV === 'production') {
@@ -129,42 +130,6 @@ function deriveExpiryDateForCategory(category, extractedIdentity) {
         return addDaysToISODate(issueISO, 90) || undefined;
     }
     return undefined;
-}
-/**
- * Infer profession/position from certificate filename or category
- * Helps populate missing profession data when certificate is uploaded
- */
-function inferProfessionFromCertificate(category, fileName) {
-    const fileNameLower = (fileName || '').toLowerCase();
-    const professionPatterns = {
-        'construction': 'Construction Worker',
-        'electrician': 'Electrician',
-        'plumber': 'Plumber',
-        'carpenter': 'Carpenter',
-        'mechanic': 'Mechanic',
-        'welder': 'Welder',
-        'mason': 'Mason',
-        'painter': 'Painter',
-        'foreman': 'Foreman',
-        'supervisor': 'Supervisor',
-        'engineer': 'Engineer',
-        'technician': 'Technician',
-        'driver': 'Driver',
-        'chef': 'Chef',
-        'cook': 'Cook',
-        'nurse': 'Nurse',
-        'teacher': 'Teacher',
-        'trainer': 'Trainer',
-    };
-    // Common profession patterns in certificate names
-    // Check filename for profession keywords
-    for (const [keyword, profession] of Object.entries(professionPatterns)) {
-        if (fileNameLower.includes(keyword)) {
-            return profession;
-        }
-    }
-    // If no profession found in filename, return null
-    return null;
 }
 const CERTIFICATE_CORE_KEYWORDS = [
     'certificate',
@@ -330,6 +295,15 @@ async function processDocumentVerification(job) {
     let candidateId = initialCandidateId; // Allow reassignment for auto-matching
     console.log(`[DocumentVerification] Processing job for document ${documentId}, request ${requestId}`);
     const db = (0, database_1.supabaseAdminClient)();
+    const { data: currentDocument } = await db
+        .from('candidate_documents')
+        .select('candidate_id, source')
+        .eq('id', documentId)
+        .maybeSingle();
+    if (currentDocument?.candidate_id) {
+        candidateId = currentDocument.candidate_id;
+    }
+    const allowCandidateReassignment = currentDocument?.source !== 'email';
     try {
         // =============================================================================
         // STEP 1: Log AI scan started
@@ -524,121 +498,167 @@ async function processDocumentVerification(job) {
         let isOverridable = true;
         let requiredRole = 'admin';
         if (aiResult.extracted_identity && Object.keys(aiResult.extracted_identity).length > 0) {
-            // PRIORITY: Match by extracted identity FIRST (document contains real data, not system-generated ID)
-            // The document has name, CNIC, passport, email, phone - use these to find the correct candidate
-            console.log(`[DocumentVerification] Attempting to find candidate by extracted identity from document...`);
-            try {
-                // Try to find candidate using extracted identity (name, email, phone, passport, CNIC)
-                const matchCriteria = {
-                    cnic: aiResult.extracted_identity.cnic,
-                    email: aiResult.extracted_identity.email,
-                    phone: aiResult.extracted_identity.phone,
-                    name: aiResult.extracted_identity.name,
-                    fatherName: aiResult.extracted_identity.father_name,
-                };
-                const candidateMatch = await candidateMatcher_1.CandidateMatcher.findCandidate(matchCriteria);
-                if (candidateMatch.candidateId && !candidateMatch.needsManualReview) {
-                    // Found candidate by extracted identity - use this candidate ID (even if different from provided one)
-                    console.log(`[DocumentVerification] Found candidate ${candidateMatch.candidateId} by ${candidateMatch.matchedBy} from document, updating...`);
-                    // Update document's candidate_id to the correct one
-                    await db
-                        .from('candidate_documents')
-                        .update({ candidate_id: candidateMatch.candidateId })
-                        .eq('id', documentId);
-                    // Update candidateId for rest of processing
-                    candidateId = candidateMatch.candidateId;
-                    // Now run identity matching with the correct candidate ID
-                    // Pass document category and confidence scores for detailed rejection
-                    const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
-                    matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined // errorStage - set later if needed
-                    );
-                    console.log(`[DocumentVerification] Identity matching successful: ${matchResult.matched ? 'VERIFIED' : 'NEEDS_REVIEW'}`);
-                }
-                else {
-                    // Could not find candidate by extracted identity - try using provided candidate_id as fallback
-                    console.log(`[DocumentVerification] Could not find candidate by extracted identity, trying provided candidate_id ${candidateId}...`);
-                    try {
-                        const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
-                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
-                    }
-                    catch (matchError) {
-                        // Provided candidate_id also doesn't exist - needs manual review
-                        if (matchError.message?.includes('Candidate not found')) {
-                            console.log(`[DocumentVerification] Provided candidate_id ${candidateId} also not found, marking for review`);
-                            finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
-                            reasonCode = documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND;
-                            mismatchFields = ['candidate_not_found'];
-                            await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, {
-                                notes: `Candidate not found. Attempted matching by: ${JSON.stringify(matchCriteria)}. Provided candidate_id also not found.`,
-                                auto_match_attempted: true,
-                                match_result: candidateMatch
-                            }, {
-                                rejection_code: rejectionCode || documentCategories_1.REJECTION_REASON_CODES.CANDIDATE_NOT_FOUND,
-                                rejection_reason: rejectionReason || 'No matching candidate found',
-                                error_stage: 'Matching',
-                                retry_possible: false,
-                                retry_count: 0,
-                                max_retries: 2,
-                                rejection_context: {
-                                    mismatch_fields: mismatchFields,
-                                    match_criteria: matchCriteria,
-                                },
-                            });
-                        }
-                        else {
-                            // Other identity matching errors
-                            console.error(`[DocumentVerification] Identity matching failed:`, matchError);
-                            finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
-                            reasonCode = documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND;
-                            mismatchFields = ['identity_matching_error'];
-                            await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, { notes: `Identity matching error: ${matchError.message}` }, {
-                                rejection_code: rejectionCode || documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND,
-                                rejection_reason: rejectionReason || 'Identity matching failed',
-                                error_stage: 'Matching',
-                                retry_possible: false,
-                                retry_count: 0,
-                                max_retries: 2,
-                                rejection_context: {
-                                    mismatch_fields: mismatchFields,
-                                    error_message: matchError.message,
-                                },
-                            });
-                        }
-                    }
-                }
-            }
-            catch (autoMatchError) {
-                // Auto-matching failed - try provided candidate_id as fallback
-                console.error(`[DocumentVerification] Auto-matching failed, trying provided candidate_id:`, autoMatchError);
+            const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
+            if (!allowCandidateReassignment) {
+                console.log(`[DocumentVerification] Preserving matched candidate for email-sourced document ${documentId}; skipping auto-reassignment`);
                 try {
-                    const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
                     matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
                 }
                 catch (matchError) {
-                    // Both failed - needs manual review
-                    console.error(`[DocumentVerification] Both auto-match and provided candidate_id failed`);
-                    finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
-                    reasonCode = documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND;
-                    mismatchFields = ['identity_matching_error'];
-                    await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, { notes: `Auto-match failed: ${autoMatchError.message}. Identity matching also failed: ${matchError.message}` }, {
-                        rejection_code: rejectionCode || documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND,
-                        rejection_reason: rejectionReason || 'Auto-matching and identity matching both failed',
-                        error_stage: 'Matching',
-                        retry_possible: false,
-                        retry_count: 0,
-                        max_retries: 2,
-                        rejection_context: {
-                            mismatch_fields: mismatchFields,
-                            auto_match_error: autoMatchError.message,
-                            identity_match_error: matchError.message,
-                        },
-                    });
+                    if (matchError.message?.includes('Candidate not found')) {
+                        console.log(`[DocumentVerification] Email-sourced document candidate_id ${candidateId} not found, marking for review`);
+                        finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
+                        reasonCode = documentCategories_1.REJECTION_REASON_CODES.CANDIDATE_NOT_FOUND;
+                        mismatchFields = ['candidate_not_found'];
+                        await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, {
+                            notes: 'Email-sourced document candidate could not be found during identity verification.',
+                            auto_match_attempted: false,
+                        }, {
+                            rejection_code: rejectionCode || documentCategories_1.REJECTION_REASON_CODES.CANDIDATE_NOT_FOUND,
+                            rejection_reason: rejectionReason || 'Matched email candidate not found',
+                            error_stage: 'Matching',
+                            retry_possible: false,
+                            retry_count: 0,
+                            max_retries: 2,
+                            rejection_context: {
+                                mismatch_fields: mismatchFields,
+                                error_message: matchError.message,
+                            },
+                        });
+                    }
+                    else {
+                        console.error(`[DocumentVerification] Identity matching failed for email-sourced document:`, matchError);
+                        finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
+                        reasonCode = documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND;
+                        mismatchFields = ['identity_matching_error'];
+                        await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, { notes: `Identity matching error: ${matchError.message}` }, {
+                            rejection_code: rejectionCode || documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND,
+                            rejection_reason: rejectionReason || 'Identity matching failed',
+                            error_stage: 'Matching',
+                            retry_possible: false,
+                            retry_count: 0,
+                            max_retries: 2,
+                            rejection_context: {
+                                mismatch_fields: mismatchFields,
+                                error_message: matchError.message,
+                            },
+                        });
+                    }
+                }
+            }
+            else {
+                // PRIORITY: Match by extracted identity FIRST (document contains real data, not system-generated ID)
+                // The document has name, CNIC, passport, email, phone - use these to find the correct candidate
+                console.log(`[DocumentVerification] Attempting to find candidate by extracted identity from document...`);
+                try {
+                    // Try to find candidate using extracted identity (name, email, phone, passport, CNIC)
+                    const matchCriteria = {
+                        cnic: aiResult.extracted_identity.cnic,
+                        email: aiResult.extracted_identity.email,
+                        phone: aiResult.extracted_identity.phone,
+                        name: aiResult.extracted_identity.name,
+                        fatherName: aiResult.extracted_identity.father_name,
+                    };
+                    const candidateMatch = await candidateMatcher_1.CandidateMatcher.findCandidate(matchCriteria);
+                    if (candidateMatch.candidateId && !candidateMatch.needsManualReview) {
+                        // Found candidate by extracted identity - use this candidate ID (even if different from provided one)
+                        console.log(`[DocumentVerification] Found candidate ${candidateMatch.candidateId} by ${candidateMatch.matchedBy} from document, updating...`);
+                        // Update document's candidate_id to the correct one
+                        await db
+                            .from('candidate_documents')
+                            .update({ candidate_id: candidateMatch.candidateId })
+                            .eq('id', documentId);
+                        // Update candidateId for rest of processing
+                        candidateId = candidateMatch.candidateId;
+                        // Now run identity matching with the correct candidate ID
+                        // Pass document category and confidence scores for detailed rejection
+                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined // errorStage - set later if needed
+                        );
+                        console.log(`[DocumentVerification] Identity matching successful: ${matchResult.matched ? 'VERIFIED' : 'NEEDS_REVIEW'}`);
+                    }
+                    else {
+                        // Could not find candidate by extracted identity - try using provided candidate_id as fallback
+                        console.log(`[DocumentVerification] Could not find candidate by extracted identity, trying provided candidate_id ${candidateId}...`);
+                        try {
+                            matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
+                        }
+                        catch (matchError) {
+                            // Provided candidate_id also doesn't exist - needs manual review
+                            if (matchError.message?.includes('Candidate not found')) {
+                                console.log(`[DocumentVerification] Provided candidate_id ${candidateId} also not found, marking for review`);
+                                finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
+                                reasonCode = documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND;
+                                mismatchFields = ['candidate_not_found'];
+                                await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, {
+                                    notes: `Candidate not found. Attempted matching by: ${JSON.stringify(matchCriteria)}. Provided candidate_id also not found.`,
+                                    auto_match_attempted: true,
+                                    match_result: candidateMatch
+                                }, {
+                                    rejection_code: rejectionCode || documentCategories_1.REJECTION_REASON_CODES.CANDIDATE_NOT_FOUND,
+                                    rejection_reason: rejectionReason || 'No matching candidate found',
+                                    error_stage: 'Matching',
+                                    retry_possible: false,
+                                    retry_count: 0,
+                                    max_retries: 2,
+                                    rejection_context: {
+                                        mismatch_fields: mismatchFields,
+                                        match_criteria: matchCriteria,
+                                    },
+                                });
+                            }
+                            else {
+                                // Other identity matching errors
+                                console.error(`[DocumentVerification] Identity matching failed:`, matchError);
+                                finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
+                                reasonCode = documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND;
+                                mismatchFields = ['identity_matching_error'];
+                                await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, { notes: `Identity matching error: ${matchError.message}` }, {
+                                    rejection_code: rejectionCode || documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND,
+                                    rejection_reason: rejectionReason || 'Identity matching failed',
+                                    error_stage: 'Matching',
+                                    retry_possible: false,
+                                    retry_count: 0,
+                                    max_retries: 2,
+                                    rejection_context: {
+                                        mismatch_fields: mismatchFields,
+                                        error_message: matchError.message,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
+                catch (autoMatchError) {
+                    // Auto-matching failed - try provided candidate_id as fallback
+                    console.error(`[DocumentVerification] Auto-matching failed, trying provided candidate_id:`, autoMatchError);
+                    try {
+                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
+                    }
+                    catch (matchError) {
+                        // Both failed - needs manual review
+                        console.error(`[DocumentVerification] Both auto-match and provided candidate_id failed`);
+                        finalStatus = documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW;
+                        reasonCode = documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND;
+                        mismatchFields = ['identity_matching_error'];
+                        await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.NEEDS_REVIEW, reasonCode, mismatchFields, { notes: `Auto-match failed: ${autoMatchError.message}. Identity matching also failed: ${matchError.message}` }, {
+                            rejection_code: rejectionCode || documentCategories_1.REJECTION_REASON_CODES.NO_ID_FOUND,
+                            rejection_reason: rejectionReason || 'Auto-matching and identity matching both failed',
+                            error_stage: 'Matching',
+                            retry_possible: false,
+                            retry_count: 0,
+                            max_retries: 2,
+                            rejection_context: {
+                                mismatch_fields: mismatchFields,
+                                auto_match_error: autoMatchError.message,
+                                identity_match_error: matchError.message,
+                            },
+                        });
+                    }
                 }
             }
             // Log identity verification result (only if matching succeeded)
             if (matchResult) {
                 // Prepare rejection details from matchResult
-                const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
                 const rejectionDetails = matchResult.rejection_code ? {
                     rejection_code: matchResult.rejection_code,
                     rejection_reason: matchResult.rejection_reason || undefined,
@@ -773,12 +793,12 @@ async function processDocumentVerification(job) {
                 });
             }
         }
-        // Fallback: If no identity fields were extracted, still infer profession from certificate filename
+        // Fallback: If no identity fields were extracted, still infer profession from experience certificate filename
         if (!aiResult.extracted_identity || Object.keys(aiResult.extracted_identity).length === 0) {
             if (candidateId && fileName) {
                 const fileNameLower = fileName.toLowerCase();
                 const looksLikeCertificate = CERTIFICATE_KEYWORDS.some(keyword => fileNameLower.includes(keyword));
-                if (looksLikeCertificate) {
+                if (looksLikeCertificate && finalCategory === documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES) {
                     try {
                         const { data: currentCandidate, error: candidateError } = await db
                             .from('candidates')
@@ -786,13 +806,11 @@ async function processDocumentVerification(job) {
                             .eq('id', candidateId)
                             .single();
                         if (!candidateError && currentCandidate && !currentCandidate.position) {
-                            const professionInferred = inferProfessionFromCertificate(finalCategory, fileName);
+                            const professionInferred = (0, professionInferenceService_1.inferProfessionFromExperienceCertificate)(fileName, finalCategory);
                             if (professionInferred) {
-                                console.log(`[DocumentVerification] ✅ Inferred profession from certificate filename (no identity): ${professionInferred}`);
-                                await db
-                                    .from('candidates')
-                                    .update({ position: professionInferred })
-                                    .eq('id', candidateId);
+                                console.log(`[DocumentVerification] ✅ Inferred profession from experience certificate filename (no identity): ${professionInferred}`);
+                                const { enrichCandidateData } = await Promise.resolve().then(() => __importStar(require('../services/progressiveDataCompletionService')));
+                                await enrichCandidateData(candidateId, { position: professionInferred }, 'certificate', documentId, finalCategory);
                             }
                         }
                     }
@@ -1061,19 +1079,14 @@ async function processDocumentVerification(job) {
                     skipped: enrichmentResult.skipped,
                     source: documentSource,
                 });
-                // Special handling for certificates: Infer profession from certificate name/title if CV profession is missing
-                // Also handle misclassified certificates that were originally marked as CV
-                if ((documentSource === 'certificate' || documentSource === 'cv') && currentCandidate && !currentCandidate.position) {
-                    const professionInferred = inferProfessionFromCertificate(aiResult.category, fileName);
+                // Special handling for experience certificates only: infer profession from the certificate filename
+                if (finalCategory === documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES && currentCandidate && !currentCandidate.position) {
+                    const professionInferred = (0, professionInferenceService_1.inferProfessionFromExperienceCertificate)(fileName, aiResult.category);
                     if (professionInferred) {
-                        console.log(`[DocumentVerification] ✅ Inferred profession from ${documentSource === 'certificate' ? 'certificate' : 'filename'}: ${professionInferred}`);
+                        console.log(`[DocumentVerification] ✅ Inferred profession from experience certificate: ${professionInferred}`);
                         try {
-                            await db
-                                .from('candidates')
-                                .update({
-                                position: professionInferred,
-                            })
-                                .eq('id', candidateId);
+                            const professionResult = await enrichCandidateData(candidateId, { position: professionInferred }, 'certificate', documentId, aiResult.category);
+                            console.log('[DocumentVerification] Profession enrichment result:', professionResult.updated);
                         }
                         catch (profError) {
                             console.error('[DocumentVerification] Failed to update inferred profession:', profError);

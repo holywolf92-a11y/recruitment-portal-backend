@@ -1,6 +1,7 @@
 import { supabaseAdminClient } from '../config/database';
 import { logProfileCreated, logProfileUpdated } from './timelineService';
 import { DocumentLinkService } from './documentLinkService';
+import { resolveBackendApiBaseUrl, resolveFrontendUrl } from '../utils/publicUrl';
 
 // Normalization helper functions
 export function normalizeCNIC(cnic: string): string | null {
@@ -529,34 +530,14 @@ export async function exportCandidates(
   }
 }
 
-function resolveFrontendUrl(): string {
-  const defaultFrontendUrl = 'https://falishamanpower.up.railway.app';
-  let frontendUrl = (process.env.FRONTEND_URL || '').trim() || defaultFrontendUrl;
-
-  frontendUrl = frontendUrl.replace(/\/$/, '');
-
-  if (
-    frontendUrl.includes('recruitment-portal-frontend-production.up.railway.app') ||
-    frontendUrl.includes('exquisite-surprise-production.up.railway.app')
-  ) {
-    return defaultFrontendUrl;
-  }
-
-  return frontendUrl;
-}
-
 function exportToCSV(candidates: any[]): { buffer: Buffer; filename: string } {
   if (candidates.length === 0) {
     return { buffer: Buffer.from(''), filename: `candidates_${new Date().toISOString().split('T')[0]}.csv` };
   }
 
   // Get frontend URL from environment
-  const frontendUrl = resolveFrontendUrl();
-  // Get backend URL for CV download links
-  const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
-  const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
-    ? backendBaseUrl.replace(/\/$/, '')
-    : `${backendBaseUrl.replace(/\/$/, '')}/api`;
+  const frontendUrl = resolveFrontendUrl(process.env.FRONTEND_URL);
+  const apiBaseUrl = resolveBackendApiBaseUrl(process.env.BACKEND_URL);
 
   // CSV headers - now includes Profile Link and Employer CV
   const headers = [
@@ -618,12 +599,8 @@ function exportToExcel(candidates: any[]): { buffer: Buffer; filename: string } 
   }
 
   // Get frontend URL from environment
-  const frontendUrl = resolveFrontendUrl();
-  // Get backend URL for CV download links
-  const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
-  const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
-    ? backendBaseUrl.replace(/\/$/, '')
-    : `${backendBaseUrl.replace(/\/$/, '')}/api`;
+  const frontendUrl = resolveFrontendUrl(process.env.FRONTEND_URL);
+  const apiBaseUrl = resolveBackendApiBaseUrl(process.env.BACKEND_URL);
 
   // Build data array with headers
   const data: any[][] = [[

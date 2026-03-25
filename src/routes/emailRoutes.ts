@@ -5,6 +5,7 @@ import { getMailboxCheckpoint, getWatchdogSummary, HOSTINGER_PROVIDER } from '..
 import { asyncHandler } from '../utils/errorHandling';
 import { countUnreadHostingerMessages, isHostingerImapConfigured } from '../services/hostingerMailboxService';
 import { getPersistentHostingerPollingState, isHostingerPollingEnabled, isHostingerPollingSchedulerActive, triggerHostingerManualPoll } from '../workers/hostingerPollingWorker';
+import { resolveBackendApiBaseUrl, resolveFrontendUrl } from '../utils/publicUrl';
 
 export const emailRouter = Router();
 
@@ -15,24 +16,6 @@ emailRouter.use(express.text({ type: ['text/plain', 'text/*'], limit: '2mb' }));
 function slugifyName(name?: string): string {
   if (!name) return 'candidate';
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'candidate';
-}
-
-function resolveFrontendUrl(): string {
-  const defaultFrontendUrl = 'https://falishamanpower.up.railway.app';
-  let frontendUrl = (process.env.FRONTEND_URL || '').trim() || defaultFrontendUrl;
-
-  // Normalize trailing slash to avoid double slashes in templates.
-  frontendUrl = frontendUrl.replace(/\/$/, '');
-
-  // Auto-correct legacy hosts if the env var wasn't updated.
-  if (
-    frontendUrl.includes('recruitment-portal-frontend-production.up.railway.app') ||
-    frontendUrl.includes('exquisite-surprise-production.up.railway.app')
-  ) {
-    return defaultFrontendUrl;
-  }
-
-  return frontendUrl;
 }
 
 function isUuid(value: string): boolean {
@@ -547,11 +530,8 @@ emailRouter.post('/send-to-employer', async (req: Request, res: Response) => {
     });
 
     // Build candidate data for email
-    const frontendUrl = resolveFrontendUrl();
-    const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
-    const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
-      ? backendBaseUrl.replace(/\/$/, '')
-      : `${backendBaseUrl.replace(/\/$/, '')}/api`;
+    const frontendUrl = resolveFrontendUrl(process.env.FRONTEND_URL);
+    const apiBaseUrl = resolveBackendApiBaseUrl(process.env.BACKEND_URL);
     const candidateData = candidates.map(candidate => ({
       id: candidate.id,
       name: candidate.name || 'Unknown',

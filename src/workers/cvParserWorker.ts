@@ -834,44 +834,29 @@ export function startCvParserWorker() {
           parsed = fallbackParsed?.data ?? fallbackParsed;
         }
 
-        // Step 2: Also categorize document to extract identity fields (father_name, cnic, passport, date_of_birth, etc.)
-        // This is important because CVs often contain personal information
-        // Note: categorize-document needs file_content (base64), not file_url
-        let identityFields: any = null;
-        try {
-          const categorizePayload = JSON.stringify({
-            file_content: fileBase64,
-            file_name: fileName,
-            mime_type: mimeType,
-          });
-          
-          const categorizeRes = await fetch(`${PY_URL}/categorize-document`, {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              'x-hmac-signature': signHmac(categorizePayload),
-            },
-            body: categorizePayload,
-          });
+        const parsedCandidate = parsed.candidate || {};
+        const parsedIdentityFields = {
+          name: parsedCandidate.full_name || parsedCandidate.name || null,
+          father_name: parsedCandidate.father_name || null,
+          cnic: parsedCandidate.cnic || null,
+          passport_no: parsedCandidate.passport || parsedCandidate.passport_no || null,
+          email: parsedCandidate.email || null,
+          phone: parsedCandidate.phone || null,
+          date_of_birth: parsedCandidate.date_of_birth || null,
+          nationality: parsedCandidate.nationality || null,
+          passport_expiry: parsedCandidate.passport_expiry || null,
+        };
+        const identityFields = Object.values(parsedIdentityFields).some((value) => Boolean(value))
+          ? parsedIdentityFields
+          : null;
 
-          if (categorizeRes.ok) {
-            const categorizeResult = await categorizeRes.json();
-            identityFields = categorizeResult.identity_fields || null;
-            console.log(`[CVParser] Extracted identity fields from CV:`, {
-              hasName: !!identityFields?.name,
-              hasFatherName: !!identityFields?.father_name,
-              hasCNIC: !!identityFields?.cnic,
-              hasPassport: !!identityFields?.passport_no,
-              hasDOB: !!identityFields?.date_of_birth,
-            });
-          } else {
-            const errorText = await categorizeRes.text();
-            console.warn(`[CVParser] Failed to categorize CV for identity extraction: ${categorizeRes.status} - ${errorText.slice(0, 200)}`);
-          }
-        } catch (categorizeError: any) {
-          // Log but don't fail - identity extraction is optional
-          console.warn(`[CVParser] Error extracting identity fields from CV:`, categorizeError?.message);
-        }
+        console.log(`[CVParser] Using identity fields extracted during CV parse:`, {
+          hasName: !!identityFields?.name,
+          hasFatherName: !!identityFields?.father_name,
+          hasCNIC: !!identityFields?.cnic,
+          hasPassport: !!identityFields?.passport_no,
+          hasDOB: !!identityFields?.date_of_birth,
+        });
 
         await parsingJobs.setStatus(jobId, 'extracted', {
           finished_at: new Date().toISOString(),
@@ -885,8 +870,7 @@ export function startCvParserWorker() {
         // Priority: CNIC > Passport > Email/Phone > Name + Father Name + DOB
         const { findExistingCandidate, enrichCandidateData, updateMissingFields } = await import('../services/progressiveDataCompletionService');
         
-        // Combine data from both sources (parse-cv and categorize-document)
-        const parsedCandidate = parsed.candidate || {};
+        // Combine data from the CV parse and normalized identity fields.
         const derivedPreviousEmployment =
           typeof parsedCandidate.previous_employment === 'string' && parsedCandidate.previous_employment.trim()
             ? parsedCandidate.previous_employment

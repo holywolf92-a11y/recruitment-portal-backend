@@ -12,12 +12,14 @@ function getBridgeBaseUrl(): string {
   return (process.env.WHATSAPP_BRIDGE_URL || DEFAULT_BRIDGE_URL).replace(/\/+$/, '');
 }
 
-async function proxyBridgeJson(pathname: string) {
+async function proxyBridge(pathname: string, options?: { method?: 'GET' | 'POST'; body?: string }) {
   const response = await fetch(`${getBridgeBaseUrl()}${pathname}`, {
-    method: 'GET',
+    method: options?.method || 'GET',
     headers: {
       Accept: 'application/json',
+      ...(options?.body ? { 'Content-Type': 'application/json' } : {}),
     },
+    body: options?.body,
   });
 
   const text = await response.text();
@@ -36,7 +38,7 @@ router.get(
   '/status',
   asyncHandler(async (_req: AuthRequest, res: Response) => {
     try {
-      const result = await proxyBridgeJson('/status');
+      const result = await proxyBridge('/status');
       res.status(result.status).type(result.contentType).send(result.body);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -51,7 +53,26 @@ router.get(
     const accountId = encodeURIComponent(req.params.accountId);
 
     try {
-      const result = await proxyBridgeJson(`/sessions/${accountId}/qr`);
+      const result = await proxyBridge(`/sessions/${accountId}/qr`);
+      res.status(result.status).type(result.contentType).send(result.body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(502).json({ ok: false, error: 'bridge_unreachable', message });
+    }
+  })
+);
+
+router.post(
+  '/sessions/:accountId/pairing-code',
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const accountId = encodeURIComponent(req.params.accountId);
+    const phoneNumber = typeof req.body?.phoneNumber === 'string' ? req.body.phoneNumber : '';
+
+    try {
+      const result = await proxyBridge(`/sessions/${accountId}/pairing-code`, {
+        method: 'POST',
+        body: JSON.stringify({ phoneNumber }),
+      });
       res.status(result.status).type(result.contentType).send(result.body);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

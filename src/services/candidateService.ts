@@ -33,42 +33,38 @@ export function normalizePhoneE164(phone: string): string | null {
   return null;
 }
 
-// Generate candidate code in FL-2024-001 format
+// Generate candidate code in FL-03-26-1 format.
+// The candidate_code field is the shared reference used across inbox ingestion,
+// candidate management, Excel browser, and employer-safe CV output.
 export async function generateCandidateCode(): Promise<string> {
   const db = supabaseAdminClient();
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const year = String(now.getFullYear()).slice(-2);
+  const prefix = `FL-${month}-${year}-`;
 
-  // Get the current year
-  const currentYear = new Date().getFullYear();
-
-  // Retry logic to handle race conditions
   for (let attempt = 0; attempt < 10; attempt++) {
-    // Get the highest existing candidate code for this year
     const { data: existingCandidates } = await db
       .from('candidates')
       .select('candidate_code')
-      .like('candidate_code', `FL-${currentYear}-%`)
-      .order('candidate_code', { ascending: false })
-      .limit(1);
+      .like('candidate_code', `${prefix}%`)
+      .limit(5000);
 
-    let sequenceNumber = 1;
+    let maxSequence = 0;
 
-    if (existingCandidates && existingCandidates.length > 0) {
-      const lastCode = existingCandidates[0].candidate_code;
-      const match = lastCode.match(/FL-\d{4}-(\d{3})/);
-      if (match) {
-        sequenceNumber = parseInt(match[1], 10) + 1;
+    for (const row of existingCandidates || []) {
+      const code = row?.candidate_code;
+      const match = typeof code === 'string' ? code.match(/^FL-\d{2}-\d{2}-(\d+)$/) : null;
+      if (!match) continue;
+
+      const parsed = Number.parseInt(match[1], 10);
+      if (Number.isFinite(parsed) && parsed > maxSequence) {
+        maxSequence = parsed;
       }
     }
 
-    // Add random offset on retry to avoid collision
-    if (attempt > 0) {
-      sequenceNumber += attempt;
-    }
+    const candidateCode = `${prefix}${maxSequence + 1 + attempt}`;
 
-    const paddedNumber = sequenceNumber.toString().padStart(3, '0');
-    const candidateCode = `FL-${currentYear}-${paddedNumber}`;
-
-    // Check if this code already exists
     const { data: existing } = await db
       .from('candidates')
       .select('id')
@@ -80,9 +76,7 @@ export async function generateCandidateCode(): Promise<string> {
     }
   }
 
-  // Fallback: use timestamp-based unique code
-  const timestamp = Date.now().toString().slice(-6);
-  return `FL-${currentYear}-${timestamp}`;
+  return `${prefix}${Date.now()}`;
 }
 
 // Check for duplicates based on CNIC or passport

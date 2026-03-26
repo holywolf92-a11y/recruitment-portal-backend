@@ -843,8 +843,10 @@ export function startCvParserWorker() {
           email: parsedCandidate.email || null,
           phone: parsedCandidate.phone || null,
           date_of_birth: parsedCandidate.date_of_birth || null,
+          dob: parsedCandidate.date_of_birth || parsedCandidate.dob || null,
           nationality: parsedCandidate.nationality || null,
           passport_expiry: parsedCandidate.passport_expiry || null,
+          expiry_date: parsedCandidate.passport_expiry || parsedCandidate.expiry_date || null,
         };
         const identityFields = Object.values(parsedIdentityFields).some((value) => Boolean(value))
           ? parsedIdentityFields

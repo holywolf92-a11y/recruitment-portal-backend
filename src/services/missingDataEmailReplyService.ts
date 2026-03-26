@@ -1,6 +1,7 @@
 import { supabaseAdminClient } from '../config/database';
 import { createLogger } from '../utils/errorHandling';
 import { openaiCreateJsonSchemaTextResponse } from './openaiResponsesService';
+import { sendLinkedInFollowUp } from './linkedinFollowUpService';
 
 const logger = createLogger('MissingDataEmailReplyService');
 
@@ -70,6 +71,9 @@ export async function processMissingDataEmailReply(args: {
       return { ok: false, reason: 'candidate_not_found' } as const;
     }
 
+    // Detect first reply so we can send a LinkedIn follow-up only once.
+    const isFirstReply = !candidate.missing_data_email_last_reply_processed_at;
+
     const { calculateMissingFields, EXCEL_BROWSER_FIELDS, enrichCandidateData, updateMissingFields } = await import(
       './progressiveDataCompletionService'
     );
@@ -82,6 +86,9 @@ export async function processMissingDataEmailReply(args: {
         .update({ missing_data_email_last_reply_processed_at: now })
         .eq('id', args.candidateId);
 
+      if (isFirstReply && candidate.email) {
+        void sendLinkedInFollowUp({ candidateId: args.candidateId, candidateEmail: candidate.email, candidateName: candidate.name || null });
+      }
       return { ok: true, updated: [], skipped: [], reason: 'nothing_missing' } as const;
     }
 
@@ -92,6 +99,9 @@ export async function processMissingDataEmailReply(args: {
         .update({ missing_data_email_last_reply_processed_at: now })
         .eq('id', args.candidateId);
 
+      if (isFirstReply && candidate.email) {
+        void sendLinkedInFollowUp({ candidateId: args.candidateId, candidateEmail: candidate.email, candidateName: candidate.name || null });
+      }
       return { ok: true, updated: [], skipped: missingFields, reason: 'empty_reply' } as const;
     }
 
@@ -150,6 +160,10 @@ export async function processMissingDataEmailReply(args: {
       updated: enrichmentResult.updated,
       skipped: enrichmentResult.skipped,
     });
+
+    if (isFirstReply && candidate.email) {
+      void sendLinkedInFollowUp({ candidateId: args.candidateId, candidateEmail: candidate.email, candidateName: candidate.name || null });
+    }
 
     return { ok: true, updated: enrichmentResult.updated, skipped: enrichmentResult.skipped } as const;
   } catch (err) {

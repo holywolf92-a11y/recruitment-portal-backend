@@ -61,20 +61,6 @@ export function startWhatsAppMediaWorker() {
 
       const classification = DocumentClassifier.classify(fileName, undefined, mimeType, buffer);
       const normalizedMime = String(mimeType || '').toLowerCase();
-      const isCommonCvMime =
-        normalizedMime.includes('application/pdf') ||
-        normalizedMime.includes('application/msword') ||
-        normalizedMime.includes('application/vnd.openxmlformats-officedocument.wordprocessingml') ||
-        normalizedMime.includes('text/plain') ||
-        normalizedMime.startsWith('image/');
-
-      // WhatsApp often provides generic filenames (e.g. "document.pdf"). If we treat these as "document",
-      // the CV Inbox UI shows them as "queued" forever because no parsing job is created.
-      const isUnknownish =
-        classification.attachmentKind === 'unknown' ||
-        (classification.attachmentKind === 'document' &&
-          (!classification.documentType || classification.documentType === 'unknown'));
-
       const attachmentType = classification.attachmentKind === 'cv' ? 'cv' : 'document';
 
       // Detect unsupported binary formats — video/audio cannot be parsed as CVs or identity docs.
@@ -100,6 +86,11 @@ export function startWhatsAppMediaWorker() {
         whatsappMediaId: mediaId,
       });
 
+      const shouldTreatAsCv =
+        !isUnsupportedMedia &&
+        !normalizedMime.startsWith('image/') &&
+        (attachmentType === 'document' || (attachment as any)?.attachment_kind === 'cv');
+
       if (isUnsupportedMedia) {
         // Video / audio cannot be parsed as a CV or verified as an identity document.
         // Store the file (already done) and log — no queue job created.
@@ -108,8 +99,14 @@ export function startWhatsAppMediaWorker() {
           mimeType,
           fileName,
         });
-      } else if ((attachment as any)?.attachment_kind === 'cv') {
+      } else if (shouldTreatAsCv) {
         try {
+          // Old WhatsApp behavior: treat document uploads as CV candidates so they always
+          // reach full parsing even when filename-based classification says "unknown".
+          if ((attachment as any)?.attachment_kind !== 'cv') {
+            const db = supabaseAdminClient();
+            await db.from('inbox_attachments').update({ attachment_kind: 'cv' }).eq('id', attachment.id);
+          }
           await enqueueCvParsingJobForAttachment(attachment.id, { force: false, expiresInSeconds: 3600 });
         } catch (err) {
           logger.error('Failed to enqueue CV parsing (non-fatal)', err, { attachmentId: attachment.id });

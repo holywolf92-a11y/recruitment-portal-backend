@@ -4,6 +4,7 @@ import {
   createCandidate,
   getCandidateById,
   listCandidates,
+  getCandidateBrowseMetadata,
   getDailyStats,
   getCandidateDashboardStats,
   exportCandidates,
@@ -212,6 +213,17 @@ export async function candidateDashboardStatsController(_req: Request, res: Resp
   } catch (error: any) {
     console.error('Error fetching candidate dashboard stats:', error);
     res.status(500).json({ error: 'Failed to fetch candidate dashboard stats' });
+  }
+}
+
+export async function candidateBrowseMetadataController(_req: Request, res: Response) {
+  try {
+    const userId = 'test-user-id';
+    const metadata = await getCandidateBrowseMetadata(userId);
+    res.json(metadata);
+  } catch (error: any) {
+    console.error('Error fetching candidate browse metadata:', error);
+    res.status(500).json({ error: 'Failed to fetch candidate browse metadata' });
   }
 }
 

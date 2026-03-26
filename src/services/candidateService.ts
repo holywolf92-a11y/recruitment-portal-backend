@@ -333,6 +333,29 @@ export interface CandidateFilters {
   offset?: number;
 }
 
+export interface CandidateBrowseCountItem {
+  name: string;
+  count: number;
+}
+
+export interface CandidateBrowseProfessionMetadata {
+  name: string;
+  count: number;
+  countries: CandidateBrowseCountItem[];
+  statuses: CandidateBrowseCountItem[];
+  documents: {
+    complete: number;
+    missing: number;
+  };
+}
+
+export interface CandidateBrowseMetadata {
+  totalCandidates: number;
+  professions: CandidateBrowseProfessionMetadata[];
+  countries: CandidateBrowseCountItem[];
+  statuses: CandidateBrowseCountItem[];
+}
+
 // Fields returned in list responses — excludes large text columns (skills, previous_employment,
 // professional_summary, education, certifications) that are only needed in the detail view.
 // Narrowing the select cuts list response payload by ~60-80% and reduces Railway egress.
@@ -444,6 +467,108 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
     total: count,
     limit: filters.limit,
     offset: filters.offset
+  };
+}
+
+export async function getCandidateBrowseMetadata(userId: string): Promise<CandidateBrowseMetadata> {
+  const db = supabaseAdminClient();
+  type CandidateBrowseMetadataRow = {
+    position?: string | null;
+    country_of_interest?: string | null;
+    status?: string | null;
+    cv_received?: boolean | null;
+    passport_received?: boolean | null;
+    certificate_received?: boolean | null;
+    photo_received?: boolean | null;
+    medical_received?: boolean | null;
+  };
+  const { data, error } = await db
+    .from('candidates')
+    .select([
+      'position',
+      'country_of_interest',
+      'status',
+      'cv_received',
+      'passport_received',
+      'certificate_received',
+      'photo_received',
+      'medical_received',
+    ].join(','))
+    .neq('status', 'Deleted');
+
+  if (error) throw error;
+
+  const rows = ((data || []) as CandidateBrowseMetadataRow[]);
+
+  const professionMap = new Map<string, {
+    count: number;
+    countries: Map<string, number>;
+    statuses: Map<string, number>;
+    documents: { complete: number; missing: number };
+  }>();
+  const countryMap = new Map<string, number>();
+  const statusMap = new Map<string, number>();
+
+  for (const candidate of rows) {
+    const position = (candidate.position || '').trim();
+    const country = (candidate.country_of_interest || '').trim();
+    const status = ((candidate.status || 'Applied') as string).trim() || 'Applied';
+    const hasCompleteDocuments = Boolean(
+      candidate.cv_received &&
+      candidate.passport_received &&
+      candidate.certificate_received &&
+      candidate.photo_received &&
+      candidate.medical_received
+    );
+
+    if (position) {
+      let entry = professionMap.get(position);
+      if (!entry) {
+        entry = {
+          count: 0,
+          countries: new Map<string, number>(),
+          statuses: new Map<string, number>(),
+          documents: { complete: 0, missing: 0 },
+        };
+        professionMap.set(position, entry);
+      }
+
+      entry.count += 1;
+      entry.statuses.set(status, (entry.statuses.get(status) || 0) + 1);
+      if (country) {
+        entry.countries.set(country, (entry.countries.get(country) || 0) + 1);
+      }
+      if (hasCompleteDocuments) {
+        entry.documents.complete += 1;
+      } else {
+        entry.documents.missing += 1;
+      }
+    }
+
+    if (country) {
+      countryMap.set(country, (countryMap.get(country) || 0) + 1);
+    }
+    statusMap.set(status, (statusMap.get(status) || 0) + 1);
+  }
+
+  const toSortedCountItems = (map: Map<string, number>): CandidateBrowseCountItem[] =>
+    Array.from(map.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+
+  return {
+    totalCandidates: rows.length,
+    professions: Array.from(professionMap.entries())
+      .map(([name, entry]) => ({
+        name,
+        count: entry.count,
+        countries: toSortedCountItems(entry.countries),
+        statuses: toSortedCountItems(entry.statuses),
+        documents: entry.documents,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+    countries: toSortedCountItems(countryMap),
+    statuses: toSortedCountItems(statusMap),
   };
 }
 

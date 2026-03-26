@@ -8,6 +8,7 @@ import {
   listCandidatesController,
   dailyStatsController,
   candidateDashboardStatsController,
+  candidateBrowseMetadataController,
   exportCandidatesController,
   updateCandidateController,
   deleteCandidateController,
@@ -58,6 +59,9 @@ router.get('/daily-stats', dailyStatsController);
 
 // Exact KPI stats for Candidates page
 router.get('/dashboard-stats', candidateDashboardStatsController);
+
+// Lightweight metadata for candidate browser navigation and filters
+router.get('/browse-metadata', candidateBrowseMetadataController);
 
 // Export candidates (CSV/Excel)
 router.get('/export', exportCandidatesController);

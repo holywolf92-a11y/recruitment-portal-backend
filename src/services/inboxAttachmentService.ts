@@ -347,6 +347,15 @@ export async function enqueueCvParsingJobForAttachment(
 
   try {
     const attachment = await getAttachmentById(attachmentId);
+    if (!options?.force && attachment?.attachment_kind !== 'cv') {
+      logger.info('Skipping CV parsing enqueue for non-CV attachment', {
+        attachmentId,
+        attachmentKind: attachment?.attachment_kind,
+        attachmentType: attachment?.attachment_type,
+      });
+      return { jobId: null, status: 'skipped_non_cv' as const };
+    }
+
     const fileHash = attachment?.sha256 ?? null;
 
     const createdJobRow = await parsingJobs.createJob({ attachmentId, fileHash });

@@ -55,6 +55,51 @@ function hasProfilePhoto(candidate: any): boolean {
   );
 }
 
+function hasMeaningfulText(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim();
+  if (!normalized) return false;
+  const lower = normalized.toLowerCase();
+  return !['unknown', 'n/a', 'na', 'none', 'null', 'undefined', 'not provided', 'missing'].includes(lower);
+}
+
+function hasRealCandidateSignals(parsedCandidate: any, identityFields?: any): boolean {
+  const primaryIdentitySignals = [
+    identityFields?.cnic,
+    identityFields?.passport_no,
+    identityFields?.email,
+    identityFields?.phone,
+    parsedCandidate?.cnic,
+    parsedCandidate?.passport,
+    parsedCandidate?.passport_no,
+    parsedCandidate?.email,
+    parsedCandidate?.phone,
+  ].some(hasMeaningfulText);
+
+  const nameSignal = [
+    parsedCandidate?.full_name,
+    parsedCandidate?.name,
+    identityFields?.name,
+  ].some(hasMeaningfulText);
+
+  const profileSignals = [
+    parsedCandidate?.position,
+    parsedCandidate?.professional_summary,
+    parsedCandidate?.summary,
+    parsedCandidate?.country_of_interest,
+  ].some(hasMeaningfulText);
+
+  const structuredSignals =
+    (Array.isArray(parsedCandidate?.skills) && parsedCandidate.skills.length > 0) ||
+    (Array.isArray(parsedCandidate?.education) && parsedCandidate.education.length > 0) ||
+    (Array.isArray(parsedCandidate?.experience) && parsedCandidate.experience.length > 0) ||
+    (Array.isArray(parsedCandidate?.languages) && parsedCandidate.languages.length > 0) ||
+    (Array.isArray(parsedCandidate?.certifications) && parsedCandidate.certifications.length > 0) ||
+    (typeof parsedCandidate?.experience_years === 'number' && parsedCandidate.experience_years > 0);
+
+  return primaryIdentitySignals || (nameSignal && (profileSignals || structuredSignals));
+}
+
 function normalizeWhatsAppTo(phoneRaw: string | null | undefined): string | null {
   if (!phoneRaw) return null;
   let digits = String(phoneRaw).replace(/\D/g, '');
@@ -671,9 +716,22 @@ export function startCvParserWorker() {
         // The actual email date lives in inbox_messages.payload->>'internalDate' (Unix ms from Gmail API).
         const { data: attachmentMeta, error: attachmentMetaError } = await db
           .from('inbox_attachments')
-          .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status, inbox_message_id, inbox_messages(payload, source)')
+          .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status, attachment_kind, attachment_type, inbox_message_id, inbox_messages(payload, source)')
           .eq('id', attachmentId)
           .maybeSingle();
+        if (!force && attachmentMeta?.attachment_kind !== 'cv') {
+          console.log(
+            `[CVParser] ⏭  Skipping attachment ${attachmentId} — attachment_kind=${attachmentMeta?.attachment_kind || 'null'} is not cv`
+          );
+          await parsingJobs.setStatus(jobId, 'extracted', {
+            finished_at: new Date().toISOString(),
+            skipped_reason: 'non_cv_attachment',
+            error_code: null,
+            error_message: null,
+          });
+          return { skipped: true, reason: 'non_cv_attachment' };
+        }
+
 
         if (attachmentMetaError) {
           throw new Error(`Failed to fetch attachment metadata: ${attachmentMetaError.message}`);
@@ -871,6 +929,19 @@ export function startCvParserWorker() {
         // Use progressive completion service to find existing candidate
         // Priority: CNIC > Passport > Email/Phone > Name + Father Name + DOB
         const { findExistingCandidate, enrichCandidateData, updateMissingFields } = await import('../services/progressiveDataCompletionService');
+
+        if (!hasRealCandidateSignals(parsedCandidate, identityFields)) {
+          console.log(`[CVParser] ⏭  Parsed attachment ${attachmentId} does not contain real candidate signals. Skipping candidate creation.`);
+          await parsingJobs.setStatus(jobId, 'extracted', {
+            finished_at: new Date().toISOString(),
+            schema_version: parsed.schema_version ?? 'v1',
+            result_json: { ...parsed, identity_fields: identityFields },
+            skipped_reason: 'insufficient_candidate_signals',
+            error_code: null,
+            error_message: null,
+          });
+          return { skipped: true, reason: 'insufficient_candidate_signals' };
+        }
         
         // Combine data from the CV parse and normalized identity fields.
         const derivedPreviousEmployment =

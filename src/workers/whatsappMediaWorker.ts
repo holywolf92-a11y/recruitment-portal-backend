@@ -75,8 +75,7 @@ export function startWhatsAppMediaWorker() {
         (classification.attachmentKind === 'document' &&
           (!classification.documentType || classification.documentType === 'unknown'));
 
-      const attachmentType =
-        classification.attachmentKind === 'cv' || (isUnknownish && isCommonCvMime) ? 'cv' : 'document';
+      const attachmentType = classification.attachmentKind === 'cv' ? 'cv' : 'document';
 
       // Detect unsupported binary formats — video/audio cannot be parsed as CVs or identity docs.
       const isUnsupportedMedia =
@@ -101,7 +100,6 @@ export function startWhatsAppMediaWorker() {
         whatsappMediaId: mediaId,
       });
 
-      // CV parsing is keyed off inbox_attachments.attachment_type === 'cv'
       if (isUnsupportedMedia) {
         // Video / audio cannot be parsed as a CV or verified as an identity document.
         // Store the file (already done) and log — no queue job created.
@@ -110,7 +108,7 @@ export function startWhatsAppMediaWorker() {
           mimeType,
           fileName,
         });
-      } else if ((attachment as any)?.attachment_type === 'cv' || (attachment as any)?.attachment_kind === 'cv') {
+      } else if ((attachment as any)?.attachment_kind === 'cv') {
         try {
           await enqueueCvParsingJobForAttachment(attachment.id, { force: false, expiresInSeconds: 3600 });
         } catch (err) {

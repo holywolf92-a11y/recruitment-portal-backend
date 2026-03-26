@@ -106,9 +106,7 @@ router.post(
       candidateId: candidate_id,
     });
     
-    // Always enqueue CV parsing if attachment_type is 'cv', regardless of classification
-    // This handles cases where filename doesn't contain CV keywords (e.g., "noran.pdf")
-    const shouldEnqueue = (attachment?.attachment_type ?? 'cv') === 'cv';
+    const shouldEnqueue = attachment?.attachment_kind === 'cv';
     let jobInfo = null;
     
     if (shouldEnqueue) {

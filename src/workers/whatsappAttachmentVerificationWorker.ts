@@ -446,6 +446,24 @@ export function startWhatsAppAttachmentVerificationWorker() {
       // UI to show status as "extracted" rather than "queued").
       await db.from('inbox_attachments').update({ linked_candidate_id: candidateId, candidate_id: candidateId }).eq('id', attachmentId);
 
+      // If the AI identified this as a CV/resume, also trigger full structured CV parsing so that
+      // position, experience, skills, education etc. get extracted into the candidate profile.
+      // The WhatsApp media worker only enqueues cv-parsing for attachments already classified as 'cv'
+      // by filename (e.g. "cv.pdf", "resume.docx"). PDFs with person-name filenames ("JOHN DOE.pdf")
+      // arrive here as 'unknown', pass through verification, but never receive full text parsing.
+      if (aiResult.category === 'cv_resume' && !isConflict && createdDoc?.id) {
+        try {
+          await db.from('inbox_attachments').update({ attachment_kind: 'cv' }).eq('id', attachmentId);
+          const { enqueueCvParsingJobForAttachment } = await import('../services/inboxAttachmentService');
+          // force: true bypasses the 'already_linked' idempotency guard because candidate_id was
+          // just written above and would otherwise cause the CV parser to skip this attachment.
+          await enqueueCvParsingJobForAttachment(attachmentId, { force: true });
+          logger.info('Enqueued full CV parsing for cv_resume WhatsApp attachment', { attachmentId, candidateId });
+        } catch (cvParseErr) {
+          logger.error('Failed to enqueue CV parsing for cv_resume WhatsApp attachment (non-fatal)', cvParseErr, { attachmentId });
+        }
+      }
+
       return {
         status: 'linked',
         candidateId,

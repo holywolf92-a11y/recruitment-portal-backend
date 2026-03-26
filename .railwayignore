@@ -1,0 +1,4 @@
+scripts/output/
+dist/
+node_modules/
+*.log

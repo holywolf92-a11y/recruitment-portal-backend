@@ -30,6 +30,15 @@ export interface WhatsAppMessageData {
   raw?: any;
 }
 
+function isNonInboxSender(value: string | undefined | null): boolean {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return false;
+
+  return normalized.endsWith('@broadcast')
+    || normalized.endsWith('@g.us')
+    || normalized.endsWith('@newsletter');
+}
+
 function normalizeBridgeSenderPhone(value: string | undefined): string | null {
   if (!value) return null;
   const withoutSuffix = value.replace(/@c\.us$/i, '').trim();
@@ -97,6 +106,7 @@ export function extractMessageData(payload: any): WhatsAppMessageData | null {
   const message = change?.value?.messages?.[0];
 
   if (!message || !message.id) return null;
+  if (isNonInboxSender(message.from)) return null;
 
   const data: WhatsAppMessageData = {
     wamid: message.id,
@@ -122,6 +132,10 @@ export function extractMessageData(payload: any): WhatsAppMessageData | null {
 
   const bridgeMetadata = parseBridgeCaption(data.text, data.from);
   if (bridgeMetadata) {
+    if (isNonInboxSender(bridgeMetadata.originalSender)) {
+      return null;
+    }
+
     data.bridgeMetadata = bridgeMetadata;
     data.effectiveFrom = bridgeMetadata.originalSenderPhone ?? data.from;
     data.raw = {

@@ -204,7 +204,7 @@ function trunc(value: string | undefined | null, maxLen: number): string | undef
 }
 
 // Helper to create candidate from parsed CV data
-async function createCandidateFromParsedData(parsed: any, attachmentId: string, identityFields?: any) {
+async function createCandidateFromParsedData(parsed: any, attachmentId: string, identityFields?: any, messageSource?: string) {
   try {
     const candidate = parsed.candidate || {};
     
@@ -291,6 +291,8 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
       professional_summary: candidate.professional_summary || candidate.summary || undefined,
       // Pass through profile_photo_url from parser response if present (ignore PDF links)
       profile_photo_url: isProfilePhotoPdf ? undefined : normalizedProfilePhotoUrl,
+      source: messageSource === 'whatsapp' ? 'WhatsApp' : messageSource === 'gmail' ? 'Email' : 'Manual',
+      auto_extracted: true,
     };
 
     // Create candidate (system-created, no specific userId)
@@ -1126,7 +1128,7 @@ export function startCvParserWorker() {
           console.log(`[CVParser] ✅ Enriched existing candidate ${existingCandidateId} with CV data`);
         } else {
           // Create new candidate from parsed data (including identity fields) and link to attachment
-          candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields);
+          candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields, inboxMsg?.source);
           
           // After creation, enrich with any additional data and recalculate missing fields
           if (candidate?.id) {

@@ -316,6 +316,49 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
 export function startCvParserWorker() {
   const parsingJobs = new ParsingJobsService();
 
+  async function reconcileAttachmentCandidateOwnership(candidateId: string, attachmentId: string) {
+    try {
+      const db = supabaseAdminClient();
+      const { data: existingDocs, error: existingDocsError } = await db
+        .from('candidate_documents')
+        .select('id, candidate_id')
+        .eq('inbox_attachment_id', attachmentId);
+
+      if (existingDocsError) {
+        console.warn('[CVParser] Failed to inspect existing candidate_documents ownership (non-fatal):', existingDocsError);
+      } else {
+        const needsReassignment = (existingDocs || []).some((doc: any) => doc?.candidate_id && doc.candidate_id !== candidateId);
+        if (needsReassignment) {
+          const { error: docUpdateError } = await db
+            .from('candidate_documents')
+            .update({ candidate_id: candidateId })
+            .eq('inbox_attachment_id', attachmentId)
+            .neq('candidate_id', candidateId);
+
+          if (docUpdateError) {
+            console.warn('[CVParser] Failed to reassign candidate_documents for attachment (non-fatal):', docUpdateError);
+          } else {
+            console.log(`[CVParser] Reassigned candidate_documents for attachment ${attachmentId} to candidate ${candidateId}`);
+          }
+        }
+      }
+
+      const { error: attachmentUpdateError } = await db
+        .from('inbox_attachments')
+        .update({
+          candidate_id: candidateId,
+          linked_candidate_id: candidateId,
+        })
+        .eq('id', attachmentId);
+
+      if (attachmentUpdateError) {
+        console.warn('[CVParser] Failed to synchronize inbox attachment candidate ownership (non-fatal):', attachmentUpdateError);
+      }
+    } catch (err) {
+      console.warn('[CVParser] Attachment ownership reconciliation failed (non-fatal):', err);
+    }
+  }
+
   async function maybeAttachGmailThreadToCandidate(candidateId: string, attachmentId: string) {
     try {
       const db2 = supabaseAdminClient();
@@ -1068,6 +1111,7 @@ export function startCvParserWorker() {
 
           // Persist Gmail thread identity (if this CV came via Gmail)
           await maybeAttachGmailThreadToCandidate(existingCandidateId, attachmentId);
+          await reconcileAttachmentCandidateOwnership(existingCandidateId, attachmentId);
 
           // Detect backfill: suppress immediate missing-data email to avoid mass spam on historical imports
           const { backfill: isBackfill } = await getInboxPayloadForAttachment(attachmentId);
@@ -1141,6 +1185,7 @@ export function startCvParserWorker() {
                 'cv'
               );
               await updateMissingFields(candidate.id);
+              await reconcileAttachmentCandidateOwnership(candidate.id, attachmentId);
 
               // Persist Gmail thread identity (if this CV came via Gmail)
               await maybeAttachGmailThreadToCandidate(candidate.id, attachmentId);

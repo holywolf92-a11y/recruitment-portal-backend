@@ -37,7 +37,8 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
   const classification = DocumentClassifier.classify(
     input.fileName,
     input.messageSubject,
-    input.mimeType
+    input.mimeType,
+    input.fileBuffer
   );
   
   // Extract metadata hints from filename

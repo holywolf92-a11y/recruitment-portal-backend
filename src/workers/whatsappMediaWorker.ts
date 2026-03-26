@@ -59,7 +59,7 @@ export function startWhatsAppMediaWorker() {
       const fileName = meta.file_name || job.data.fileName || meta.id || `${mediaId}.bin`;
       const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
 
-      const classification = DocumentClassifier.classify(fileName, undefined, mimeType);
+      const classification = DocumentClassifier.classify(fileName, undefined, mimeType, buffer);
       const normalizedMime = String(mimeType || '').toLowerCase();
       const isCommonCvMime =
         normalizedMime.includes('application/pdf') ||

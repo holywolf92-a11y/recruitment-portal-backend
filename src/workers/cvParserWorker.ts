@@ -1012,10 +1012,19 @@ export function startCvParserWorker() {
         // auto-link on its own.
         const requireCorroborationForContactSignals = inboxMsg?.source === 'whatsapp';
 
-        // Find existing candidate using progressive completion matching
-        const existingCandidateId = await findExistingCandidate(combinedData, {
+        // Find existing candidate using progressive completion matching.
+        // If force=true and the attachment is already linked to a candidate, use that
+        // ID directly — progressive matching may fail (e.g. WhatsApp corroboration rules)
+        // when the candidate was already identified by an earlier verification step.
+        let existingCandidateId = await findExistingCandidate(combinedData, {
           requireCorroborationForContactSignals,
         });
+        if (!existingCandidateId && force && attachmentMeta?.candidate_id) {
+          console.log(
+            `[CVParser] Progressive match returned no result; using attachment's linked candidate ${attachmentMeta.candidate_id} (force=true)`
+          );
+          existingCandidateId = attachmentMeta.candidate_id;
+        }
         
         let candidate;
         if (existingCandidateId) {

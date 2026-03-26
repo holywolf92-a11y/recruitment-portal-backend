@@ -161,6 +161,16 @@ router.post(
     // TODO: Check Redis or database for duplicate wamid
     // For now, proceed (idempotency will be handled by database unique constraint)
 
+    if (messageData.bridgeMetadata) {
+      logger.info('Detected Falisha bridge metadata on inbound WhatsApp media', {
+        wamid: messageData.wamid,
+        forwardedBy: messageData.bridgeMetadata.forwardedByPhone,
+        originalSender: messageData.bridgeMetadata.originalSenderPhone,
+        bridgeAccountId: messageData.bridgeMetadata.bridgeAccountId,
+        originalMessageId: messageData.bridgeMetadata.originalMessageId,
+      });
+    }
+
     // Create inbox message (legacy inbox manager)
     let inboxMessage: any = null;
     try {
@@ -183,19 +193,22 @@ router.post(
 
     // Record in WhatsApp inbox tables
     const preview =
-      messageData.type === 'text'
-        ? messageData.text || ''
+      messageData.bridgeMetadata
+        ? `[FALISHA_BRIDGE] ${messageData.bridgeMetadata.bridgeLabel || messageData.bridgeMetadata.bridgeAccountId || 'bridge'} <= ${messageData.bridgeMetadata.originalSenderPhone || messageData.bridgeMetadata.originalSender || 'unknown'}`
+        : typeof messageData.text === 'string' && messageData.text.trim()
+        ? messageData.text.trim()
         : messageData.type
           ? `[${messageData.type}]`
           : '';
 
     const receivedAt = messageData.timestamp ? new Date(parseInt(messageData.timestamp, 10) * 1000) : new Date();
+    const effectiveFrom = messageData.effectiveFrom || messageData.from;
 
     let conversationForReply: { id: string; phone_number: string; reply_mode: 'ai' | 'human' } | null = null;
-    if (messageData.from) {
+    if (effectiveFrom) {
       try {
         const recorded = await recordInboundMessage({
-          phoneNumber: messageData.from,
+          phoneNumber: effectiveFrom,
         toPhoneNumberId: phoneNumberId,
         metaMessageId: messageData.wamid,
         bodyPreview: preview,
@@ -215,28 +228,33 @@ router.post(
         logger.error('Failed to record inbound WhatsApp message (fail-open)', {
           err: err instanceof Error ? err.message : String(err),
           wamid: messageData.wamid,
+          effectiveFrom,
         });
       }
     } else {
-      logger.warn('WhatsApp webhook message missing from number (skip storing conversation)', { wamid: messageData.wamid });
+      logger.warn('WhatsApp webhook message missing effective sender number (skip storing conversation)', { wamid: messageData.wamid });
     }
 
     // Handle media asynchronously (webhook must ACK quickly)
-    if (messageData.mediaId && inboxMessage?.id && messageData.from) {
+    if (messageData.mediaId && inboxMessage?.id && effectiveFrom) {
       try {
         const mediaJobId = `whatsapp-media:${messageData.wamid}:${messageData.mediaId}`;
-        const isInternal = isInternalNumber(messageData.from);
+        const isInternal = isInternalNumber(effectiveFrom);
         await whatsappMediaQueue.add(
           'process',
           {
             inboxMessageId: inboxMessage.id,
             wamid: messageData.wamid,
-            fromPhone: messageData.from,
+            fromPhone: effectiveFrom,
             mediaId: messageData.mediaId,
             mimeType: messageData.mimeType,
             fileName: messageData.fileName,
             receivedAt: receivedAt.toISOString(),
-            source: isInternal ? 'internal_whatsapp_upload' : 'whatsapp',
+            source: messageData.bridgeMetadata
+              ? 'whatsapp_bridge'
+              : isInternal
+                ? 'internal_whatsapp_upload'
+                : 'whatsapp',
           },
           {
             jobId: mediaJobId,
@@ -256,14 +274,14 @@ router.post(
     }
 
     // ── Internal number early exit — no AI, no bot, just process + optional confirm ──
-    if (messageData.from && isInternalNumber(messageData.from)) {
+    if (effectiveFrom && isInternalNumber(effectiveFrom)) {
       if (messageData.mediaId) {
         // Attachment already queued above — send confirmation receipt
         const confirmMsg =
           '\u2705 *Document Received*\nYour document has been successfully received and processed.\nThe candidate record has been updated in the system.\n\u2014 Falisha Manpower Automation';
         try {
-          await sendMessage(phoneNumberId, accessToken, messageData.from, confirmMsg);
-          logger.info('Sent internal upload confirmation', { to: messageData.from });
+          await sendMessage(phoneNumberId, accessToken, effectiveFrom, confirmMsg);
+          logger.info('Sent internal upload confirmation', { to: effectiveFrom });
         } catch (err) {
           logger.warn('Failed to send internal confirmation (non-fatal)', {
             err: err instanceof Error ? err.message : String(err),
@@ -277,7 +295,7 @@ router.post(
             await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessage.id);
           } catch { /* non-fatal */ }
         }
-        logger.info('Text-only from internal number — ignored silently', { from: messageData.from });
+        logger.info('Text-only from internal number — ignored silently', { from: effectiveFrom });
       }
       return res.status(200).json({ status: 'internal_number' });
     }
@@ -286,7 +304,7 @@ router.post(
     // Called BEFORE the AI reply so the bot can handle any message type.
     // Returns true → skip AI reply entirely.
     let botHandledMessage = false;
-    if (messageData.from && conversationForReply?.reply_mode === 'ai') {
+    if (effectiveFrom && conversationForReply?.reply_mode === 'ai') {
       const { id: interactiveId, title: interactiveTitle } = extractInteractiveData(req.body);
       const rawText = messageData.type === 'interactive'
         ? interactiveTitle
@@ -314,7 +332,7 @@ router.post(
 
       try {
         botHandledMessage = await handleBotMessageFrom({
-          from: messageData.from,
+          from: effectiveFrom,
           phoneNumberId,
           accessToken,
           incoming: botIncoming,
@@ -336,7 +354,7 @@ router.post(
     if (!botHandledMessage && conversationForReply?.reply_mode === 'ai' && shouldReplyWithAI(messageData)) {
       try {
         const aiReply = await generateWhatsAppReply({
-          from: messageData.from || '',
+          from: effectiveFrom || '',
           text: messageData.text || '',
         });
 

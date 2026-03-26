@@ -3,16 +3,76 @@ import { AppError, ErrorType, createLogger } from '../utils/errorHandling';
 
 const logger = createLogger('WhatsAppService');
 
+export interface WhatsAppBridgeMetadata {
+  bridgeAccountId: string | null;
+  bridgeLabel: string | null;
+  originalSender: string | null;
+  originalSenderPhone: string | null;
+  originalMessageId: string | null;
+  originalTimestamp: string | null;
+  detection: string | null;
+  fileHash: string | null;
+  forwardedByPhone: string | null;
+  rawFields: Record<string, string>;
+}
+
 export interface WhatsAppMessageData {
   wamid: string;
   from?: string;
+  effectiveFrom?: string;
   type?: string;
   text?: string;
   timestamp?: string;
   mediaId?: string;
   mimeType?: string;
   fileName?: string;
+  bridgeMetadata?: WhatsAppBridgeMetadata | null;
   raw?: any;
+}
+
+function normalizeBridgeSenderPhone(value: string | undefined): string | null {
+  if (!value) return null;
+  const withoutSuffix = value.replace(/@c\.us$/i, '').trim();
+  const digits = withoutSuffix.replace(/\D/g, '');
+  return digits || null;
+}
+
+function parseBridgeCaption(text: string | undefined, forwardedByPhone: string | undefined): WhatsAppBridgeMetadata | null {
+  if (!text) return null;
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length || lines[0] !== '[FALISHA_BRIDGE]') {
+    return null;
+  }
+
+  const rawFields: Record<string, string> = {};
+  for (const line of lines.slice(1)) {
+    const separatorIndex = line.indexOf('=');
+    if (separatorIndex <= 0) continue;
+    const key = line.slice(0, separatorIndex).trim();
+    const value = line.slice(separatorIndex + 1).trim();
+    if (!key) continue;
+    rawFields[key] = value;
+  }
+
+  const originalSender = rawFields.original_sender ?? null;
+
+  return {
+    bridgeAccountId: rawFields.bridge_account ?? null,
+    bridgeLabel: rawFields.bridge_label ?? null,
+    originalSender,
+    originalSenderPhone: normalizeBridgeSenderPhone(originalSender ?? undefined),
+    originalMessageId: rawFields.original_message_id ?? null,
+    originalTimestamp: rawFields.original_timestamp ?? null,
+    detection: rawFields.detection ?? null,
+    fileHash: rawFields.file_hash ?? null,
+    forwardedByPhone: forwardedByPhone ?? null,
+    rawFields,
+  };
 }
 
 export function validateWebhookToken(token: string | undefined, verifyToken: string | undefined) {
@@ -55,6 +115,21 @@ export function extractMessageData(payload: any): WhatsAppMessageData | null {
     data.mediaId = media?.id;
     data.mimeType = media?.mime_type;
     data.fileName = media?.filename;
+    if (typeof media?.caption === 'string' && media.caption.trim()) {
+      data.text = media.caption.trim();
+    }
+  }
+
+  const bridgeMetadata = parseBridgeCaption(data.text, data.from);
+  if (bridgeMetadata) {
+    data.bridgeMetadata = bridgeMetadata;
+    data.effectiveFrom = bridgeMetadata.originalSenderPhone ?? data.from;
+    data.raw = {
+      webhook: payload,
+      bridgeMetadata,
+    };
+  } else {
+    data.effectiveFrom = data.from;
   }
 
   return data;

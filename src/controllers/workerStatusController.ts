@@ -7,14 +7,25 @@ import {
   whatsappAttachmentVerificationQueue,
 } from '../config/queue';
 
+const WORKER_STATUS_CACHE_TTL_MS = Number(process.env.WORKER_STATUS_CACHE_TTL_MS || 60000);
+let workerStatusCache: { expiresAt: number; payload: any } | null = null;
+
 /**
  * Get worker status and queue health
  * GET /api/worker-status
  */
 export async function getWorkerStatus(req: Request, res: Response) {
   try {
+    if (workerStatusCache && workerStatusCache.expiresAt > Date.now()) {
+      return res.json({
+        ...workerStatusCache.payload,
+        cached: true,
+      });
+    }
+
     const status: any = {
       timestamp: new Date().toISOString(),
+      cached: false,
       environment: {
         RUN_WORKER: process.env.RUN_WORKER || 'not set',
         REDIS_URL: process.env.REDIS_URL ? '✅ set' : '❌ not set',
@@ -112,6 +123,11 @@ export async function getWorkerStatus(req: Request, res: Response) {
     } else {
       status.overall = '⚠️ Partial configuration';
     }
+
+    workerStatusCache = {
+      expiresAt: Date.now() + WORKER_STATUS_CACHE_TTL_MS,
+      payload: status,
+    };
 
     res.json(status);
   } catch (error: any) {

@@ -12,4 +12,4 @@ cmds = [
 ]
 
 [start]
-cmd = "npm start"
+cmd = "sh -lc 'npm run ${SERVICE_START_COMMAND:-start:api}'"

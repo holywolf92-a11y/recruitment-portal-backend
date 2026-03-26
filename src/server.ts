@@ -7,9 +7,6 @@ import { supabaseAdminClient } from './config/database';
 import routes from './routes';
 import { errorHandler, createLogger } from './utils/errorHandling';
 import { isHostingerImapConfigured } from './services/hostingerMailboxService';
-// Workers are lazy-imported inside their `if` guards below.
-// Static imports would load bullmq, ioredis, googleapis & puppeteer
-// into memory at startup even when workers are disabled, wasting ~150-200 MB.
 
 dotenv.config();
 validateEnv();
@@ -134,54 +131,8 @@ try {
       logger.info('Gmail polling worker disabled');
     }
 
-    // Start workers if explicitly enabled
-    if (process.env.RUN_WORKER === 'true' && process.env.REDIS_URL) {
-      // Workers are lazy-imported here so their heavy dependencies (bullmq,
-      // ioredis, puppeteer) are only loaded into memory when actually needed.
-      import('./workers/cvParserWorker').then(({ startCvParserWorker }) => {
-        if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
-          startCvParserWorker();
-          logger.info('CV Parser worker started');
-        } else {
-          logger.warn('CV Parser worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
-        }
-      }).catch((err) => logger.error('Failed to load CV Parser worker', err));
-
-      import('./workers/documentLinkWorker').then(({ startDocumentLinkWorker }) => {
-        startDocumentLinkWorker();
-        logger.info('Document Link worker started');
-      }).catch((err: any) => logger.error('Failed to start Document Link worker:', err));
-
-      if (process.env.WHATSAPP_ACCESS_TOKEN) {
-        import('./workers/whatsappMediaWorker').then(({ startWhatsAppMediaWorker }) => {
-          startWhatsAppMediaWorker();
-          logger.info('WhatsApp Media worker started');
-        }).catch((err: any) => logger.error('Failed to start WhatsApp Media worker:', err));
-      } else {
-        logger.warn('WhatsApp Media worker not started (WHATSAPP_ACCESS_TOKEN missing)');
-      }
-
-      if (process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET) {
-        import('./workers/whatsappAttachmentVerificationWorker').then(({ startWhatsAppAttachmentVerificationWorker }) => {
-          startWhatsAppAttachmentVerificationWorker();
-          logger.info('WhatsApp Attachment Verification worker started');
-        }).catch((err: any) => logger.error('Failed to start WhatsApp Attachment Verification worker:', err));
-
-        import('./workers/documentVerificationWorker').then(({ startDocumentVerificationWorker }) => {
-          startDocumentVerificationWorker();
-          logger.info('Document Verification worker started');
-        }).catch((err: any) => {
-          logger.error('Failed to start Document Verification worker:', err);
-          logger.warn('Document verification will not run automatically. Use reprocess endpoint to trigger manually.');
-        });
-      } else {
-        logger.warn('Document Verification worker not started (PYTHON_CV_PARSER_URL or PYTHON_HMAC_SECRET missing)');
-        logger.warn('Documents will remain in "Pending" status. Configure Python service or use reprocess endpoint.');
-      }
-    } else {
-      logger.info('Workers not started (set RUN_WORKER=true and configure REDIS_URL)');
-      logger.warn('Document verification will not run automatically. Use POST /api/documents/candidate-documents/:id/reprocess to trigger manually.');
-    }
+    logger.info('Queue workers are disabled in the API server process');
+    logger.info('Run the dedicated worker service with `npm run start:worker` to process BullMQ jobs');
   }).on('error', (err) => {
     logger.error('Server failed to start', err);
     process.exit(1);

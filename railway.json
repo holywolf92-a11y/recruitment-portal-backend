@@ -5,7 +5,7 @@
     "buildCommand": "npm ci && npm run build"
   },
   "deploy": {
-    "startCommand": "npm start",
+    "startCommand": "sh -lc 'npm run ${SERVICE_START_COMMAND:-start:api}'",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }

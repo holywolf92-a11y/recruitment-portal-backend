@@ -488,7 +488,8 @@ export async function getCandidateBrowseMetadata(userId: string): Promise<Candid
       'photo_received',
       'medical_received',
     ].join(','))
-    .neq('status', 'Deleted');
+    .neq('status', 'Deleted')
+    .limit(100000);
 
   if (error) throw error;
 
@@ -658,7 +659,7 @@ export async function getCandidateDashboardStats(userId: string): Promise<Candid
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('needs_review', true).limit(0),
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('status', 'Deployed').limit(0),
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').gte('created_at', weekAgoIso).limit(0),
-    db.from('candidates').select('position').neq('status', 'Deleted').not('position', 'is', null),
+    db.from('candidates').select('position').neq('status', 'Deleted').not('position', 'is', null).limit(100000),
   ]);
 
   const distinctProfessions = new Set(

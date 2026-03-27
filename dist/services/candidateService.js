@@ -8,7 +8,9 @@ exports.checkForDuplicates = checkForDuplicates;
 exports.createCandidate = createCandidate;
 exports.getCandidateById = getCandidateById;
 exports.listCandidates = listCandidates;
+exports.getCandidateBrowseMetadata = getCandidateBrowseMetadata;
 exports.getDailyStats = getDailyStats;
+exports.getCandidateDashboardStats = getCandidateDashboardStats;
 exports.exportCandidates = exportCandidates;
 exports.bulkUpdateCandidateStatus = bulkUpdateCandidateStatus;
 exports.updateCandidate = updateCandidate;
@@ -16,6 +18,7 @@ exports.deleteCandidate = deleteCandidate;
 const database_1 = require("../config/database");
 const timelineService_1 = require("./timelineService");
 const documentLinkService_1 = require("./documentLinkService");
+const publicUrl_1 = require("../utils/publicUrl");
 // Normalization helper functions
 function normalizeCNIC(cnic) {
     if (!cnic)
@@ -48,35 +51,33 @@ function normalizePhoneE164(phone) {
     }
     return null;
 }
-// Generate candidate code in FL-2024-001 format
+// Generate candidate code in FL-03-26-1 format.
+// The candidate_code field is the shared reference used across inbox ingestion,
+// candidate management, Excel browser, and employer-safe CV output.
 async function generateCandidateCode() {
     const db = (0, database_1.supabaseAdminClient)();
-    // Get the current year
-    const currentYear = new Date().getFullYear();
-    // Retry logic to handle race conditions
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const year = String(now.getFullYear()).slice(-2);
+    const prefix = `FL-${month}-${year}-`;
     for (let attempt = 0; attempt < 10; attempt++) {
-        // Get the highest existing candidate code for this year
         const { data: existingCandidates } = await db
             .from('candidates')
             .select('candidate_code')
-            .like('candidate_code', `FL-${currentYear}-%`)
-            .order('candidate_code', { ascending: false })
-            .limit(1);
-        let sequenceNumber = 1;
-        if (existingCandidates && existingCandidates.length > 0) {
-            const lastCode = existingCandidates[0].candidate_code;
-            const match = lastCode.match(/FL-\d{4}-(\d{3})/);
-            if (match) {
-                sequenceNumber = parseInt(match[1], 10) + 1;
+            .like('candidate_code', `${prefix}%`)
+            .limit(5000);
+        let maxSequence = 0;
+        for (const row of existingCandidates || []) {
+            const code = row?.candidate_code;
+            const match = typeof code === 'string' ? code.match(/^FL-\d{2}-\d{2}-(\d+)$/) : null;
+            if (!match)
+                continue;
+            const parsed = Number.parseInt(match[1], 10);
+            if (Number.isFinite(parsed) && parsed > maxSequence) {
+                maxSequence = parsed;
             }
         }
-        // Add random offset on retry to avoid collision
-        if (attempt > 0) {
-            sequenceNumber += attempt;
-        }
-        const paddedNumber = sequenceNumber.toString().padStart(3, '0');
-        const candidateCode = `FL-${currentYear}-${paddedNumber}`;
-        // Check if this code already exists
+        const candidateCode = `${prefix}${maxSequence + 1 + attempt}`;
         const { data: existing } = await db
             .from('candidates')
             .select('id')
@@ -86,9 +87,7 @@ async function generateCandidateCode() {
             return candidateCode;
         }
     }
-    // Fallback: use timestamp-based unique code
-    const timestamp = Date.now().toString().slice(-6);
-    return `FL-${currentYear}-${timestamp}`;
+    return `${prefix}${Date.now()}`;
 }
 // Check for duplicates based on CNIC or passport
 async function checkForDuplicates(cnic, passport, excludeId) {
@@ -349,11 +348,89 @@ async function listCandidates(filters = {}, userId) {
         offset: filters.offset
     };
 }
+async function getCandidateBrowseMetadata(userId) {
+    const db = (0, database_1.supabaseAdminClient)();
+    const { data, error } = await db
+        .from('candidates')
+        .select([
+        'position',
+        'country_of_interest',
+        'status',
+        'cv_received',
+        'passport_received',
+        'certificate_received',
+        'photo_received',
+        'medical_received',
+    ].join(','))
+        .neq('status', 'Deleted')
+        .limit(100000);
+    if (error)
+        throw error;
+    const rows = (data || []);
+    const professionMap = new Map();
+    const countryMap = new Map();
+    const statusMap = new Map();
+    for (const candidate of rows) {
+        const position = (candidate.position || '').trim();
+        const country = (candidate.country_of_interest || '').trim();
+        const status = (candidate.status || 'Applied').trim() || 'Applied';
+        const hasCompleteDocuments = Boolean(candidate.cv_received &&
+            candidate.passport_received &&
+            candidate.certificate_received &&
+            candidate.photo_received &&
+            candidate.medical_received);
+        if (position) {
+            let entry = professionMap.get(position);
+            if (!entry) {
+                entry = {
+                    count: 0,
+                    countries: new Map(),
+                    statuses: new Map(),
+                    documents: { complete: 0, missing: 0 },
+                };
+                professionMap.set(position, entry);
+            }
+            entry.count += 1;
+            entry.statuses.set(status, (entry.statuses.get(status) || 0) + 1);
+            if (country) {
+                entry.countries.set(country, (entry.countries.get(country) || 0) + 1);
+            }
+            if (hasCompleteDocuments) {
+                entry.documents.complete += 1;
+            }
+            else {
+                entry.documents.missing += 1;
+            }
+        }
+        if (country) {
+            countryMap.set(country, (countryMap.get(country) || 0) + 1);
+        }
+        statusMap.set(status, (statusMap.get(status) || 0) + 1);
+    }
+    const toSortedCountItems = (map) => Array.from(map.entries())
+        .map(([name, count]) => ({ name, count }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+    return {
+        totalCandidates: rows.length,
+        professions: Array.from(professionMap.entries())
+            .map(([name, entry]) => ({
+            name,
+            count: entry.count,
+            countries: toSortedCountItems(entry.countries),
+            statuses: toSortedCountItems(entry.statuses),
+            documents: entry.documents,
+        }))
+            .sort((left, right) => left.name.localeCompare(right.name)),
+        countries: toSortedCountItems(countryMap),
+        statuses: toSortedCountItems(statusMap),
+    };
+}
 /** Daily summary for Excel-style report cards. Respects same filters as list (date range, folder, search). */
 async function getDailyStats(filters, userId) {
     const db = (0, database_1.supabaseAdminClient)();
-    function buildBaseQuery() {
+    function buildBaseQuery(options) {
         let q = db.from('candidates').select('id', { count: 'exact' });
+        q = q.neq('status', 'Deleted');
         if (filters.search?.trim()) {
             const search = filters.search.trim();
             q = q.or(`name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,passport_normalized.ilike.%${search}%,cnic_normalized.ilike.%${search}%`);
@@ -362,11 +439,11 @@ async function getDailyStats(filters, userId) {
             q = q.eq('position', filters.position);
         if (filters.country_of_interest && filters.country_of_interest !== 'all')
             q = q.eq('country_of_interest', filters.country_of_interest);
-        if (filters.applied_from) {
+        if (options?.includeDateFilters !== false && filters.applied_from) {
             const from = filters.applied_from.endsWith('Z') || filters.applied_from.includes('T') ? filters.applied_from : `${filters.applied_from}T00:00:00.000Z`;
             q = q.gte('created_at', from);
         }
-        if (filters.applied_to) {
+        if (options?.includeDateFilters !== false && filters.applied_to) {
             const to = filters.applied_to.endsWith('Z') || filters.applied_to.includes('T') ? filters.applied_to : `${filters.applied_to}T23:59:59.999Z`;
             q = q.lte('created_at', to);
         }
@@ -378,7 +455,8 @@ async function getDailyStats(filters, userId) {
         }
         return q.limit(0);
     }
-    const [totalRes, appliedRes, verifiedRes, pendingRes, rejectedRes, docsRes] = await Promise.all([
+    const [totalCandidatesRes, totalRes, appliedRes, verifiedRes, pendingRes, rejectedRes, docsRes] = await Promise.all([
+        db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').limit(0),
         buildBaseQuery(),
         buildBaseQuery().eq('status', 'Applied'),
         buildBaseQuery().eq('status', 'Deployed'),
@@ -387,12 +465,34 @@ async function getDailyStats(filters, userId) {
         buildBaseQuery().or('cv_received.eq.true,passport_received.eq.true'),
     ]);
     return {
+        total_candidates: totalCandidatesRes.count ?? 0,
         total: totalRes.count ?? 0,
         applied: appliedRes.count ?? 0,
         verified: verifiedRes.count ?? 0,
         pending: pendingRes.count ?? 0,
         rejected: rejectedRes.count ?? 0,
         documents_uploaded: docsRes.count ?? 0,
+    };
+}
+async function getCandidateDashboardStats(userId) {
+    const db = (0, database_1.supabaseAdminClient)();
+    const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const [totalCandidatesRes, pendingReviewRes, deployedRes, newThisWeekRes, professionsRes,] = await Promise.all([
+        db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').limit(0),
+        db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('needs_review', true).limit(0),
+        db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('status', 'Deployed').limit(0),
+        db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').gte('created_at', weekAgoIso).limit(0),
+        db.from('candidates').select('position').neq('status', 'Deleted').not('position', 'is', null).limit(100000),
+    ]);
+    const distinctProfessions = new Set((professionsRes.data || [])
+        .map((row) => String(row.position || '').trim())
+        .filter((value) => value.length > 0));
+    return {
+        totalCandidates: totalCandidatesRes.count ?? 0,
+        totalProfessions: distinctProfessions.size,
+        pendingReview: pendingReviewRes.count ?? 0,
+        deployed: deployedRes.count ?? 0,
+        newThisWeek: newThisWeekRes.count ?? 0,
     };
 }
 /** Export candidates to CSV or Excel. Returns buffer and filename. */
@@ -408,27 +508,13 @@ async function exportCandidates(filters, format, userId) {
         return exportToExcel(candidates);
     }
 }
-function resolveFrontendUrl() {
-    const defaultFrontendUrl = 'https://falishamanpower.up.railway.app';
-    let frontendUrl = (process.env.FRONTEND_URL || '').trim() || defaultFrontendUrl;
-    frontendUrl = frontendUrl.replace(/\/$/, '');
-    if (frontendUrl.includes('recruitment-portal-frontend-production.up.railway.app') ||
-        frontendUrl.includes('exquisite-surprise-production.up.railway.app')) {
-        return defaultFrontendUrl;
-    }
-    return frontendUrl;
-}
 function exportToCSV(candidates) {
     if (candidates.length === 0) {
         return { buffer: Buffer.from(''), filename: `candidates_${new Date().toISOString().split('T')[0]}.csv` };
     }
     // Get frontend URL from environment
-    const frontendUrl = resolveFrontendUrl();
-    // Get backend URL for CV download links
-    const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
-    const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
-        ? backendBaseUrl.replace(/\/$/, '')
-        : `${backendBaseUrl.replace(/\/$/, '')}/api`;
+    const frontendUrl = (0, publicUrl_1.resolveFrontendUrl)(process.env.FRONTEND_URL);
+    const apiBaseUrl = (0, publicUrl_1.resolveBackendApiBaseUrl)(process.env.BACKEND_URL);
     // CSV headers - now includes Profile Link and Employer CV
     const headers = [
         'ID', 'Code', 'Name', 'Email', 'Phone', 'Position', 'Nationality', 'Country of Interest',
@@ -483,12 +569,8 @@ function exportToExcel(candidates) {
         return { buffer, filename: `candidates_${new Date().toISOString().split('T')[0]}.xlsx` };
     }
     // Get frontend URL from environment
-    const frontendUrl = resolveFrontendUrl();
-    // Get backend URL for CV download links
-    const backendBaseUrl = process.env.BACKEND_URL || 'https://recruitment-portal-backend-production-d1f7.up.railway.app';
-    const apiBaseUrl = backendBaseUrl.replace(/\/$/, '').endsWith('/api')
-        ? backendBaseUrl.replace(/\/$/, '')
-        : `${backendBaseUrl.replace(/\/$/, '')}/api`;
+    const frontendUrl = (0, publicUrl_1.resolveFrontendUrl)(process.env.FRONTEND_URL);
+    const apiBaseUrl = (0, publicUrl_1.resolveBackendApiBaseUrl)(process.env.BACKEND_URL);
     // Build data array with headers
     const data = [[
             'ID', 'Code', 'Name', 'Email', 'Phone', 'Position', 'Nationality', 'Country of Interest',

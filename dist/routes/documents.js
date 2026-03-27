@@ -17,6 +17,55 @@ const aiPhotoExtractionController_1 = require("../controllers/aiPhotoExtractionC
 const rateLimit_1 = require("../middleware/rateLimit");
 const logger = (0, errorHandling_1.createLogger)('DocumentsRouter');
 const router = (0, express_1.Router)();
+const UNMATCHED_DOCUMENT_SELECT = [
+    'id',
+    'inbox_attachment_id',
+    'document_type',
+    'storage_bucket',
+    'storage_path',
+    'file_name',
+    'source',
+    'received_at',
+    'needs_manual_review',
+    'review_reasons',
+    'extracted_metadata',
+].join(',');
+const LEGACY_UNMATCHED_DOCUMENT_SELECT = [
+    'id',
+    'inbox_attachment_id',
+    'document_type',
+    'storage_path',
+    'file_name',
+    'source',
+].join(',');
+function normalizeStorageBucket(bucket) {
+    return typeof bucket === 'string' && bucket.trim() ? bucket : 'documents';
+}
+function normalizeReviewReasons(value) {
+    if (Array.isArray(value)) {
+        const reasons = value.map((item) => String(item).trim()).filter(Boolean);
+        return reasons.length > 0 ? reasons : null;
+    }
+    return null;
+}
+function normalizeCandidateDocumentSource(source) {
+    const normalized = String(source || '').trim().toLowerCase();
+    if (normalized === 'gmail' || normalized === 'email') {
+        return 'gmail';
+    }
+    if (normalized === 'whatsapp') {
+        return 'whatsapp';
+    }
+    if (normalized === 'web') {
+        return 'web';
+    }
+    return 'manual';
+}
+function normalizeCandidateDocumentType(documentType) {
+    const normalized = String(documentType || '').trim().toLowerCase();
+    const allowed = new Set(['passport', 'cnic', 'degree', 'medical', 'visa', 'certificate']);
+    return allowed.has(normalized) ? normalized : 'other';
+}
 // Bulk processing status (reduces per-candidate polling)
 // POST /api/documents/processing-status
 // Body: { candidate_ids: string[] }
@@ -177,44 +226,72 @@ router.get('/unmatched', async (req, res) => {
         const limit = parseInt(req.query.limit) || 20;
         const offset = parseInt(req.query.offset) || 0;
         const filterStatus = req.query.status; // 'pending', 'needs_review', all if not specified
-        let query = db
-            .from('unmatched_documents')
-            .select(`
-        id,
-        document_type,
-        file_name,
-        storage_path,
-        received_at,
-        source,
-        extracted_metadata,
-        needs_manual_review,
-        review_reasons
-      `, { count: 'exact' })
-            .order('received_at', { ascending: false })
-            .range(offset, offset + limit - 1);
-        if (filterStatus === 'needs_review') {
-            query = query.eq('needs_manual_review', true);
+        const buildBaseQuery = (includeManualReviewFilter, selectColumns) => {
+            let query = db
+                .from('unmatched_documents')
+                .select(selectColumns, { count: 'exact' })
+                .order('id', { ascending: false })
+                .range(offset, offset + limit - 1);
+            if (includeManualReviewFilter && filterStatus === 'needs_review') {
+                query = query.eq('needs_manual_review', true);
+            }
+            else if (includeManualReviewFilter && filterStatus === 'pending') {
+                query = query.eq('needs_manual_review', false);
+            }
+            return query;
+        };
+        let { data: documents, error, count } = await buildBaseQuery(true, UNMATCHED_DOCUMENT_SELECT);
+        const errorMessage = String(error?.message || '');
+        if (errorMessage.includes('relation "unmatched_documents" does not exist')) {
+            logger.warn('unmatched_documents table missing in current schema; returning empty unmatched documents list');
+            return res.json({ documents: [], total: 0, limit, offset });
         }
-        else if (filterStatus === 'pending') {
-            query = query.eq('needs_manual_review', false);
+        if (error && errorMessage.includes('column unmatched_documents.')) {
+            logger.warn('Legacy unmatched_documents schema detected; retrying with compatibility query', {
+                message: errorMessage,
+            });
+            ({ data: documents, error, count } = await buildBaseQuery(false, LEGACY_UNMATCHED_DOCUMENT_SELECT));
         }
-        const { data: documents, error, count } = await query;
         if (error)
             throw error;
         // Generate download URLs
-        const docsWithUrls = await Promise.all((documents || []).map(async (doc) => {
+        const unmatchedDocuments = (documents || []);
+        const docsWithUrls = await Promise.all(unmatchedDocuments.map(async (doc) => {
+            const storageBucket = normalizeStorageBucket(doc.storage_bucket);
+            const reviewReasons = normalizeReviewReasons(doc.review_reasons);
             try {
                 const { data } = await db.storage
-                    .from('documents')
+                    .from(storageBucket)
                     .createSignedUrl(doc.storage_path, 3600);
                 return {
-                    ...doc,
+                    id: doc.id,
+                    document_type: doc.document_type,
+                    file_name: doc.file_name,
+                    storage_bucket: storageBucket,
+                    storage_path: doc.storage_path,
+                    received_at: doc.received_at || null,
+                    source: doc.source || null,
+                    extracted_metadata: doc.extracted_metadata || null,
+                    needs_manual_review: Boolean(doc.needs_manual_review),
+                    review_reasons: reviewReasons,
                     downloadUrl: data?.signedUrl || null,
                 };
             }
             catch (err) {
-                logger.warn(`Failed to generate signed URL for ${doc.storage_path}`, err);
-                return { ...doc, downloadUrl: null };
+                logger.warn(`Failed to generate signed URL for ${storageBucket}/${doc.storage_path}`, err);
+                return {
+                    id: doc.id,
+                    document_type: doc.document_type,
+                    file_name: doc.file_name,
+                    storage_bucket: storageBucket,
+                    storage_path: doc.storage_path,
+                    received_at: doc.received_at || null,
+                    source: doc.source || null,
+                    extracted_metadata: doc.extracted_metadata || null,
+                    needs_manual_review: Boolean(doc.needs_manual_review),
+                    review_reasons: reviewReasons,
+                    downloadUrl: null,
+                };
             }
         }));
         res.json({
@@ -260,12 +337,15 @@ router.post('/unmatched/:documentId/link', async (req, res) => {
             return res.status(404).json({ error: 'Candidate not found' });
         }
         // Move document to candidate folder
-        const newPath = `candidates/${candidateId}/documents/${doc.document_type}/${doc.file_name}`;
+        const storageBucket = normalizeStorageBucket(doc.storage_bucket);
+        const normalizedDocumentType = normalizeCandidateDocumentType(doc.document_type);
+        const normalizedSource = normalizeCandidateDocumentSource(doc.source);
+        const newPath = `candidates/${candidateId}/documents/${normalizedDocumentType}/${doc.file_name}`;
         // Prefer Storage-side move to avoid backend download -> re-upload egress.
         // If move fails, keep original storage_path to avoid broken links.
         let resolvedStoragePath = doc.storage_path;
         try {
-            const bucket = db.storage.from('documents');
+            const bucket = db.storage.from(storageBucket);
             if (typeof bucket.move === 'function') {
                 const { error: moveError } = await bucket.move(doc.storage_path, newPath);
                 if (moveError)
@@ -284,11 +364,12 @@ router.post('/unmatched/:documentId/link', async (req, res) => {
             .from('candidate_documents')
             .insert({
             candidate_id: candidateId,
-            document_type: doc.document_type,
+            document_type: normalizedDocumentType,
+            storage_bucket: storageBucket,
             file_name: doc.file_name,
             storage_path: resolvedStoragePath,
-            source: doc.source,
-            received_at: doc.received_at,
+            source: normalizedSource,
+            ...(doc.received_at ? { received_at: doc.received_at } : {}),
         });
         if (linkError)
             throw linkError;

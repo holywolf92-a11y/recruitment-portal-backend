@@ -33,6 +33,10 @@ router.post('/', validation_1.validateCandidate, candidateController_1.createCan
 router.get('/', candidateController_1.listCandidatesController);
 // Daily stats for Excel-style reports
 router.get('/daily-stats', candidateController_1.dailyStatsController);
+// Exact KPI stats for Candidates page
+router.get('/dashboard-stats', candidateController_1.candidateDashboardStatsController);
+// Lightweight metadata for candidate browser navigation and filters
+router.get('/browse-metadata', candidateController_1.candidateBrowseMetadataController);
 // Export candidates (CSV/Excel)
 router.get('/export', candidateController_1.exportCandidatesController);
 // Matching governance metrics (must be before /:id wildcard)

@@ -28,7 +28,7 @@ async function createAttachment(input) {
         throw new errorHandling_1.AppError('storagePath is required', errorHandling_1.ErrorType.VALIDATION, 400);
     const sha256 = (0, hashing_1.hashFile)(input.fileBuffer);
     // Classify attachment automatically
-    const classification = documentClassifier_1.DocumentClassifier.classify(input.fileName, input.messageSubject, input.mimeType);
+    const classification = documentClassifier_1.DocumentClassifier.classify(input.fileName, input.messageSubject, input.mimeType, input.fileBuffer);
     // Extract metadata hints from filename
     const metadata = documentClassifier_1.DocumentClassifier.extractMetadataFromFilename(input.fileName);
     // Determine storage path based on classification
@@ -293,6 +293,14 @@ async function enqueueCvParsingJobForAttachment(attachmentId, options) {
     let jobRowId = null;
     try {
         const attachment = await getAttachmentById(attachmentId);
+        if (!options?.force && attachment?.attachment_kind !== 'cv') {
+            logger.info('Skipping CV parsing enqueue for non-CV attachment', {
+                attachmentId,
+                attachmentKind: attachment?.attachment_kind,
+                attachmentType: attachment?.attachment_type,
+            });
+            return { jobId: null, status: 'skipped_non_cv' };
+        }
         const fileHash = attachment?.sha256 ?? null;
         const createdJobRow = await parsingJobs.createJob({ attachmentId, fileHash });
         jobRowId = createdJobRow.id;

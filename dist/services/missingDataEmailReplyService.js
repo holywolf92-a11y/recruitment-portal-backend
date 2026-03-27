@@ -37,6 +37,7 @@ exports.processMissingDataEmailReply = processMissingDataEmailReply;
 const database_1 = require("../config/database");
 const errorHandling_1 = require("../utils/errorHandling");
 const openaiResponsesService_1 = require("./openaiResponsesService");
+const linkedinFollowUpService_1 = require("./linkedinFollowUpService");
 const logger = (0, errorHandling_1.createLogger)('MissingDataEmailReplyService');
 function stripQuotedReply(text) {
     const lines = String(text || '').split(/\r?\n/);
@@ -92,6 +93,8 @@ async function processMissingDataEmailReply(args) {
         if (error || !candidate) {
             return { ok: false, reason: 'candidate_not_found' };
         }
+        // Detect first reply so we can send a LinkedIn follow-up only once.
+        const isFirstReply = !candidate.missing_data_email_last_reply_processed_at;
         const { calculateMissingFields, EXCEL_BROWSER_FIELDS, enrichCandidateData, updateMissingFields } = await Promise.resolve().then(() => __importStar(require('./progressiveDataCompletionService')));
         const missingFields = calculateMissingFields(candidate);
         if (missingFields.length === 0) {
@@ -100,6 +103,9 @@ async function processMissingDataEmailReply(args) {
                 .from('candidates')
                 .update({ missing_data_email_last_reply_processed_at: now })
                 .eq('id', args.candidateId);
+            if (isFirstReply && candidate.email) {
+                void (0, linkedinFollowUpService_1.sendLinkedInFollowUp)({ candidateId: args.candidateId, candidateEmail: candidate.email, candidateName: candidate.name || null });
+            }
             return { ok: true, updated: [], skipped: [], reason: 'nothing_missing' };
         }
         const cleaned = stripQuotedReply(args.emailBodyText);
@@ -108,6 +114,9 @@ async function processMissingDataEmailReply(args) {
                 .from('candidates')
                 .update({ missing_data_email_last_reply_processed_at: now })
                 .eq('id', args.candidateId);
+            if (isFirstReply && candidate.email) {
+                void (0, linkedinFollowUpService_1.sendLinkedInFollowUp)({ candidateId: args.candidateId, candidateEmail: candidate.email, candidateName: candidate.name || null });
+            }
             return { ok: true, updated: [], skipped: missingFields, reason: 'empty_reply' };
         }
         const labels = {};
@@ -152,6 +161,9 @@ async function processMissingDataEmailReply(args) {
             updated: enrichmentResult.updated,
             skipped: enrichmentResult.skipped,
         });
+        if (isFirstReply && candidate.email) {
+            void (0, linkedinFollowUpService_1.sendLinkedInFollowUp)({ candidateId: args.candidateId, candidateEmail: candidate.email, candidateName: candidate.name || null });
+        }
         return { ok: true, updated: enrichmentResult.updated, skipped: enrichmentResult.skipped };
     }
     catch (err) {

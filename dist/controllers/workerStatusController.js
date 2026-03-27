@@ -3,22 +3,45 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getWorkerStatus = getWorkerStatus;
 const database_1 = require("../config/database");
 const queue_1 = require("../config/queue");
+const WORKER_STATUS_CACHE_TTL_MS = Number(process.env.WORKER_STATUS_CACHE_TTL_MS || 60000);
+let workerStatusCache = null;
 /**
  * Get worker status and queue health
  * GET /api/worker-status
  */
 async function getWorkerStatus(req, res) {
     try {
+        if (workerStatusCache && workerStatusCache.expiresAt > Date.now()) {
+            return res.json({
+                ...workerStatusCache.payload,
+                cached: true,
+            });
+        }
+        const serviceStartCommand = process.env.SERVICE_START_COMMAND || 'start';
+        const deploymentRole = serviceStartCommand === 'start:worker'
+            ? 'worker'
+            : serviceStartCommand === 'start:api'
+                ? 'api'
+                : 'combined';
+        const splitArchitecture = deploymentRole === 'api';
         const status = {
             timestamp: new Date().toISOString(),
+            cached: false,
+            deployment: {
+                role: deploymentRole,
+                service: process.env.RAILWAY_SERVICE_NAME || 'unknown',
+                splitArchitecture,
+            },
             environment: {
                 RUN_WORKER: process.env.RUN_WORKER || 'not set',
+                SERVICE_START_COMMAND: serviceStartCommand,
                 REDIS_URL: process.env.REDIS_URL ? '✅ set' : '❌ not set',
                 PYTHON_CV_PARSER_URL: process.env.PYTHON_CV_PARSER_URL ? '✅ set' : '❌ not set',
                 PYTHON_HMAC_SECRET: process.env.PYTHON_HMAC_SECRET ? '✅ set' : '❌ not set',
             },
             workers: {
                 enabled: process.env.RUN_WORKER === 'true' && !!process.env.REDIS_URL,
+                mode: splitArchitecture ? 'dedicated-service' : deploymentRole,
                 cvParser: {
                     configured: !!(process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET),
                 },
@@ -83,13 +106,17 @@ async function getWorkerStatus(req, res) {
         // Overall health check
         status.health = {
             workersRunning: status.workers.enabled,
+            dedicatedWorkerArchitecture: splitArchitecture,
             redisConnected: status.queues.available,
             pythonServiceConfigured: status.workers.cvParser.configured,
             stuckDocuments: status.stuckDocuments?.count || 0,
             pendingDocuments: status.pendingDocuments,
         };
         // Determine overall status
-        if (status.health.workersRunning && status.health.redisConnected && status.health.pythonServiceConfigured) {
+        if (splitArchitecture && status.health.redisConnected && status.health.pythonServiceConfigured) {
+            status.overall = '✅ API service healthy; queue workers run in dedicated worker service';
+        }
+        else if (status.health.workersRunning && status.health.redisConnected && status.health.pythonServiceConfigured) {
             status.overall = '✅ All systems operational';
         }
         else if (!status.health.workersRunning) {
@@ -104,6 +131,10 @@ async function getWorkerStatus(req, res) {
         else {
             status.overall = '⚠️ Partial configuration';
         }
+        workerStatusCache = {
+            expiresAt: Date.now() + WORKER_STATUS_CACHE_TTL_MS,
+            payload: status,
+        };
         res.json(status);
     }
     catch (error) {

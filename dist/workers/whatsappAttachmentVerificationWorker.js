@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -375,6 +408,24 @@ function startWhatsAppAttachmentVerificationWorker() {
         // Write both linked_candidate_id (identity-first signal) AND candidate_id (required by CV Inbox
         // UI to show status as "extracted" rather than "queued").
         await db.from('inbox_attachments').update({ linked_candidate_id: candidateId, candidate_id: candidateId }).eq('id', attachmentId);
+        // If the AI identified this as a CV/resume, also trigger full structured CV parsing so that
+        // position, experience, skills, education etc. get extracted into the candidate profile.
+        // The WhatsApp media worker only enqueues cv-parsing for attachments already classified as 'cv'
+        // by filename (e.g. "cv.pdf", "resume.docx"). PDFs with person-name filenames ("JOHN DOE.pdf")
+        // arrive here as 'unknown', pass through verification, but never receive full text parsing.
+        if (aiResult.category === 'cv_resume' && !isConflict && createdDoc?.id) {
+            try {
+                await db.from('inbox_attachments').update({ attachment_kind: 'cv' }).eq('id', attachmentId);
+                const { enqueueCvParsingJobForAttachment } = await Promise.resolve().then(() => __importStar(require('../services/inboxAttachmentService')));
+                // force: true bypasses the 'already_linked' idempotency guard because candidate_id was
+                // just written above and would otherwise cause the CV parser to skip this attachment.
+                await enqueueCvParsingJobForAttachment(attachmentId, { force: true });
+                logger.info('Enqueued full CV parsing for cv_resume WhatsApp attachment', { attachmentId, candidateId });
+            }
+            catch (cvParseErr) {
+                logger.error('Failed to enqueue CV parsing for cv_resume WhatsApp attachment (non-fatal)', cvParseErr, { attachmentId });
+            }
+        }
         return {
             status: 'linked',
             candidateId,

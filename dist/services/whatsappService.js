@@ -13,6 +13,56 @@ exports.sendTemplateMessage = sendTemplateMessage;
 const crypto_1 = __importDefault(require("crypto"));
 const errorHandling_1 = require("../utils/errorHandling");
 const logger = (0, errorHandling_1.createLogger)('WhatsAppService');
+function isNonInboxSender(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized)
+        return false;
+    return normalized.endsWith('@broadcast')
+        || normalized.endsWith('@g.us')
+        || normalized.endsWith('@newsletter');
+}
+function normalizeBridgeSenderPhone(value) {
+    if (!value)
+        return null;
+    const withoutSuffix = value.replace(/@c\.us$/i, '').trim();
+    const digits = withoutSuffix.replace(/\D/g, '');
+    return digits || null;
+}
+function parseBridgeCaption(text, forwardedByPhone) {
+    if (!text)
+        return null;
+    const lines = text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    if (!lines.length || lines[0] !== '[FALISHA_BRIDGE]') {
+        return null;
+    }
+    const rawFields = {};
+    for (const line of lines.slice(1)) {
+        const separatorIndex = line.indexOf('=');
+        if (separatorIndex <= 0)
+            continue;
+        const key = line.slice(0, separatorIndex).trim();
+        const value = line.slice(separatorIndex + 1).trim();
+        if (!key)
+            continue;
+        rawFields[key] = value;
+    }
+    const originalSender = rawFields.original_sender ?? null;
+    return {
+        bridgeAccountId: rawFields.bridge_account ?? null,
+        bridgeLabel: rawFields.bridge_label ?? null,
+        originalSender,
+        originalSenderPhone: normalizeBridgeSenderPhone(originalSender ?? undefined),
+        originalMessageId: rawFields.original_message_id ?? null,
+        originalTimestamp: rawFields.original_timestamp ?? null,
+        detection: rawFields.detection ?? null,
+        fileHash: rawFields.file_hash ?? null,
+        forwardedByPhone: forwardedByPhone ?? null,
+        rawFields,
+    };
+}
 function validateWebhookToken(token, verifyToken) {
     if (!token || !verifyToken)
         return false;
@@ -36,6 +86,8 @@ function extractMessageData(payload) {
     const message = change?.value?.messages?.[0];
     if (!message || !message.id)
         return null;
+    if (isNonInboxSender(message.from))
+        return null;
     const data = {
         wamid: message.id,
         from: message.from,
@@ -51,6 +103,24 @@ function extractMessageData(payload) {
         data.mediaId = media?.id;
         data.mimeType = media?.mime_type;
         data.fileName = media?.filename;
+        if (typeof media?.caption === 'string' && media.caption.trim()) {
+            data.text = media.caption.trim();
+        }
+    }
+    const bridgeMetadata = parseBridgeCaption(data.text, data.from);
+    if (bridgeMetadata) {
+        if (isNonInboxSender(bridgeMetadata.originalSender)) {
+            return null;
+        }
+        data.bridgeMetadata = bridgeMetadata;
+        data.effectiveFrom = bridgeMetadata.originalSenderPhone ?? data.from;
+        data.raw = {
+            webhook: payload,
+            bridgeMetadata,
+        };
+    }
+    else {
+        data.effectiveFrom = data.from;
     }
     return data;
 }

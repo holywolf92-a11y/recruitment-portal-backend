@@ -37,6 +37,8 @@ exports.createCandidateController = createCandidateController;
 exports.getCandidateController = getCandidateController;
 exports.listCandidatesController = listCandidatesController;
 exports.dailyStatsController = dailyStatsController;
+exports.candidateDashboardStatsController = candidateDashboardStatsController;
+exports.candidateBrowseMetadataController = candidateBrowseMetadataController;
 exports.exportCandidatesController = exportCandidatesController;
 exports.updateCandidateController = updateCandidateController;
 exports.deleteCandidateController = deleteCandidateController;
@@ -225,6 +227,28 @@ async function dailyStatsController(req, res) {
     catch (error) {
         console.error('Error fetching daily stats:', error);
         res.status(500).json({ error: 'Failed to fetch daily stats' });
+    }
+}
+async function candidateDashboardStatsController(_req, res) {
+    try {
+        const userId = 'test-user-id';
+        const stats = await (0, candidateService_1.getCandidateDashboardStats)(userId);
+        res.json(stats);
+    }
+    catch (error) {
+        console.error('Error fetching candidate dashboard stats:', error);
+        res.status(500).json({ error: 'Failed to fetch candidate dashboard stats' });
+    }
+}
+async function candidateBrowseMetadataController(_req, res) {
+    try {
+        const userId = 'test-user-id';
+        const metadata = await (0, candidateService_1.getCandidateBrowseMetadata)(userId);
+        res.json(metadata);
+    }
+    catch (error) {
+        console.error('Error fetching candidate browse metadata:', error);
+        res.status(500).json({ error: 'Failed to fetch candidate browse metadata' });
     }
 }
 async function exportCandidatesController(req, res) {

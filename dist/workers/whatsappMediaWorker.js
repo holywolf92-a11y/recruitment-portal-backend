@@ -41,19 +41,9 @@ function startWhatsAppMediaWorker() {
         // filename from the webhook payload (job.data.fileName) is more reliable.
         const fileName = meta.file_name || job.data.fileName || meta.id || `${mediaId}.bin`;
         const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
-        const classification = documentClassifier_1.DocumentClassifier.classify(fileName, undefined, mimeType);
+        const classification = documentClassifier_1.DocumentClassifier.classify(fileName, undefined, mimeType, buffer);
         const normalizedMime = String(mimeType || '').toLowerCase();
-        const isCommonCvMime = normalizedMime.includes('application/pdf') ||
-            normalizedMime.includes('application/msword') ||
-            normalizedMime.includes('application/vnd.openxmlformats-officedocument.wordprocessingml') ||
-            normalizedMime.includes('text/plain') ||
-            normalizedMime.startsWith('image/');
-        // WhatsApp often provides generic filenames (e.g. "document.pdf"). If we treat these as "document",
-        // the CV Inbox UI shows them as "queued" forever because no parsing job is created.
-        const isUnknownish = classification.attachmentKind === 'unknown' ||
-            (classification.attachmentKind === 'document' &&
-                (!classification.documentType || classification.documentType === 'unknown'));
-        const attachmentType = classification.attachmentKind === 'cv' || (isUnknownish && isCommonCvMime) ? 'cv' : 'document';
+        const attachmentType = classification.attachmentKind === 'cv' ? 'cv' : 'document';
         // Detect unsupported binary formats — video/audio cannot be parsed as CVs or identity docs.
         const isUnsupportedMedia = normalizedMime.startsWith('video/') ||
             normalizedMime.startsWith('audio/');
@@ -73,7 +63,9 @@ function startWhatsAppMediaWorker() {
             whatsappWamid: wamid,
             whatsappMediaId: mediaId,
         });
-        // CV parsing is keyed off inbox_attachments.attachment_type === 'cv'
+        const shouldTreatAsCv = !isUnsupportedMedia &&
+            !normalizedMime.startsWith('image/') &&
+            (attachmentType === 'document' || attachment?.attachment_kind === 'cv');
         if (isUnsupportedMedia) {
             // Video / audio cannot be parsed as a CV or verified as an identity document.
             // Store the file (already done) and log — no queue job created.
@@ -83,8 +75,14 @@ function startWhatsAppMediaWorker() {
                 fileName,
             });
         }
-        else if (attachment?.attachment_type === 'cv' || attachment?.attachment_kind === 'cv') {
+        else if (shouldTreatAsCv) {
             try {
+                // Old WhatsApp behavior: treat document uploads as CV candidates so they always
+                // reach full parsing even when filename-based classification says "unknown".
+                if (attachment?.attachment_kind !== 'cv') {
+                    const db = (0, database_1.supabaseAdminClient)();
+                    await db.from('inbox_attachments').update({ attachment_kind: 'cv' }).eq('id', attachment.id);
+                }
                 await (0, inboxAttachmentService_1.enqueueCvParsingJobForAttachment)(attachment.id, { force: false, expiresInSeconds: 3600 });
             }
             catch (err) {

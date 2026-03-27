@@ -3,6 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const queue_1 = require("../config/queue");
 const router = (0, express_1.Router)();
+const QUEUE_HEALTH_CACHE_TTL_MS = Number(process.env.QUEUE_HEALTH_CACHE_TTL_MS || 60000);
+let queueHealthCache = null;
 /** Ping Redis via Upstash REST (HTTPS/443) — avoids TCP port 6380 which may be blocked. */
 async function pingRedis() {
     const restUrl = process.env.UPSTASH_REDIS_REST_URL;
@@ -37,6 +39,12 @@ async function safeJobCounts(q) {
 }
 router.get('/queue', async (_req, res) => {
     try {
+        if (queueHealthCache && queueHealthCache.expiresAt > Date.now()) {
+            return res.status(queueHealthCache.statusCode).json({
+                ...queueHealthCache.payload,
+                cached: true,
+            });
+        }
         const redisPing = await pingRedis();
         const [cvCounts, docCounts, waMediaCounts, waVerifyCounts] = await Promise.all([
             safeJobCounts(queue_1.cvParsingQueue),
@@ -45,8 +53,9 @@ router.get('/queue', async (_req, res) => {
             safeJobCounts(queue_1.whatsappAttachmentVerificationQueue),
         ]);
         const isOk = redisPing.ok;
-        return res.status(isOk ? 200 : 503).json({
+        const payload = {
             ok: isOk,
+            cached: false,
             redis: { ping: isOk ? 'PONG' : 'FAILED', method: redisPing.method },
             queue: { name: queue_1.cvParsingQueue.name, counts: cvCounts },
             queues: [
@@ -56,7 +65,14 @@ router.get('/queue', async (_req, res) => {
                 { name: queue_1.whatsappAttachmentVerificationQueue.name, counts: waVerifyCounts },
             ],
             workerExpected: Boolean(process.env.REDIS_URL && process.env.PYTHON_CV_PARSER_URL && process.env.PYTHON_HMAC_SECRET),
-        });
+        };
+        const statusCode = isOk ? 200 : 503;
+        queueHealthCache = {
+            expiresAt: Date.now() + QUEUE_HEALTH_CACHE_TTL_MS,
+            payload,
+            statusCode,
+        };
+        return res.status(statusCode).json(payload);
     }
     catch (e) {
         return res.status(503).json({

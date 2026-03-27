@@ -9,6 +9,47 @@ const logger = (0, errorHandling_1.createLogger)('CandidateMatcher');
  * Matches documents to candidates using priority: CNIC → Passport → Email → Phone → Name+DOB → Name+Father → Name
  */
 class CandidateMatcher {
+    static lastNameToken(name) {
+        if (!name || typeof name !== 'string')
+            return '';
+        const normalized = this.normalizeName(name);
+        const parts = normalized.split(' ').filter(Boolean);
+        return parts.length > 0 ? parts[parts.length - 1] : '';
+    }
+    static getHardIdConflictReasons(criteria, existing) {
+        const reasons = [];
+        if (criteria.name && existing?.name) {
+            const incomingName = this.normalizeName(criteria.name);
+            const existingName = this.normalizeName(existing.name);
+            const sim = this.calculateSimilarity(incomingName, existingName);
+            const samePhonetic = this.phoneticMatch(incomingName, existingName);
+            const incomingTail = this.lastNameToken(criteria.name);
+            const existingTail = this.lastNameToken(existing.name);
+            const tailMismatch = !!incomingTail && !!existingTail && incomingTail !== existingTail;
+            if ((sim < 0.72 && !samePhonetic) || (tailMismatch && sim < 0.9)) {
+                reasons.push(`name mismatch (${criteria.name} vs ${existing.name})`);
+            }
+        }
+        if (criteria.fatherName && existing?.father_name) {
+            const incomingFather = this.normalizeName(criteria.fatherName);
+            const existingFather = this.normalizeName(existing.father_name);
+            const sim = this.calculateSimilarity(incomingFather, existingFather);
+            const incomingTail = this.lastNameToken(criteria.fatherName);
+            const existingTail = this.lastNameToken(existing.father_name);
+            const tailMismatch = !!incomingTail && !!existingTail && incomingTail !== existingTail;
+            if (sim < 0.72 || (tailMismatch && sim < 0.9)) {
+                reasons.push(`father_name mismatch (${criteria.fatherName} vs ${existing.father_name})`);
+            }
+        }
+        if (criteria.dateOfBirth && existing?.date_of_birth) {
+            const incomingDob = this.parseDateToISO(criteria.dateOfBirth);
+            const existingDob = this.parseDateToISO(existing.date_of_birth);
+            if (incomingDob && existingDob && incomingDob !== existingDob) {
+                reasons.push(`date_of_birth mismatch (${incomingDob} vs ${existingDob})`);
+            }
+        }
+        return reasons;
+    }
     static normalizePassport(passport) {
         if (!passport)
             return null;
@@ -60,11 +101,30 @@ class CandidateMatcher {
             const normalized = this.normalizeCnic(criteria.cnic);
             const { data, error } = await db
                 .from('candidates')
-                .select('id')
+                .select('id, name, father_name, date_of_birth')
                 .eq('cnic_normalized', normalized)
                 .neq('status', 'Deleted'); // Exclude deleted candidates
             if (!error && data && data.length > 0) {
                 if (data.length === 1) {
+                    const conflictReasons = this.getHardIdConflictReasons(criteria, data[0]);
+                    if (conflictReasons.length >= 2) {
+                        logger.warn('CNIC match has strong identity conflicts; sending to manual review', {
+                            normalized,
+                            candidateId: data[0].id,
+                            conflictReasons,
+                        });
+                        return {
+                            candidateId: null,
+                            matchedBy: null,
+                            confidence: 0,
+                            multipleMatches: false,
+                            matchCount: 1,
+                            needsManualReview: true,
+                            reviewReasons: [
+                                `CNIC matched existing candidate but conflicting identity fields detected: ${conflictReasons.join('; ')}`,
+                            ],
+                        };
+                    }
                     logger.info(`Matched candidate by CNIC: ${normalized}`);
                     return {
                         candidateId: data[0].id,
@@ -95,11 +155,30 @@ class CandidateMatcher {
             if (normalized) {
                 const { data, error } = await db
                     .from('candidates')
-                    .select('id')
+                    .select('id, name, father_name, date_of_birth')
                     .eq('passport_normalized', normalized)
                     .neq('status', 'Deleted');
                 if (!error && data && data.length > 0) {
                     if (data.length === 1) {
+                        const conflictReasons = this.getHardIdConflictReasons(criteria, data[0]);
+                        if (conflictReasons.length >= 2) {
+                            logger.warn('Passport match has strong identity conflicts; sending to manual review', {
+                                normalized,
+                                candidateId: data[0].id,
+                                conflictReasons,
+                            });
+                            return {
+                                candidateId: null,
+                                matchedBy: null,
+                                confidence: 0,
+                                multipleMatches: false,
+                                matchCount: 1,
+                                needsManualReview: true,
+                                reviewReasons: [
+                                    `Passport matched existing candidate but conflicting identity fields detected: ${conflictReasons.join('; ')}`,
+                                ],
+                            };
+                        }
                         logger.info(`Matched candidate by passport: ${normalized}`);
                         return {
                             candidateId: data[0].id,
@@ -516,8 +595,21 @@ class CandidateMatcher {
             'info@',
             'contact@',
             'support@',
+            'hr@',
+            'jobs@',
+            'careers@',
             'noreply@',
-            'donotreply@'
+            'donotreply@',
+            // Shared agency / recruiter / company-managed inboxes
+            'recruit',
+            'recruitment',
+            'agency',
+            'manpower',
+            'international',
+            'limited',
+            'ltd',
+            'enterprises',
+            'company',
         ];
         return governmentPatterns.some(pattern => normalized.includes(pattern));
     }

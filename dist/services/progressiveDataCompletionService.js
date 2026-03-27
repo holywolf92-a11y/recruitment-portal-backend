@@ -64,6 +64,20 @@ exports.EXCEL_BROWSER_FIELDS = {
 exports.REQUIRED_FIELDS_FOR_CREATION = [
     'name', // At minimum, we need a name
 ];
+const FIELD_TO_DB_COLUMN = {
+    cnic: 'cnic_normalized',
+    passport: 'passport_normalized',
+    passport_no: 'passport_normalized',
+    dob: 'date_of_birth',
+    expiry_date: 'passport_expiry',
+};
+function resolveCandidateColumn(field) {
+    return FIELD_TO_DB_COLUMN[field] || field;
+}
+function candidateHasColumn(candidate, field) {
+    const column = resolveCandidateColumn(field);
+    return Object.prototype.hasOwnProperty.call(candidate || {}, column);
+}
 /**
  * Progressive Data Completion Logic
  *
@@ -92,6 +106,10 @@ async function enrichCandidateData(candidateId, extractedData, source, documentI
     const sourceTracking = [];
     // Process each extracted field
     for (const [field, extractedValue] of Object.entries(extractedData)) {
+        if (!candidateHasColumn(currentCandidate, field)) {
+            skipped.push(field);
+            continue;
+        }
         // Skip null/undefined/empty extracted values
         if (extractedValue === null || extractedValue === undefined || extractedValue === '') {
             continue;
@@ -309,6 +327,9 @@ function calculateMissingFields(candidate) {
         if (field === 'languages') {
             // Languages field might be used for English/Arabic extraction
             // But it's not a required field itself
+            continue;
+        }
+        if (!candidateHasColumn(candidate, field)) {
             continue;
         }
         // Check if field is missing
@@ -542,6 +563,9 @@ function isGovernmentEmail(email) {
         // Generic organizational emails that shouldn't be personal
         'admin@', 'info@', 'contact@', 'support@', 'noinformation',
         'noreply', 'do-not-reply', 'automail',
+        // Agency / recruiter / company-managed inboxes commonly embedded in forwarded CVs
+        'hr@', 'jobs@', 'careers@', 'recruit', 'recruitment', 'agency',
+        'manpower', 'international', 'limited', 'ltd', 'enterprises', 'company',
     ];
     return patterns.some(pattern => normalized.includes(pattern));
 }
@@ -558,7 +582,7 @@ function isGovernmentEmail(email) {
  *
  * Returns the candidate ID to link, or null to create a new record.
  */
-async function findExistingCandidate(extractedData) {
+async function findExistingCandidate(extractedData, options) {
     const AUTO_LINK_CONFIDENCE_THRESHOLD = 0.84;
     const result = await candidateMatcher_1.CandidateMatcher.findCandidate({
         cnic: extractedData.cnic,
@@ -569,6 +593,14 @@ async function findExistingCandidate(extractedData) {
         fatherName: extractedData.father_name,
         dateOfBirth: extractedData.date_of_birth,
     });
+    const requireCorroborationForContactSignals = options?.requireCorroborationForContactSignals === true;
+    const isSingleContactSignalMatch = (result.matchedBy === 'email' || result.matchedBy === 'phone') &&
+        result.matchCount === 1;
+    if (requireCorroborationForContactSignals && isSingleContactSignalMatch) {
+        console.warn(`[ProgressiveCompletion] Suppressing auto-link on single ${result.matchedBy} signal ` +
+            `(confidence=${result.confidence}). Stronger corroboration required for this source.`);
+        return null;
+    }
     // Needs manual review → do not auto-link, but log for visibility
     if (result.needsManualReview) {
         console.warn(`[ProgressiveCompletion] Candidate match needs manual review ` +

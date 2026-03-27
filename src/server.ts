@@ -131,6 +131,21 @@ try {
       logger.info('Gmail polling worker disabled');
     }
 
+    // Google Drive polling — picks up CV files from watched Drive folders
+    if (process.env.RUN_GOOGLE_DRIVE_POLLING === 'true') {
+      import('./workers/googleDrivePollingWorker').then(({ startGoogleDrivePolling, isDrivePollingEnabled }) => {
+        if (!isDrivePollingEnabled()) {
+          logger.info('Google Drive polling disabled (RUN_GOOGLE_DRIVE_POLLING != true)');
+          return;
+        }
+        startGoogleDrivePolling(10).catch((err) => {
+          logger.error('Failed to start Google Drive polling', err);
+        });
+      }).catch((err) => logger.error('Failed to load Google Drive polling worker', err));
+    } else {
+      logger.info('Google Drive polling disabled');
+    }
+
     logger.info('Queue workers are disabled in the API server process');
     logger.info('Run the dedicated worker service with `npm run start:worker` to process BullMQ jobs');
   }).on('error', (err) => {

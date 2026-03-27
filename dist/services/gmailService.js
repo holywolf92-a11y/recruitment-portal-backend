@@ -4,6 +4,9 @@ exports.REJECTED_MIMES = exports.ACCEPTED_CV_MIMES = exports.GMAIL_CV_QUERY = vo
 exports.createOAuth2ClientWithToken = createOAuth2ClientWithToken;
 exports.createOAuth2ClientForAccount2 = createOAuth2ClientForAccount2;
 exports.isAccount2Configured = isAccount2Configured;
+exports.createOAuth2ClientForAccount3 = createOAuth2ClientForAccount3;
+exports.isAccount3Configured = isAccount3Configured;
+exports.buildAccount3Query = buildAccount3Query;
 exports.isAcceptedCvMime = isAcceptedCvMime;
 exports.listMessages = listMessages;
 exports.listAllMessages = listAllMessages;
@@ -62,6 +65,45 @@ function createOAuth2ClientForAccount2() {
 /** Returns true if Account 2 is fully configured. */
 function isAccount2Configured() {
     return !!(process.env.GMAIL2_REFRESH_TOKEN);
+}
+/**
+ * Create an OAuth2 client for Account 3 (cv.falishaoep@gmail.com).
+ * Uses GMAIL3_CLIENT_ID / GMAIL3_CLIENT_SECRET / GMAIL3_REFRESH_TOKEN.
+ * Falls back to shared GMAIL_CLIENT_ID/SECRET if account-specific ones are not set.
+ */
+function createOAuth2ClientForAccount3() {
+    const refreshToken = process.env.GMAIL3_REFRESH_TOKEN;
+    if (!refreshToken) {
+        throw new errorHandling_1.AppError('GMAIL3_REFRESH_TOKEN not configured', errorHandling_1.ErrorType.VALIDATION, 500);
+    }
+    const clientId = process.env.GMAIL3_CLIENT_ID ?? process.env.GMAIL_CLIENT_ID;
+    const clientSecret = process.env.GMAIL3_CLIENT_SECRET ?? process.env.GMAIL_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+        throw new errorHandling_1.AppError('Gmail credentials not configured for account 3', errorHandling_1.ErrorType.VALIDATION, 500);
+    }
+    const oauth2Client = new googleapis_1.google.auth.OAuth2(clientId, clientSecret);
+    oauth2Client.setCredentials({ refresh_token: refreshToken });
+    return oauth2Client;
+}
+/** Returns true if Account 3 (cv.falishaoep@gmail.com) is fully configured. */
+function isAccount3Configured() {
+    return !!(process.env.GMAIL3_REFRESH_TOKEN);
+}
+/**
+ * Build a Gmail search query that respects an optional GMAIL3_LABELS env var.
+ * GMAIL3_LABELS is a comma-separated list of label names, e.g. "CVs,Applications".
+ * If not set, returns the standard GMAIL_CV_QUERY.
+ */
+function buildAccount3Query() {
+    const labelsEnv = process.env.GMAIL3_LABELS?.trim();
+    if (!labelsEnv)
+        return exports.GMAIL_CV_QUERY;
+    const labelNames = labelsEnv.split(',').map(l => l.trim()).filter(Boolean);
+    if (labelNames.length === 0)
+        return exports.GMAIL_CV_QUERY;
+    // Gmail search: "(label:CVs OR label:Applications) has:attachment ..."
+    const labelClause = labelNames.map(l => `label:${l.replace(/\s+/g, '-')}`).join(' OR ');
+    return `(${labelClause}) ${exports.GMAIL_CV_QUERY}`;
 }
 /** CV-relevant Gmail query — includes all document and image attachment types */
 exports.GMAIL_CV_QUERY = 'has:attachment (filename:pdf OR filename:doc OR filename:docx OR ' +

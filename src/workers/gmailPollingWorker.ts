@@ -10,6 +10,9 @@ import {
   createOAuth2ClientWithToken,
   createOAuth2ClientForAccount2,
   isAccount2Configured,
+  createOAuth2ClientForAccount3,
+  isAccount3Configured,
+  buildAccount3Query,
 } from '../services/gmailService';
 import { uploadCandidateDocument } from '../services/candidateDocumentService';
 import { processMissingDataEmailReply } from '../services/missingDataEmailReplyService';
@@ -32,6 +35,12 @@ export async function startGmailPolling(intervalMinutes: number = 5) {
   } else {
     logger.warn('GMAIL2_REFRESH_TOKEN not set — skipping account 2 poll');
   }
+  // Account 3 (cv.falishaoep@gmail.com) — label-filtered CV ingestion
+  if (isAccount3Configured()) {
+    await pollGmail(createOAuth2ClientForAccount3(), 3);
+  } else {
+    logger.warn('GMAIL3_REFRESH_TOKEN not set — skipping account 3 poll (cv.falishaoep@gmail.com)');
+  }
 
   // Then run every N minutes
   const intervalMs = intervalMinutes * 60 * 1000;
@@ -40,22 +49,30 @@ export async function startGmailPolling(intervalMinutes: number = 5) {
     if (isAccount2Configured()) {
       await pollGmail(createOAuth2ClientForAccount2(), 2);
     }
+    if (isAccount3Configured()) {
+      await pollGmail(createOAuth2ClientForAccount3(), 3);
+    }
   }, intervalMs);
 }
 
 /** Manually trigger one poll cycle (used by admin API). */
 export async function triggerManualPoll(): Promise<{ successCount: number; errorCount: number }> {
   const r1 = await pollGmail(undefined, 1);
+  let combined = { successCount: r1.successCount, errorCount: r1.errorCount };
   if (isAccount2Configured()) {
     const r2 = await pollGmail(createOAuth2ClientForAccount2(), 2);
-    return { successCount: r1.successCount + r2.successCount, errorCount: r1.errorCount + r2.errorCount };
+    combined = { successCount: combined.successCount + r2.successCount, errorCount: combined.errorCount + r2.errorCount };
   }
-  return r1;
+  if (isAccount3Configured()) {
+    const r3 = await pollGmail(createOAuth2ClientForAccount3(), 3);
+    combined = { successCount: combined.successCount + r3.successCount, errorCount: combined.errorCount + r3.errorCount };
+  }
+  return combined;
 }
 
 async function pollGmail(
   authClient?: ReturnType<typeof createOAuth2ClientWithToken>,
-  accountNum: 1 | 2 = 1
+  accountNum: 1 | 2 | 3 = 1
 ): Promise<{ successCount: number; errorCount: number }> {
   if (isRunning) {
     logger.debug('Gmail polling already in progress, skipping');
@@ -69,7 +86,9 @@ async function pollGmail(
     logger.info('Starting Gmail poll');
 
     // Query for messages with attachments (PDFs, DOCs, images)
-    const { messages } = await listMessages(GMAIL_CV_QUERY, 20, undefined, authClient);
+    // Account 3 uses label-filtered query based on GMAIL3_LABELS env var
+    const gmailQuery = accountNum === 3 ? buildAccount3Query() : GMAIL_CV_QUERY;
+    const { messages } = await listMessages(gmailQuery, 20, undefined, authClient);
     if (!messages || messages.length === 0) {
       logger.info('No new Gmail messages with attachments');
       isRunning = false;

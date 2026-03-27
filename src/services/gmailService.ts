@@ -77,6 +77,51 @@ export function isAccount2Configured(): boolean {
   return !!(process.env.GMAIL2_REFRESH_TOKEN);
 }
 
+/**
+ * Create an OAuth2 client for Account 3 (cv.falishaoep@gmail.com).
+ * Uses GMAIL3_CLIENT_ID / GMAIL3_CLIENT_SECRET / GMAIL3_REFRESH_TOKEN.
+ * Falls back to shared GMAIL_CLIENT_ID/SECRET if account-specific ones are not set.
+ */
+export function createOAuth2ClientForAccount3() {
+  const refreshToken = process.env.GMAIL3_REFRESH_TOKEN;
+  if (!refreshToken) {
+    throw new AppError('GMAIL3_REFRESH_TOKEN not configured', ErrorType.VALIDATION, 500);
+  }
+
+  const clientId     = process.env.GMAIL3_CLIENT_ID     ?? process.env.GMAIL_CLIENT_ID;
+  const clientSecret = process.env.GMAIL3_CLIENT_SECRET ?? process.env.GMAIL_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new AppError('Gmail credentials not configured for account 3', ErrorType.VALIDATION, 500);
+  }
+
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  return oauth2Client;
+}
+
+/** Returns true if Account 3 (cv.falishaoep@gmail.com) is fully configured. */
+export function isAccount3Configured(): boolean {
+  return !!(process.env.GMAIL3_REFRESH_TOKEN);
+}
+
+/**
+ * Build a Gmail search query that respects an optional GMAIL3_LABELS env var.
+ * GMAIL3_LABELS is a comma-separated list of label names, e.g. "CVs,Applications".
+ * If not set, returns the standard GMAIL_CV_QUERY.
+ */
+export function buildAccount3Query(): string {
+  const labelsEnv = process.env.GMAIL3_LABELS?.trim();
+  if (!labelsEnv) return GMAIL_CV_QUERY;
+
+  const labelNames = labelsEnv.split(',').map(l => l.trim()).filter(Boolean);
+  if (labelNames.length === 0) return GMAIL_CV_QUERY;
+
+  // Gmail search: "(label:CVs OR label:Applications) has:attachment ..."
+  const labelClause = labelNames.map(l => `label:${l.replace(/\s+/g, '-')}`).join(' OR ');
+  return `(${labelClause}) ${GMAIL_CV_QUERY}`;
+}
+
 /** CV-relevant Gmail query — includes all document and image attachment types */
 export const GMAIL_CV_QUERY =
   'has:attachment (filename:pdf OR filename:doc OR filename:docx OR ' +

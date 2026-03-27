@@ -24,6 +24,13 @@ async function startGmailPolling(intervalMinutes = 5) {
     else {
         logger.warn('GMAIL2_REFRESH_TOKEN not set — skipping account 2 poll');
     }
+    // Account 3 (cv.falishaoep@gmail.com) — label-filtered CV ingestion
+    if ((0, gmailService_1.isAccount3Configured)()) {
+        await pollGmail((0, gmailService_1.createOAuth2ClientForAccount3)(), 3);
+    }
+    else {
+        logger.warn('GMAIL3_REFRESH_TOKEN not set — skipping account 3 poll (cv.falishaoep@gmail.com)');
+    }
     // Then run every N minutes
     const intervalMs = intervalMinutes * 60 * 1000;
     setInterval(async () => {
@@ -31,16 +38,24 @@ async function startGmailPolling(intervalMinutes = 5) {
         if ((0, gmailService_1.isAccount2Configured)()) {
             await pollGmail((0, gmailService_1.createOAuth2ClientForAccount2)(), 2);
         }
+        if ((0, gmailService_1.isAccount3Configured)()) {
+            await pollGmail((0, gmailService_1.createOAuth2ClientForAccount3)(), 3);
+        }
     }, intervalMs);
 }
 /** Manually trigger one poll cycle (used by admin API). */
 async function triggerManualPoll() {
     const r1 = await pollGmail(undefined, 1);
+    let combined = { successCount: r1.successCount, errorCount: r1.errorCount };
     if ((0, gmailService_1.isAccount2Configured)()) {
         const r2 = await pollGmail((0, gmailService_1.createOAuth2ClientForAccount2)(), 2);
-        return { successCount: r1.successCount + r2.successCount, errorCount: r1.errorCount + r2.errorCount };
+        combined = { successCount: combined.successCount + r2.successCount, errorCount: combined.errorCount + r2.errorCount };
     }
-    return r1;
+    if ((0, gmailService_1.isAccount3Configured)()) {
+        const r3 = await pollGmail((0, gmailService_1.createOAuth2ClientForAccount3)(), 3);
+        combined = { successCount: combined.successCount + r3.successCount, errorCount: combined.errorCount + r3.errorCount };
+    }
+    return combined;
 }
 async function pollGmail(authClient, accountNum = 1) {
     if (isRunning) {
@@ -52,7 +67,9 @@ async function pollGmail(authClient, accountNum = 1) {
     try {
         logger.info('Starting Gmail poll');
         // Query for messages with attachments (PDFs, DOCs, images)
-        const { messages } = await (0, gmailService_1.listMessages)(gmailService_1.GMAIL_CV_QUERY, 20, undefined, authClient);
+        // Account 3 uses label-filtered query based on GMAIL3_LABELS env var
+        const gmailQuery = accountNum === 3 ? (0, gmailService_1.buildAccount3Query)() : gmailService_1.GMAIL_CV_QUERY;
+        const { messages } = await (0, gmailService_1.listMessages)(gmailQuery, 20, undefined, authClient);
         if (!messages || messages.length === 0) {
             logger.info('No new Gmail messages with attachments');
             isRunning = false;

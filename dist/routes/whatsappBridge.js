@@ -80,4 +80,17 @@ router.post('/sessions/:accountId/connect', (0, errorHandling_1.asyncHandler)(as
         res.status(502).json({ ok: false, error: 'bridge_unreachable', message });
     }
 }));
+router.post('/sessions/:accountId/restart', (0, errorHandling_1.asyncHandler)(async (req, res) => {
+    const accountId = encodeURIComponent(req.params.accountId);
+    try {
+        const result = await proxyBridge(`/sessions/${accountId}/restart`, {
+            method: 'POST',
+        });
+        res.status(result.status).type(result.contentType).send(result.body);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.status(502).json({ ok: false, error: 'bridge_unreachable', message });
+    }
+}));
 exports.default = router;

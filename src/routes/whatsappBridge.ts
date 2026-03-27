@@ -113,4 +113,20 @@ router.post(
     }
   })
 );
+router.post(
+  '/sessions/:accountId/cancel',
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const accountId = encodeURIComponent(req.params.accountId);
+
+    try {
+      const result = await proxyBridge(`/sessions/${accountId}/cancel`, {
+        method: 'POST',
+      });
+      res.status(result.status).type(result.contentType).send(result.body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(502).json({ ok: false, error: 'bridge_unreachable', message });
+    }
+  })
+);
 export default router;

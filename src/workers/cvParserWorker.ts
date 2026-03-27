@@ -1173,7 +1173,22 @@ export function startCvParserWorker() {
           // Create new candidate from parsed data (including identity fields) and link to attachment
           candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields, inboxMsg?.source);
           
-          // After creation, enrich with any additional data and recalculate missing fields
+          // If creation failed silently (e.g. duplicate email/CNIC), fall back to finding
+          // the existing candidate without WhatsApp corroboration restrictions.
+          if (!candidate?.id) {
+            const fallbackId = await findExistingCandidate(combinedData, {
+              requireCorroborationForContactSignals: false,
+            });
+            if (fallbackId) {
+              console.log(`[CVParser] createCandidateFromParsedData returned null -- fallback matched existing candidate ${fallbackId}. Linking attachment.`);
+              await db.from('inbox_attachments').update({ candidate_id: fallbackId, linked_candidate_id: fallbackId }).eq('id', attachmentId);
+              existingCandidateId = fallbackId;
+              const { data: fc } = await db.from('candidates').select('*').eq('id', fallbackId).maybeSingle();
+              candidate = fc;
+            }
+          }
+
+          // After creation (or fallback link), enrich with any additional data and recalculate missing fields
           if (candidate?.id) {
             try {
               await enrichCandidateData(

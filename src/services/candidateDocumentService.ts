@@ -9,8 +9,17 @@ import { randomUUID } from 'crypto';
 import { generateDescriptiveFilename } from '../utils/documentNaming';
 import { processSplitDocument } from '../utils/splitDocumentProcessor';
 import { extractProfilePhotoHybrid, uploadExtractedPhotoToCandidatePhotos } from './hybridPhotoExtractionService';
+import { extractProfilePhotoFromPdfUsingAI } from './aiProfilePhotoExtractionService';
 
 const STORAGE_BUCKET = 'documents';
+
+function hasProfilePhoto(candidate: any): boolean {
+  return !!(
+    candidate?.profile_photo_path ||
+    candidate?.profile_photo_url ||
+    (candidate?.profile_photo_bucket && candidate?.profile_photo_path)
+  );
+}
 
 export interface CandidateDocument {
   id: string;
@@ -451,6 +460,33 @@ export async function uploadCandidateDocument(
               console.error(`[UploadDocument] Failed to create candidate_document for ${splitDoc.doc_type}:`, splitDbErr);
               await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
               continue;
+            }
+
+            // Permanent safety net: if photos split remains a PDF, auto-run AI extraction now.
+            if (category === DOCUMENT_CATEGORIES.PHOTOS && processed.mimeType === 'application/pdf') {
+              try {
+                const { data: candidatePhotoState } = await db
+                  .from('candidates')
+                  .select('profile_photo_bucket, profile_photo_path, profile_photo_url')
+                  .eq('id', data.candidate_id)
+                  .maybeSingle();
+
+                if (!hasProfilePhoto(candidatePhotoState)) {
+                  const aiResult = await extractProfilePhotoFromPdfUsingAI({
+                    candidateId: data.candidate_id,
+                    documentId: createdDoc.id,
+                    maxPages: 10,
+                  });
+                  console.log(`[UploadDocument] ✅ AI extracted profile photo from split photos PDF`, {
+                    candidateId: data.candidate_id,
+                    documentId: createdDoc.id,
+                    pageUsed: aiResult.pageUsed,
+                    confidence: aiResult.confidence,
+                  });
+                }
+              } catch (aiExtractErr: any) {
+                console.warn(`[UploadDocument] AI extraction from split photos PDF failed (non-fatal):`, aiExtractErr?.message || aiExtractErr);
+              }
             }
 
             createdDocuments.push(createdDoc);

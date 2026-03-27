@@ -48,10 +48,9 @@ function isPlaceholderPhone(phone?: string | null): boolean {
 
 function hasProfilePhoto(candidate: any): boolean {
   return !!(
-    candidate?.photo_received ||
-    candidate?.profile_photo_bucket ||
     candidate?.profile_photo_path ||
-    candidate?.profile_photo_url
+    candidate?.profile_photo_url ||
+    (candidate?.profile_photo_bucket && candidate?.profile_photo_path)
   );
 }
 
@@ -1533,6 +1532,34 @@ export function startCvParserWorker() {
                   continue;
                 }
 
+                // Permanent safety net: if a photos split is still a PDF, immediately try AI extraction
+                // from that specific split document before leaving the parse flow.
+                if (category === DOCUMENT_CATEGORIES.PHOTOS && processed.mimeType === 'application/pdf') {
+                  try {
+                    const { data: candidatePhotoState } = await db
+                      .from('candidates')
+                      .select('profile_photo_bucket, profile_photo_path, profile_photo_url')
+                      .eq('id', newCandidate.id)
+                      .maybeSingle();
+
+                    if (!hasProfilePhoto(candidatePhotoState)) {
+                      const aiResult = await extractProfilePhotoFromPdfUsingAI({
+                        candidateId: newCandidate.id,
+                        documentId: createdDoc.id,
+                        maxPages: 10,
+                      });
+                      console.log(`[CVParser] ✅ AI extracted profile photo from split photos PDF`, {
+                        candidateId: newCandidate.id,
+                        documentId: createdDoc.id,
+                        pageUsed: aiResult.pageUsed,
+                        confidence: aiResult.confidence,
+                      });
+                    }
+                  } catch (aiExtractErr: any) {
+                    console.warn(`[CVParser] AI extraction from split photos PDF failed (non-fatal):`, aiExtractErr?.message || aiExtractErr);
+                  }
+                }
+
                 // Enqueue verification job (skip for auto-verified photos)
                 if (verificationStatus !== VERIFICATION_STATUS.VERIFIED) {
                   const splitRequestId = generateRequestId();
@@ -1688,6 +1715,7 @@ export function startCvParserWorker() {
                 console.log(`[CVParser] Hybrid extraction produced no photo for candidate ${newCandidate.id}. Falling back to AI page scan...`);
                 const extraction = await extractProfilePhotoFromPdfUsingAI({
                   candidateId: newCandidate.id,
+                  maxPages: 10,
                 });
                 console.log(`[CVParser] ✅ AI page scan extracted photo from CV PDF`, {
                   candidateId: newCandidate.id,

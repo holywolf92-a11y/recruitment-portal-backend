@@ -1103,6 +1103,10 @@ export function startCvParserWorker() {
           candidate = updatedCandidate;
 
           // Apply profile photo from parser response if this candidate doesn't have one yet
+          const rawPhotoUrl = parsedCandidate?.profile_photo_url || undefined;
+          const normalizedProfilePhotoUrl = typeof rawPhotoUrl === 'string' && rawPhotoUrl.trim() ? rawPhotoUrl.trim() : undefined;
+          const isProfilePhotoPdf = !!normalizedProfilePhotoUrl && normalizedProfilePhotoUrl.toLowerCase().includes('.pdf');
+
           if (!hasProfilePhoto(candidate) && normalizedProfilePhotoUrl && !isProfilePhotoPdf) {
             try {
               await db.from('candidates').update({

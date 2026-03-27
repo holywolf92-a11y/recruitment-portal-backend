@@ -1008,6 +1008,23 @@ function startCvParserWorker() {
                     .eq('id', existingCandidateId)
                     .maybeSingle();
                 candidate = updatedCandidate;
+                // Apply profile photo from parser response if this candidate doesn't have one yet
+                const rawPhotoUrl = parsedCandidate?.profile_photo_url || undefined;
+                const normalizedProfilePhotoUrl = typeof rawPhotoUrl === 'string' && rawPhotoUrl.trim() ? rawPhotoUrl.trim() : undefined;
+                const isProfilePhotoPdf = !!normalizedProfilePhotoUrl && normalizedProfilePhotoUrl.toLowerCase().includes('.pdf');
+                if (!hasProfilePhoto(candidate) && normalizedProfilePhotoUrl && !isProfilePhotoPdf) {
+                    try {
+                        await db.from('candidates').update({
+                            profile_photo_url: normalizedProfilePhotoUrl,
+                            photo_received: true,
+                            photo_received_at: new Date().toISOString(),
+                        }).eq('id', existingCandidateId);
+                        console.log(`[CVParser] ✅ Applied profile photo from parser for existing candidate ${existingCandidateId}: ${normalizedProfilePhotoUrl}`);
+                    }
+                    catch (photoApplyErr) {
+                        console.warn(`[CVParser] Failed to apply photo to existing candidate (non-fatal):`, photoApplyErr?.message || photoApplyErr);
+                    }
+                }
                 // Link attachment to existing candidate
                 await db
                     .from('inbox_attachments')

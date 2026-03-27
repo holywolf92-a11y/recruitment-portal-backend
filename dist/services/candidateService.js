@@ -271,10 +271,10 @@ async function listCandidates(filters = {}, userId) {
     if (!filters.status || filters.status !== 'Deleted') {
         query = query.neq('status', 'Deleted');
     }
-    // Global search: partial, case-insensitive, across name, passport, CNIC, email, phone (server-side)
+    // Global search: partial, case-insensitive, across name, passport, CNIC, email, phone, position (server-side)
     if (filters.search && filters.search.trim()) {
         const q = filters.search.trim();
-        query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%`);
+        query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%,position.ilike.%${q}%`);
     }
     // Apply status filter
     if (filters.status && filters.status !== 'all' && filters.status !== 'Deleted') {

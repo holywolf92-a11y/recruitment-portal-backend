@@ -26,7 +26,7 @@ const CLIENT_ID     = process.env.GMAIL_CLIENT_ID     || 'PASTE_YOUR_CLIENT_ID_H
 const CLIENT_SECRET = process.env.GMAIL_CLIENT_SECRET || 'PASTE_YOUR_CLIENT_SECRET_HERE';
 // ──────────────────────────────────────────────────────────────────────────────
 
-const REDIRECT_URI = 'http://localhost:3333';
+const REDIRECT_URI = 'http://localhost';
 
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',

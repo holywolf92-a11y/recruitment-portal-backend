@@ -747,13 +747,42 @@ export function startCvParserWorker() {
         force?: boolean;
       };
 
-      await parsingJobs.setStatus(jobId, 'processing', {
-        started_at: new Date().toISOString(),
-        attempts: (job.attemptsMade ?? 0) + 1,
-      });
-
       try {
         const db = supabaseAdminClient();
+        const updateAttachmentParsingStatus = async (
+          status: 'processing' | 'extracted' | 'failed',
+          extra?: { candidate_id?: string | null }
+        ) => {
+          const payload: Record<string, any> = { parsing_status: status };
+          if (extra && Object.prototype.hasOwnProperty.call(extra, 'candidate_id')) {
+            payload.candidate_id = extra.candidate_id;
+          }
+
+          const { error } = await db
+            .from('inbox_attachments')
+            .update(payload)
+            .eq('id', attachmentId);
+
+          if (error) {
+            console.warn(`[CVParser] Failed to sync attachment parsing_status for ${attachmentId}:`, error.message);
+          }
+        };
+
+        const setJobAndAttachmentStatus = async (
+          status: 'processing' | 'extracted' | 'failed',
+          extra?: Record<string, any>
+        ) => {
+          await parsingJobs.setStatus(jobId, status, extra);
+          const attachmentExtra = extra && Object.prototype.hasOwnProperty.call(extra, 'candidate_id')
+            ? { candidate_id: extra.candidate_id ?? null }
+            : undefined;
+          await updateAttachmentParsingStatus(status, attachmentExtra);
+        };
+
+        await setJobAndAttachmentStatus('processing', {
+          started_at: new Date().toISOString(),
+          attempts: (job.attemptsMade ?? 0) + 1,
+        });
 
         // Fetch attachment metadata + linked inbox_message to get real Gmail email date.
         // inbox_attachments.received_at is insertion time (useless for date filtering).
@@ -767,7 +796,7 @@ export function startCvParserWorker() {
           console.log(
             `[CVParser] ⏭  Skipping attachment ${attachmentId} — attachment_kind=${attachmentMeta?.attachment_kind || 'null'} is not cv`
           );
-          await parsingJobs.setStatus(jobId, 'extracted', {
+          await setJobAndAttachmentStatus('extracted', {
             finished_at: new Date().toISOString(),
             skipped_reason: 'non_cv_attachment',
             error_code: null,
@@ -813,7 +842,7 @@ export function startCvParserWorker() {
             console.log(
               `[CVParser] ⏭  Skipping pre-2024 attachment ${attachmentId} — Gmail email date ${emailDateStr} (before cutoff 2024-01-01)`
             );
-            await parsingJobs.setStatus(jobId, 'extracted', {
+            await setJobAndAttachmentStatus('extracted', {
               finished_at: new Date().toISOString(),
               skipped_reason: 'pre_2024_cutoff',
               error_code: null,
@@ -834,7 +863,7 @@ export function startCvParserWorker() {
           console.log(
             `[CVParser] ⏭  Skipping attachment ${attachmentId} — already linked to candidate ${existingId} (idempotency guard)`
           );
-          await parsingJobs.setStatus(jobId, 'extracted', {
+          await setJobAndAttachmentStatus('extracted', {
             finished_at: new Date().toISOString(),
             skipped_reason: 'already_linked',
             candidate_id: existingId,
@@ -898,7 +927,7 @@ export function startCvParserWorker() {
               .from('inbox_attachments')
               .update({ candidate_id: dupAttachment.candidate_id })
               .eq('id', attachmentId);
-            await parsingJobs.setStatus(jobId, 'extracted', {
+            await setJobAndAttachmentStatus('extracted', {
               finished_at: new Date().toISOString(),
               skipped_reason: 'duplicate_file_hash',
               candidate_id: dupAttachment.candidate_id,
@@ -993,7 +1022,7 @@ export function startCvParserWorker() {
           hasDOB: !!identityFields?.date_of_birth,
         });
 
-        await parsingJobs.setStatus(jobId, 'extracted', {
+        await setJobAndAttachmentStatus('extracted', {
           finished_at: new Date().toISOString(),
           schema_version: parsed.schema_version ?? 'v1',
           result_json: { ...parsed, identity_fields: identityFields },
@@ -1007,7 +1036,7 @@ export function startCvParserWorker() {
 
         if (!hasRealCandidateSignals(parsedCandidate, identityFields)) {
           console.log(`[CVParser] ⏭  Parsed attachment ${attachmentId} does not contain real candidate signals. Skipping candidate creation.`);
-          await parsingJobs.setStatus(jobId, 'extracted', {
+          await setJobAndAttachmentStatus('extracted', {
             finished_at: new Date().toISOString(),
             schema_version: parsed.schema_version ?? 'v1',
             result_json: { ...parsed, identity_fields: identityFields },
@@ -1825,6 +1854,16 @@ export function startCvParserWorker() {
 
         return { ok: true };
       } catch (err: any) {
+        const db = supabaseAdminClient();
+        const { error: attachmentStatusError } = await db
+          .from('inbox_attachments')
+          .update({ parsing_status: 'failed' })
+          .eq('id', attachmentId);
+
+        if (attachmentStatusError) {
+          console.warn(`[CVParser] Failed to mark attachment ${attachmentId} as failed:`, attachmentStatusError.message);
+        }
+
         await parsingJobs.setStatus(jobId, 'failed', {
           finished_at: new Date().toISOString(),
           error_code: 'PARSING_FAILED',

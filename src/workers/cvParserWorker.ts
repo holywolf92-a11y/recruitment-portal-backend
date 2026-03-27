@@ -879,6 +879,37 @@ export function startCvParserWorker() {
 
         const resolvedFileHash = fileHash ?? attachmentMeta?.sha256 ?? null;
 
+        // ── File-hash dedup: skip parser if identical CV already processed ──────────
+        if (!force && resolvedFileHash) {
+          const { data: dupAttachment } = await db
+            .from('inbox_attachments')
+            .select('id, candidate_id')
+            .eq('sha256', resolvedFileHash)
+            .not('candidate_id', 'is', null)
+            .neq('id', attachmentId)
+            .limit(1)
+            .maybeSingle();
+
+          if (dupAttachment?.candidate_id) {
+            console.log(
+              `[CVParser] ⏭  Skipping attachment ${attachmentId} — duplicate file hash (sha256 match), already linked to candidate ${dupAttachment.candidate_id}`
+            );
+            await db
+              .from('inbox_attachments')
+              .update({ candidate_id: dupAttachment.candidate_id })
+              .eq('id', attachmentId);
+            await parsingJobs.setStatus(jobId, 'extracted', {
+              finished_at: new Date().toISOString(),
+              skipped_reason: 'duplicate_file_hash',
+              candidate_id: dupAttachment.candidate_id,
+              error_code: null,
+              error_message: null,
+            });
+            return { skipped: true, reason: 'duplicate_file_hash', candidateId: dupAttachment.candidate_id };
+          }
+        }
+        // ─────────────────────────────────────────────────────────────────────────
+
         const payloadObj = {
           attachment_id: attachmentId,
           file_url: fileUrl,

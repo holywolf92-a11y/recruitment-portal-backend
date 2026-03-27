@@ -323,6 +323,17 @@ export async function extractProfilePhotoFromPdfUsingAI(args: {
     if (!best || combinedConfidence > best.locate.confidence) {
       best = { page: pageNumber, locate: { ...locate, confidence: combinedConfidence }, cropJpeg };
     }
+
+    // Early exit: confidence ≥ 0.85 is high enough — skip remaining pages to save cost.
+    if (combinedConfidence >= 0.85) {
+      logger.info('Early exit: high-confidence headshot found', {
+        candidateId: args.candidateId,
+        documentId,
+        pageNumber,
+        confidence: combinedConfidence,
+      });
+      break;
+    }
   }
 
   if (!best) {

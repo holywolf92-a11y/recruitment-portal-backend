@@ -259,7 +259,7 @@ export async function extractProfilePhotoFromPdfUsingAI(args: {
   note: string;
 }> {
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini-2024-07-18';
-  const maxPages = Math.max(1, Math.min(10, args.maxPages ?? 5));
+  const maxPages = Math.max(1, Math.min(10, args.maxPages ?? 10));
 
   const startedAt = Date.now();
   logger.info('Start', { candidateId: args.candidateId, documentId: args.documentId, maxPages, model });
@@ -286,9 +286,14 @@ export async function extractProfilePhotoFromPdfUsingAI(args: {
 
     if (!locate.found) continue;
 
-    // Basic bbox sanity.
-    const area = (locate.bbox.w ?? 0) * (locate.bbox.h ?? 0);
-    if (!Number.isFinite(area) || area < 0.01) continue;
+    // BBox quality gates: avoid tiny false positives and full-page boxes.
+    const boxW = locate.bbox.w ?? 0;
+    const boxH = locate.bbox.h ?? 0;
+    const area = boxW * boxH;
+    if (!Number.isFinite(area) || area < 0.01 || area > 0.45) continue;
+
+    const aspect = boxH > 0 ? boxW / boxH : 0;
+    if (!Number.isFinite(aspect) || aspect < 0.45 || aspect > 1.25) continue;
 
     const clip = bboxNormToClip(locate.bbox, viewport);
     const { jpeg: cropJpeg } = await renderPdfPageCropToJpeg({
@@ -318,9 +323,6 @@ export async function extractProfilePhotoFromPdfUsingAI(args: {
     if (!best || combinedConfidence > best.locate.confidence) {
       best = { page: pageNumber, locate: { ...locate, confidence: combinedConfidence }, cropJpeg };
     }
-
-    // If we're very confident, stop early.
-    if (combinedConfidence >= 0.85) break;
   }
 
   if (!best) {
@@ -380,7 +382,7 @@ export async function extractProfilePhotoFromPdfBufferUsingAI(args: {
   note: string;
 }> {
   const model = args.model || process.env.OPENAI_MODEL || 'gpt-4o-mini-2024-07-18';
-  const maxPages = Math.max(1, Math.min(10, args.maxPages ?? 5));
+  const maxPages = Math.max(1, Math.min(10, args.maxPages ?? 10));
   const startedAt = Date.now();
 
   const viewport = { width: 1000, height: 1400, deviceScaleFactor: 2 };
@@ -406,8 +408,13 @@ export async function extractProfilePhotoFromPdfBufferUsingAI(args: {
 
       if (!locate.found) continue;
 
-      const area = (locate.bbox.w ?? 0) * (locate.bbox.h ?? 0);
-      if (!Number.isFinite(area) || area < 0.01) continue;
+      const boxW = locate.bbox.w ?? 0;
+      const boxH = locate.bbox.h ?? 0;
+      const area = boxW * boxH;
+      if (!Number.isFinite(area) || area < 0.01 || area > 0.45) continue;
+
+      const aspect = boxH > 0 ? boxW / boxH : 0;
+      if (!Number.isFinite(aspect) || aspect < 0.45 || aspect > 1.25) continue;
 
       const clip = bboxNormToClip(locate.bbox, viewport);
       const { jpeg: cropJpeg } = await renderPdfPageCropToJpeg({
@@ -434,8 +441,6 @@ export async function extractProfilePhotoFromPdfBufferUsingAI(args: {
       if (!best || combinedConfidence > best.locate.confidence) {
         best = { page: pageNumber, locate: { ...locate, confidence: combinedConfidence }, cropJpeg };
       }
-
-      if (combinedConfidence >= 0.85) break;
     }
 
     if (!best) {

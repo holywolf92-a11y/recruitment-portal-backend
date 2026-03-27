@@ -58,9 +58,9 @@ export function driveExtFromMime(mimeType: string): string {
   return MIME_TO_EXT[mimeType.toLowerCase().split(';')[0].trim()] ?? 'bin';
 }
 
-/** Returns true if Drive is fully configured. */
+/** Returns true if Drive is fully configured (only needs refresh token). */
 export function isDriveConfigured(): boolean {
-  return !!(process.env.GOOGLE_DRIVE_REFRESH_TOKEN && process.env.GOOGLE_DRIVE_FOLDER_IDS);
+  return !!(process.env.GOOGLE_DRIVE_REFRESH_TOKEN);
 }
 
 /** Get the list of Drive folder IDs to watch (from GOOGLE_DRIVE_FOLDER_IDS). */
@@ -92,6 +92,53 @@ export interface DriveFile {
   size?: number;
   modifiedTime?: string;
   parents?: string[];
+}
+
+/**
+ * Search ALL of the authenticated user's Drive for CV files.
+ * Excludes videos and non-CV file types. Returns files modified after `afterDate`.
+ */
+export async function listAllDriveFiles(afterDate?: Date): Promise<DriveFile[]> {
+  const drive = createDriveClient();
+
+  const mimeConditions = Array.from(ACCEPTED_DRIVE_MIMES).map(m => `mimeType = '${m}'`);
+  let q = `trashed = false and (${mimeConditions.join(' or ')})`;
+
+  if (afterDate) {
+    const iso = afterDate.toISOString();
+    q += ` and modifiedTime > '${iso}'`;
+  }
+
+  const files: DriveFile[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await drive.files.list({
+      q,
+      fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, parents)',
+      orderBy: 'modifiedTime desc',
+      pageSize: 100,
+      ...(pageToken ? { pageToken } : {}),
+    });
+
+    const batch = res.data.files ?? [];
+    for (const f of batch) {
+      if (f.id && f.name && f.mimeType && isAcceptedDriveMime(f.mimeType)) {
+        files.push({
+          id: f.id,
+          name: f.name,
+          mimeType: f.mimeType,
+          size: f.size ? Number(f.size) : undefined,
+          modifiedTime: f.modifiedTime ?? undefined,
+          parents: f.parents ?? undefined,
+        });
+      }
+    }
+
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return files;
 }
 
 /**

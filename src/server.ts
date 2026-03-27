@@ -118,7 +118,7 @@ try {
     
     // Gmail polling is disabled — outgoing email now uses Hostinger SMTP
     if (process.env.RUN_GMAIL_POLLING === 'true') {
-      if (process.env.GMAIL_CLIENT_ID && process.env.GMAIL_REFRESH_TOKEN) {
+      if (process.env.GMAIL_CLIENT_ID && (process.env.GMAIL_REFRESH_TOKEN || process.env.GMAIL3_REFRESH_TOKEN)) {
         import('./workers/gmailPollingWorker').then(({ startGmailPolling }) => {
           startGmailPolling(5).catch((err) => {
             logger.error('Failed to start Gmail polling', err);

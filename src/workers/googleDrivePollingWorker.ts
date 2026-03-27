@@ -19,10 +19,8 @@ import { createAttachment, enqueueCvParsingJobForAttachment } from '../services/
 import { supabaseAdminClient } from '../config/database';
 import {
   isDriveConfigured,
-  getDriveFolderIds,
-  listFilesInFolder,
+  listAllDriveFiles,
   downloadDriveFile,
-  getDriveFolderName,
   driveExtFromMime,
   DriveFile,
 } from '../services/googleDriveService';
@@ -40,12 +38,11 @@ export function isDrivePollingEnabled(): boolean {
 
 export async function startGoogleDrivePolling(intervalMinutes = 10): Promise<void> {
   if (!isDriveConfigured()) {
-    logger.warn('Google Drive not configured — set GOOGLE_DRIVE_REFRESH_TOKEN and GOOGLE_DRIVE_FOLDER_IDS');
+    logger.warn('Google Drive not configured — set GOOGLE_DRIVE_REFRESH_TOKEN');
     return;
   }
 
-  const folderIds = getDriveFolderIds();
-  logger.info('Starting Google Drive polling worker', { intervalMinutes, folderCount: folderIds.length });
+  logger.info('Starting Google Drive polling worker (scanning all Drive files)', { intervalMinutes });
 
   // Initial poll
   await pollDriveFolders();
@@ -74,33 +71,19 @@ async function pollDriveFolders(force = false): Promise<{ successCount: number; 
   let skippedCount = 0;
 
   try {
-    const folderIds = getDriveFolderIds();
-    logger.info('Polling Google Drive folders', { folderCount: folderIds.length, since: lastPollTime.toISOString() });
+    logger.info('Polling Google Drive (all files)', { since: lastPollTime.toISOString() });
 
-    for (const folderId of folderIds) {
+    const files = await listAllDriveFiles(lastPollTime);
+    logger.info(`Found ${files.length} new file(s) in Google Drive`, { count: files.length });
+
+    for (const file of files) {
       try {
-        const folderName = await getDriveFolderName(folderId);
-        const files = await listFilesInFolder(folderId, lastPollTime);
-
-        if (files.length === 0) {
-          logger.debug('No new files in Drive folder', { folderId, folderName });
-          continue;
-        }
-
-        logger.info(`Found ${files.length} new file(s) in Drive folder`, { folderId, folderName });
-
-        for (const file of files) {
-          try {
-            const result = await processDriveFile(file, folderId, folderName);
-            if (result === 'processed') successCount++;
-            else if (result === 'skipped') skippedCount++;
-          } catch (err: any) {
-            logger.error('Failed to process Drive file', { fileId: file.id, fileName: file.name, error: err?.message });
-            errorCount++;
-          }
-        }
+        const folderId = file.parents?.[0] ?? 'root';
+        const result = await processDriveFile(file, folderId, 'Google Drive');
+        if (result === 'processed') successCount++;
+        else if (result === 'skipped') skippedCount++;
       } catch (err: any) {
-        logger.error('Failed to poll Drive folder', { folderId, error: err?.message });
+        logger.error('Failed to process Drive file', { fileId: file.id, fileName: file.name, error: err?.message });
         errorCount++;
       }
     }

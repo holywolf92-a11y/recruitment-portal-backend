@@ -82,10 +82,49 @@ function isPlaceholderPhone(phone) {
     return digits === '1234567890';
 }
 function hasProfilePhoto(candidate) {
-    return !!(candidate?.photo_received ||
-        candidate?.profile_photo_bucket ||
-        candidate?.profile_photo_path ||
-        candidate?.profile_photo_url);
+    return !!(candidate?.profile_photo_path ||
+        candidate?.profile_photo_url ||
+        (candidate?.profile_photo_bucket && candidate?.profile_photo_path));
+}
+function hasMeaningfulText(value) {
+    if (typeof value !== 'string')
+        return false;
+    const normalized = value.trim();
+    if (!normalized)
+        return false;
+    const lower = normalized.toLowerCase();
+    return !['unknown', 'n/a', 'na', 'none', 'null', 'undefined', 'not provided', 'missing'].includes(lower);
+}
+function hasRealCandidateSignals(parsedCandidate, identityFields) {
+    const primaryIdentitySignals = [
+        identityFields?.cnic,
+        identityFields?.passport_no,
+        identityFields?.email,
+        identityFields?.phone,
+        parsedCandidate?.cnic,
+        parsedCandidate?.passport,
+        parsedCandidate?.passport_no,
+        parsedCandidate?.email,
+        parsedCandidate?.phone,
+    ].some(hasMeaningfulText);
+    const nameSignal = [
+        parsedCandidate?.full_name,
+        parsedCandidate?.name,
+        identityFields?.name,
+    ].some(hasMeaningfulText);
+    const profileSignals = [
+        parsedCandidate?.position,
+        parsedCandidate?.professional_summary,
+        parsedCandidate?.summary,
+        parsedCandidate?.country_of_interest,
+    ].some(hasMeaningfulText);
+    const structuredSignals = (Array.isArray(parsedCandidate?.skills) && parsedCandidate.skills.length > 0) ||
+        (Array.isArray(parsedCandidate?.education) && parsedCandidate.education.length > 0) ||
+        (Array.isArray(parsedCandidate?.experience) && parsedCandidate.experience.length > 0) ||
+        (Array.isArray(parsedCandidate?.languages) && parsedCandidate.languages.length > 0) ||
+        (Array.isArray(parsedCandidate?.certifications) && parsedCandidate.certifications.length > 0) ||
+        (typeof parsedCandidate?.experience_years === 'number' && parsedCandidate.experience_years > 0);
+    return primaryIdentitySignals || (nameSignal && (profileSignals || structuredSignals));
 }
 function normalizeWhatsAppTo(phoneRaw) {
     if (!phoneRaw)
@@ -186,7 +225,7 @@ function trunc(value, maxLen) {
     return value.length > maxLen ? value.slice(0, maxLen) : value;
 }
 // Helper to create candidate from parsed CV data
-async function createCandidateFromParsedData(parsed, attachmentId, identityFields) {
+async function createCandidateFromParsedData(parsed, attachmentId, identityFields, messageSource) {
     try {
         const candidate = parsed.candidate || {};
         // Parse date of birth from various formats
@@ -250,6 +289,8 @@ async function createCandidateFromParsedData(parsed, attachmentId, identityField
             professional_summary: candidate.professional_summary || candidate.summary || undefined,
             // Pass through profile_photo_url from parser response if present (ignore PDF links)
             profile_photo_url: isProfilePhotoPdf ? undefined : normalizedProfilePhotoUrl,
+            source: messageSource === 'whatsapp' ? 'WhatsApp' : messageSource === 'gmail' ? 'Email' : 'Manual',
+            auto_extracted: true,
         };
         // Create candidate (system-created, no specific userId)
         const newCandidate = await (0, candidateService_1.createCandidate)(candidateData);
@@ -269,6 +310,47 @@ async function createCandidateFromParsedData(parsed, attachmentId, identityField
 }
 function startCvParserWorker() {
     const parsingJobs = new parsingJobsService_1.ParsingJobsService();
+    async function reconcileAttachmentCandidateOwnership(candidateId, attachmentId) {
+        try {
+            const db = (0, database_1.supabaseAdminClient)();
+            const { data: existingDocs, error: existingDocsError } = await db
+                .from('candidate_documents')
+                .select('id, candidate_id')
+                .eq('inbox_attachment_id', attachmentId);
+            if (existingDocsError) {
+                console.warn('[CVParser] Failed to inspect existing candidate_documents ownership (non-fatal):', existingDocsError);
+            }
+            else {
+                const needsReassignment = (existingDocs || []).some((doc) => doc?.candidate_id && doc.candidate_id !== candidateId);
+                if (needsReassignment) {
+                    const { error: docUpdateError } = await db
+                        .from('candidate_documents')
+                        .update({ candidate_id: candidateId })
+                        .eq('inbox_attachment_id', attachmentId)
+                        .neq('candidate_id', candidateId);
+                    if (docUpdateError) {
+                        console.warn('[CVParser] Failed to reassign candidate_documents for attachment (non-fatal):', docUpdateError);
+                    }
+                    else {
+                        console.log(`[CVParser] Reassigned candidate_documents for attachment ${attachmentId} to candidate ${candidateId}`);
+                    }
+                }
+            }
+            const { error: attachmentUpdateError } = await db
+                .from('inbox_attachments')
+                .update({
+                candidate_id: candidateId,
+                linked_candidate_id: candidateId,
+            })
+                .eq('id', attachmentId);
+            if (attachmentUpdateError) {
+                console.warn('[CVParser] Failed to synchronize inbox attachment candidate ownership (non-fatal):', attachmentUpdateError);
+            }
+        }
+        catch (err) {
+            console.warn('[CVParser] Attachment ownership reconciliation failed (non-fatal):', err);
+        }
+    }
     async function maybeAttachGmailThreadToCandidate(candidateId, attachmentId) {
         try {
             const db2 = (0, database_1.supabaseAdminClient)();
@@ -631,9 +713,19 @@ function startCvParserWorker() {
             // The actual email date lives in inbox_messages.payload->>'internalDate' (Unix ms from Gmail API).
             const { data: attachmentMeta, error: attachmentMetaError } = await db
                 .from('inbox_attachments')
-                .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status, inbox_message_id, inbox_messages(payload, source)')
+                .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status, attachment_kind, attachment_type, inbox_message_id, inbox_messages(payload, source)')
                 .eq('id', attachmentId)
                 .maybeSingle();
+            if (!force && attachmentMeta?.attachment_kind !== 'cv') {
+                console.log(`[CVParser] ⏭  Skipping attachment ${attachmentId} — attachment_kind=${attachmentMeta?.attachment_kind || 'null'} is not cv`);
+                await parsingJobs.setStatus(jobId, 'extracted', {
+                    finished_at: new Date().toISOString(),
+                    skipped_reason: 'non_cv_attachment',
+                    error_code: null,
+                    error_message: null,
+                });
+                return { skipped: true, reason: 'non_cv_attachment' };
+            }
             if (attachmentMetaError) {
                 throw new Error(`Failed to fetch attachment metadata: ${attachmentMetaError.message}`);
             }
@@ -772,44 +864,30 @@ function startCvParserWorker() {
                 const fallbackParsed = await fallbackRes.json();
                 parsed = fallbackParsed?.data ?? fallbackParsed;
             }
-            // Step 2: Also categorize document to extract identity fields (father_name, cnic, passport, date_of_birth, etc.)
-            // This is important because CVs often contain personal information
-            // Note: categorize-document needs file_content (base64), not file_url
-            let identityFields = null;
-            try {
-                const categorizePayload = JSON.stringify({
-                    file_content: fileBase64,
-                    file_name: fileName,
-                    mime_type: mimeType,
-                });
-                const categorizeRes = await fetch(`${PY_URL}/categorize-document`, {
-                    method: 'POST',
-                    headers: {
-                        'content-type': 'application/json',
-                        'x-hmac-signature': signHmac(categorizePayload),
-                    },
-                    body: categorizePayload,
-                });
-                if (categorizeRes.ok) {
-                    const categorizeResult = await categorizeRes.json();
-                    identityFields = categorizeResult.identity_fields || null;
-                    console.log(`[CVParser] Extracted identity fields from CV:`, {
-                        hasName: !!identityFields?.name,
-                        hasFatherName: !!identityFields?.father_name,
-                        hasCNIC: !!identityFields?.cnic,
-                        hasPassport: !!identityFields?.passport_no,
-                        hasDOB: !!identityFields?.date_of_birth,
-                    });
-                }
-                else {
-                    const errorText = await categorizeRes.text();
-                    console.warn(`[CVParser] Failed to categorize CV for identity extraction: ${categorizeRes.status} - ${errorText.slice(0, 200)}`);
-                }
-            }
-            catch (categorizeError) {
-                // Log but don't fail - identity extraction is optional
-                console.warn(`[CVParser] Error extracting identity fields from CV:`, categorizeError?.message);
-            }
+            const parsedCandidate = parsed.candidate || {};
+            const parsedIdentityFields = {
+                name: parsedCandidate.full_name || parsedCandidate.name || null,
+                father_name: parsedCandidate.father_name || null,
+                cnic: parsedCandidate.cnic || null,
+                passport_no: parsedCandidate.passport || parsedCandidate.passport_no || null,
+                email: parsedCandidate.email || null,
+                phone: parsedCandidate.phone || null,
+                date_of_birth: parsedCandidate.date_of_birth || null,
+                dob: parsedCandidate.date_of_birth || parsedCandidate.dob || null,
+                nationality: parsedCandidate.nationality || null,
+                passport_expiry: parsedCandidate.passport_expiry || null,
+                expiry_date: parsedCandidate.passport_expiry || parsedCandidate.expiry_date || null,
+            };
+            const identityFields = Object.values(parsedIdentityFields).some((value) => Boolean(value))
+                ? parsedIdentityFields
+                : null;
+            console.log(`[CVParser] Using identity fields extracted during CV parse:`, {
+                hasName: !!identityFields?.name,
+                hasFatherName: !!identityFields?.father_name,
+                hasCNIC: !!identityFields?.cnic,
+                hasPassport: !!identityFields?.passport_no,
+                hasDOB: !!identityFields?.date_of_birth,
+            });
             await parsingJobs.setStatus(jobId, 'extracted', {
                 finished_at: new Date().toISOString(),
                 schema_version: parsed.schema_version ?? 'v1',
@@ -820,8 +898,19 @@ function startCvParserWorker() {
             // Use progressive completion service to find existing candidate
             // Priority: CNIC > Passport > Email/Phone > Name + Father Name + DOB
             const { findExistingCandidate, enrichCandidateData, updateMissingFields } = await Promise.resolve().then(() => __importStar(require('../services/progressiveDataCompletionService')));
-            // Combine data from both sources (parse-cv and categorize-document)
-            const parsedCandidate = parsed.candidate || {};
+            if (!hasRealCandidateSignals(parsedCandidate, identityFields)) {
+                console.log(`[CVParser] ⏭  Parsed attachment ${attachmentId} does not contain real candidate signals. Skipping candidate creation.`);
+                await parsingJobs.setStatus(jobId, 'extracted', {
+                    finished_at: new Date().toISOString(),
+                    schema_version: parsed.schema_version ?? 'v1',
+                    result_json: { ...parsed, identity_fields: identityFields },
+                    skipped_reason: 'insufficient_candidate_signals',
+                    error_code: null,
+                    error_message: null,
+                });
+                return { skipped: true, reason: 'insufficient_candidate_signals' };
+            }
+            // Combine data from the CV parse and normalized identity fields.
             const derivedPreviousEmployment = typeof parsedCandidate.previous_employment === 'string' && parsedCandidate.previous_employment.trim()
                 ? parsedCandidate.previous_employment
                 : buildPreviousEmploymentFromExperience(parsedCandidate.experience);
@@ -888,10 +977,17 @@ function startCvParserWorker() {
             // multiple candidates, so a shared phone/email is not strong enough to
             // auto-link on its own.
             const requireCorroborationForContactSignals = inboxMsg?.source === 'whatsapp';
-            // Find existing candidate using progressive completion matching
-            const existingCandidateId = await findExistingCandidate(combinedData, {
+            // Find existing candidate using progressive completion matching.
+            // If force=true and the attachment is already linked to a candidate, use that
+            // ID directly — progressive matching may fail (e.g. WhatsApp corroboration rules)
+            // when the candidate was already identified by an earlier verification step.
+            let existingCandidateId = await findExistingCandidate(combinedData, {
                 requireCorroborationForContactSignals,
             });
+            if (!existingCandidateId && force && attachmentMeta?.candidate_id) {
+                console.log(`[CVParser] Progressive match returned no result; using attachment's linked candidate ${attachmentMeta.candidate_id} (force=true)`);
+                existingCandidateId = attachmentMeta.candidate_id;
+            }
             let candidate;
             if (existingCandidateId) {
                 // Update existing candidate using progressive completion
@@ -919,6 +1015,7 @@ function startCvParserWorker() {
                     .eq('id', attachmentId);
                 // Persist Gmail thread identity (if this CV came via Gmail)
                 await maybeAttachGmailThreadToCandidate(existingCandidateId, attachmentId);
+                await reconcileAttachmentCandidateOwnership(existingCandidateId, attachmentId);
                 // Detect backfill: suppress immediate missing-data email to avoid mass spam on historical imports
                 const { backfill: isBackfill } = await getInboxPayloadForAttachment(attachmentId);
                 // Fetch updated candidate to check if gmail_thread_id was set
@@ -975,12 +1072,13 @@ function startCvParserWorker() {
             }
             else {
                 // Create new candidate from parsed data (including identity fields) and link to attachment
-                candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields);
+                candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields, inboxMsg?.source);
                 // After creation, enrich with any additional data and recalculate missing fields
                 if (candidate?.id) {
                     try {
                         await enrichCandidateData(candidate.id, combinedData, 'cv', attachmentId, 'cv');
                         await updateMissingFields(candidate.id);
+                        await reconcileAttachmentCandidateOwnership(candidate.id, attachmentId);
                         // Persist Gmail thread identity (if this CV came via Gmail)
                         await maybeAttachGmailThreadToCandidate(candidate.id, attachmentId);
                         // Detect backfill: suppress immediate missing-data email to avoid mass spam on historical imports
@@ -1289,6 +1387,33 @@ function startCvParserWorker() {
                                     await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
                                     continue;
                                 }
+                                // Permanent safety net: if a photos split is still a PDF, immediately try AI extraction
+                                // from that specific split document before leaving the parse flow.
+                                if (category === documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS && processed.mimeType === 'application/pdf') {
+                                    try {
+                                        const { data: candidatePhotoState } = await db
+                                            .from('candidates')
+                                            .select('profile_photo_bucket, profile_photo_path, profile_photo_url')
+                                            .eq('id', newCandidate.id)
+                                            .maybeSingle();
+                                        if (!hasProfilePhoto(candidatePhotoState)) {
+                                            const aiResult = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfUsingAI)({
+                                                candidateId: newCandidate.id,
+                                                documentId: createdDoc.id,
+                                                maxPages: 10,
+                                            });
+                                            console.log(`[CVParser] ✅ AI extracted profile photo from split photos PDF`, {
+                                                candidateId: newCandidate.id,
+                                                documentId: createdDoc.id,
+                                                pageUsed: aiResult.pageUsed,
+                                                confidence: aiResult.confidence,
+                                            });
+                                        }
+                                    }
+                                    catch (aiExtractErr) {
+                                        console.warn(`[CVParser] AI extraction from split photos PDF failed (non-fatal):`, aiExtractErr?.message || aiExtractErr);
+                                    }
+                                }
                                 // Enqueue verification job (skip for auto-verified photos)
                                 if (verificationStatus !== documentCategories_1.VERIFICATION_STATUS.VERIFIED) {
                                     const splitRequestId = (0, documentVerificationLogService_1.generateRequestId)();
@@ -1430,6 +1555,7 @@ function startCvParserWorker() {
                             console.log(`[CVParser] Hybrid extraction produced no photo for candidate ${newCandidate.id}. Falling back to AI page scan...`);
                             const extraction = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfUsingAI)({
                                 candidateId: newCandidate.id,
+                                maxPages: 10,
                             });
                             console.log(`[CVParser] ✅ AI page scan extracted photo from CV PDF`, {
                                 candidateId: newCandidate.id,

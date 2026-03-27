@@ -56,7 +56,13 @@ const crypto_2 = require("crypto");
 const documentNaming_1 = require("../utils/documentNaming");
 const splitDocumentProcessor_1 = require("../utils/splitDocumentProcessor");
 const hybridPhotoExtractionService_1 = require("./hybridPhotoExtractionService");
+const aiProfilePhotoExtractionService_1 = require("./aiProfilePhotoExtractionService");
 const STORAGE_BUCKET = 'documents';
+function hasProfilePhoto(candidate) {
+    return !!(candidate?.profile_photo_path ||
+        candidate?.profile_photo_url ||
+        (candidate?.profile_photo_bucket && candidate?.profile_photo_path));
+}
 /**
  * Format document response with rejection details for API
  * Includes rejection object for ALL document types when status is rejected_mismatch or failed
@@ -392,6 +398,32 @@ async function uploadCandidateDocument(data) {
                             console.error(`[UploadDocument] Failed to create candidate_document for ${splitDoc.doc_type}:`, splitDbErr);
                             await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
                             continue;
+                        }
+                        // Permanent safety net: if photos split remains a PDF, auto-run AI extraction now.
+                        if (category === documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS && processed.mimeType === 'application/pdf') {
+                            try {
+                                const { data: candidatePhotoState } = await db
+                                    .from('candidates')
+                                    .select('profile_photo_bucket, profile_photo_path, profile_photo_url')
+                                    .eq('id', data.candidate_id)
+                                    .maybeSingle();
+                                if (!hasProfilePhoto(candidatePhotoState)) {
+                                    const aiResult = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfUsingAI)({
+                                        candidateId: data.candidate_id,
+                                        documentId: createdDoc.id,
+                                        maxPages: 10,
+                                    });
+                                    console.log(`[UploadDocument] ✅ AI extracted profile photo from split photos PDF`, {
+                                        candidateId: data.candidate_id,
+                                        documentId: createdDoc.id,
+                                        pageUsed: aiResult.pageUsed,
+                                        confidence: aiResult.confidence,
+                                    });
+                                }
+                            }
+                            catch (aiExtractErr) {
+                                console.warn(`[UploadDocument] AI extraction from split photos PDF failed (non-fatal):`, aiExtractErr?.message || aiExtractErr);
+                            }
                         }
                         createdDocuments.push(createdDoc);
                         // Enqueue AI verification job for this split document (skip for auto-verified photos)

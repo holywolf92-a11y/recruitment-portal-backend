@@ -117,7 +117,7 @@ async function isAlreadyProcessed(gmailMessageId: string): Promise<boolean> {
 async function processOne(
   gmailMessageId: string,
   authClient?: ReturnType<typeof createOAuth2ClientWithToken>,
-  account: 1 | 2 = 1
+  account: 1 | 2 | 3 = 1
 ): Promise<'skipped' | 'processed' | 'error'> {
   try {
     // Idempotency: skip already-stored messages
@@ -282,10 +282,10 @@ export interface BackfillOptions {
    */
   pageDelayMs?: number;
   /**
-   * Gmail account number (1 = falishamanpower4035, 2 = falishaoep4035).
+   * Gmail account number (1 = falishamanpower4035, 2 = falishaoep4035, 3 = cv.falishaoep@gmail.com).
    * Used to tag inbox_messages so replies are routed back through the correct account.
    */
-  account?: 1 | 2;
+  account?: 1 | 2 | 3;
   /**
    * Optional pre-built OAuth2 client (for polling a second Gmail account).
    * If omitted, uses the default GMAIL_REFRESH_TOKEN account.
@@ -309,7 +309,7 @@ export async function startGmailBackfill(opts: BackfillOptions = {}): Promise<Ba
   const maxTotal    = opts.maxTotal    ?? 10_000;
   const delayMs     = opts.delayMs     ?? 300;   // 300ms between messages (safe: ~3 msgs/s)
   const pageDelayMs = opts.pageDelayMs ?? 1_000; // 1s between pages (enterprise-safe)
-  const account     = opts.account     ?? 1;
+  const account     = (opts.account ?? 1) as 1 | 2 | 3;
   const authClient  = opts.authClient;
 
   logger.info('Starting Gmail historical backfill', {

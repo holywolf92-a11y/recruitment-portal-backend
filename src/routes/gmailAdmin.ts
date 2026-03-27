@@ -21,6 +21,8 @@ import {
   createOAuth2ClientWithToken,
   createOAuth2ClientForAccount2,
   isAccount2Configured,
+  createOAuth2ClientForAccount3,
+  isAccount3Configured,
 } from '../services/gmailService';
 
 async function testConnection2() {
@@ -133,7 +135,7 @@ router.post(
     const afterDate = afterStr ? new Date(afterStr) : undefined;
     const beforeDate = beforeStr ? new Date(beforeStr) : undefined;
 
-    // Support account=2 to backfill the second Gmail account
+    // Support account=2 or account=3 to backfill additional Gmail accounts
     let authClient: ReturnType<typeof createOAuth2ClientWithToken> | undefined;
     if (account === 2 || account === '2') {
       if (!isAccount2Configured()) {
@@ -141,6 +143,12 @@ router.post(
       }
       authClient = createOAuth2ClientForAccount2();
       logger.info('Backfill using account 2 (falishaoep4035@gmail.com)');
+    } else if (account === 3 || account === '3') {
+      if (!isAccount3Configured()) {
+        return res.status(400).json({ error: 'GMAIL3_REFRESH_TOKEN not configured' });
+      }
+      authClient = createOAuth2ClientForAccount3();
+      logger.info('Backfill using account 3 (cv.falishaoep@gmail.com)');
     }
 
     if (afterDate && isNaN(afterDate.getTime())) {
@@ -152,13 +160,17 @@ router.post(
 
     logger.info('Gmail backfill start requested', { afterDate, beforeDate, batchSize, maxTotal });
 
+    const accountNum: 1 | 2 | 3 =
+      (account === 3 || account === '3') ? 3 :
+      (account === 2 || account === '2') ? 2 : 1;
+
     const initialState = await startGmailBackfill({
       afterDate,
       beforeDate,
       batchSize: batchSize ? Number(batchSize) : undefined,
       maxTotal: maxTotal ? Number(maxTotal) : undefined,
       delayMs: delayMs !== undefined ? Number(delayMs) : undefined,
-      account: (account === 2 || account === '2') ? 2 : 1,
+      account: accountNum,
       authClient,
     }).catch((err: Error) => {
       return res.status(409).json({ error: err.message });

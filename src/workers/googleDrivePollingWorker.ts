@@ -29,8 +29,8 @@ const logger = createLogger('GoogleDrivePollingWorker');
 
 let isDriveRunning = false;
 
-/** How far back to look on the very first poll (24 hours). After that, only new files. */
-let lastPollTime: Date = new Date(Date.now() - 24 * 60 * 60 * 1000);
+/** How far back to look on the very first poll — scan everything since Jan 1 2024. After that, only new files. */
+let lastPollTime: Date = new Date('2024-01-01T00:00:00.000Z');
 
 export function isDrivePollingEnabled(): boolean {
   return process.env.RUN_GOOGLE_DRIVE_POLLING === 'true';

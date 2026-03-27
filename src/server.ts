@@ -124,6 +124,39 @@ try {
             logger.error('Failed to start Gmail polling', err);
           });
         }).catch((err) => logger.error('Failed to load Gmail polling worker', err));
+
+        // Auto-trigger historical backfill from 2024-01-01 for all configured accounts.
+        // The backfill worker is idempotent — already-processed messages are skipped.
+        import('./workers/gmailBackfillWorker').then(async ({ startGmailBackfill }) => {
+          const { createOAuth2ClientForAccount2, isAccount2Configured, createOAuth2ClientForAccount3, isAccount3Configured } =
+            await import('./services/gmailService');
+          const since2024 = new Date('2024-01-01T00:00:00.000Z');
+
+          // Account 1 backfill
+          if (process.env.GMAIL_REFRESH_TOKEN) {
+            startGmailBackfill({ afterDate: since2024, account: 1, maxTotal: 50_000 })
+              .then(() => logger.info('Gmail account 1 historical backfill started (2024-present)'))
+              .catch((err) => logger.warn('Gmail account 1 backfill skipped (may already be running)', { msg: err?.message }));
+          }
+
+          // Account 2 backfill
+          if (isAccount2Configured()) {
+            setTimeout(() => {
+              startGmailBackfill({ afterDate: since2024, account: 2, authClient: createOAuth2ClientForAccount2(), maxTotal: 50_000 })
+                .then(() => logger.info('Gmail account 2 historical backfill started (2024-present)'))
+                .catch((err) => logger.warn('Gmail account 2 backfill skipped', { msg: err?.message }));
+            }, 5 * 60 * 1000); // start after account 1 has had 5 min head start
+          }
+
+          // Account 3 backfill
+          if (isAccount3Configured()) {
+            setTimeout(() => {
+              startGmailBackfill({ afterDate: since2024, account: 3, authClient: createOAuth2ClientForAccount3(), maxTotal: 50_000 })
+                .then(() => logger.info('Gmail account 3 historical backfill started (2024-present)'))
+                .catch((err) => logger.warn('Gmail account 3 backfill skipped', { msg: err?.message }));
+            }, 10 * 60 * 1000); // start after account 2 has had 5 min
+          }
+        }).catch((err) => logger.error('Failed to load backfill worker for 2024 historical scan', err));
       } else {
         logger.warn('RUN_GMAIL_POLLING=true but Gmail credentials are missing; polling disabled');
       }

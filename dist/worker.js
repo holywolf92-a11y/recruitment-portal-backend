@@ -79,6 +79,35 @@ async function main() {
     else {
         logger.warn('Skipping WhatsApp media worker (WHATSAPP_ACCESS_TOKEN missing)');
     }
+    // ── Gmail polling (Account 3: cv.falishaoep@gmail.com) ────────────────────
+    if (process.env.RUN_GMAIL_POLLING === 'true') {
+        if (process.env.GMAIL_CLIENT_ID && (process.env.GMAIL_REFRESH_TOKEN || process.env.GMAIL3_REFRESH_TOKEN)) {
+            const { startGmailPolling } = await Promise.resolve().then(() => __importStar(require('./workers/gmailPollingWorker')));
+            startGmailPolling(5).catch((err) => logger.error('Failed to start Gmail polling', err));
+            startedWorkers.push('gmail-polling');
+            // Historical backfill from 2024-01-01 — Account 3 only
+            const { startGmailBackfill } = await Promise.resolve().then(() => __importStar(require('./workers/gmailBackfillWorker')));
+            const { createOAuth2ClientForAccount3, isAccount3Configured } = await Promise.resolve().then(() => __importStar(require('./services/gmailService')));
+            const since2024 = new Date('2024-01-01T00:00:00.000Z');
+            if (isAccount3Configured()) {
+                startGmailBackfill({ afterDate: since2024, account: 3, authClient: createOAuth2ClientForAccount3(), maxTotal: 50000 })
+                    .then(() => logger.info('Gmail account 3 (cv.falishaoep@gmail.com) historical backfill started (2024-present)'))
+                    .catch((err) => logger.warn('Gmail account 3 backfill skipped (may already be running)', { msg: err?.message }));
+            }
+            else {
+                logger.warn('GMAIL3_REFRESH_TOKEN not set — skipping historical backfill for cv.falishaoep@gmail.com');
+            }
+        }
+        else {
+            logger.warn('RUN_GMAIL_POLLING=true but GMAIL_CLIENT_ID / refresh token missing');
+        }
+    }
+    // ── Google Drive polling (cv.falishaoep@gmail.com Drive) ──────────────────
+    if (process.env.RUN_GOOGLE_DRIVE_POLLING === 'true') {
+        const { startGoogleDrivePolling } = await Promise.resolve().then(() => __importStar(require('./workers/googleDrivePollingWorker')));
+        startGoogleDrivePolling(10).catch((err) => logger.error('Failed to start Google Drive polling', err));
+        startedWorkers.push('google-drive-polling');
+    }
     logger.info('Dedicated worker service started', { workers: startedWorkers });
 }
 main().catch((error) => {

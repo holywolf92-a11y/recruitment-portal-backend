@@ -130,7 +130,7 @@ router.post('/backfill/start', requireAdminToken, (0, errorHandling_1.asyncHandl
     const { afterDate: afterStr, beforeDate: beforeStr, batchSize, maxTotal, delayMs, account, } = req.body || {};
     const afterDate = afterStr ? new Date(afterStr) : undefined;
     const beforeDate = beforeStr ? new Date(beforeStr) : undefined;
-    // Support account=2 to backfill the second Gmail account
+    // Support account=2 or account=3 to backfill additional Gmail accounts
     let authClient;
     if (account === 2 || account === '2') {
         if (!(0, gmailService_1.isAccount2Configured)()) {
@@ -139,6 +139,13 @@ router.post('/backfill/start', requireAdminToken, (0, errorHandling_1.asyncHandl
         authClient = (0, gmailService_1.createOAuth2ClientForAccount2)();
         logger.info('Backfill using account 2 (falishaoep4035@gmail.com)');
     }
+    else if (account === 3 || account === '3') {
+        if (!(0, gmailService_1.isAccount3Configured)()) {
+            return res.status(400).json({ error: 'GMAIL3_REFRESH_TOKEN not configured' });
+        }
+        authClient = (0, gmailService_1.createOAuth2ClientForAccount3)();
+        logger.info('Backfill using account 3 (cv.falishaoep@gmail.com)');
+    }
     if (afterDate && isNaN(afterDate.getTime())) {
         return res.status(400).json({ error: 'Invalid afterDate — use ISO format e.g. 2024-01-01' });
     }
@@ -146,13 +153,15 @@ router.post('/backfill/start', requireAdminToken, (0, errorHandling_1.asyncHandl
         return res.status(400).json({ error: 'Invalid beforeDate — use ISO format e.g. 2026-01-01' });
     }
     logger.info('Gmail backfill start requested', { afterDate, beforeDate, batchSize, maxTotal });
+    const accountNum = (account === 3 || account === '3') ? 3 :
+        (account === 2 || account === '2') ? 2 : 1;
     const initialState = await (0, gmailBackfillWorker_1.startGmailBackfill)({
         afterDate,
         beforeDate,
         batchSize: batchSize ? Number(batchSize) : undefined,
         maxTotal: maxTotal ? Number(maxTotal) : undefined,
         delayMs: delayMs !== undefined ? Number(delayMs) : undefined,
-        account: (account === 2 || account === '2') ? 2 : 1,
+        account: accountNum,
         authClient,
     }).catch((err) => {
         return res.status(409).json({ error: err.message });

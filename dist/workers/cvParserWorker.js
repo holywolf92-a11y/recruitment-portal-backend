@@ -702,12 +702,32 @@ function startCvParserWorker() {
     }
     const worker = new bullmq_1.Worker('cv-parsing', async (job) => {
         const { jobId, attachmentId, fileHash, force } = job.data;
-        await parsingJobs.setStatus(jobId, 'processing', {
-            started_at: new Date().toISOString(),
-            attempts: (job.attemptsMade ?? 0) + 1,
-        });
         try {
             const db = (0, database_1.supabaseAdminClient)();
+            const updateAttachmentParsingStatus = async (status, extra) => {
+                const payload = { parsing_status: status };
+                if (extra && Object.prototype.hasOwnProperty.call(extra, 'candidate_id')) {
+                    payload.candidate_id = extra.candidate_id;
+                }
+                const { error } = await db
+                    .from('inbox_attachments')
+                    .update(payload)
+                    .eq('id', attachmentId);
+                if (error) {
+                    console.warn(`[CVParser] Failed to sync attachment parsing_status for ${attachmentId}:`, error.message);
+                }
+            };
+            const setJobAndAttachmentStatus = async (status, extra) => {
+                await parsingJobs.setStatus(jobId, status, extra);
+                const attachmentExtra = extra && Object.prototype.hasOwnProperty.call(extra, 'candidate_id')
+                    ? { candidate_id: extra.candidate_id ?? null }
+                    : undefined;
+                await updateAttachmentParsingStatus(status, attachmentExtra);
+            };
+            await setJobAndAttachmentStatus('processing', {
+                started_at: new Date().toISOString(),
+                attempts: (job.attemptsMade ?? 0) + 1,
+            });
             // Fetch attachment metadata + linked inbox_message to get real Gmail email date.
             // inbox_attachments.received_at is insertion time (useless for date filtering).
             // The actual email date lives in inbox_messages.payload->>'internalDate' (Unix ms from Gmail API).
@@ -718,7 +738,7 @@ function startCvParserWorker() {
                 .maybeSingle();
             if (!force && attachmentMeta?.attachment_kind !== 'cv') {
                 console.log(`[CVParser] ⏭  Skipping attachment ${attachmentId} — attachment_kind=${attachmentMeta?.attachment_kind || 'null'} is not cv`);
-                await parsingJobs.setStatus(jobId, 'extracted', {
+                await setJobAndAttachmentStatus('extracted', {
                     finished_at: new Date().toISOString(),
                     skipped_reason: 'non_cv_attachment',
                     error_code: null,
@@ -758,7 +778,7 @@ function startCvParserWorker() {
                 if (emailDateMs && emailDateMs < CV_CUTOFF_MS) {
                     const emailDateStr = new Date(emailDateMs).toISOString().split('T')[0];
                     console.log(`[CVParser] ⏭  Skipping pre-2024 attachment ${attachmentId} — Gmail email date ${emailDateStr} (before cutoff 2024-01-01)`);
-                    await parsingJobs.setStatus(jobId, 'extracted', {
+                    await setJobAndAttachmentStatus('extracted', {
                         finished_at: new Date().toISOString(),
                         skipped_reason: 'pre_2024_cutoff',
                         error_code: null,
@@ -776,7 +796,7 @@ function startCvParserWorker() {
             if (!force && attachmentMeta?.candidate_id) {
                 const existingId = attachmentMeta.candidate_id;
                 console.log(`[CVParser] ⏭  Skipping attachment ${attachmentId} — already linked to candidate ${existingId} (idempotency guard)`);
-                await parsingJobs.setStatus(jobId, 'extracted', {
+                await setJobAndAttachmentStatus('extracted', {
                     finished_at: new Date().toISOString(),
                     skipped_reason: 'already_linked',
                     candidate_id: existingId,
@@ -814,6 +834,33 @@ function startCvParserWorker() {
             const mimeType = attachmentMeta?.mime_type ||
                 (fileName.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
             const resolvedFileHash = fileHash ?? attachmentMeta?.sha256 ?? null;
+            // ── File-hash dedup: skip parser if identical CV already processed ──────────
+            if (!force && resolvedFileHash) {
+                const { data: dupAttachment } = await db
+                    .from('inbox_attachments')
+                    .select('id, candidate_id')
+                    .eq('sha256', resolvedFileHash)
+                    .not('candidate_id', 'is', null)
+                    .neq('id', attachmentId)
+                    .limit(1)
+                    .maybeSingle();
+                if (dupAttachment?.candidate_id) {
+                    console.log(`[CVParser] ⏭  Skipping attachment ${attachmentId} — duplicate file hash (sha256 match), already linked to candidate ${dupAttachment.candidate_id}`);
+                    await db
+                        .from('inbox_attachments')
+                        .update({ candidate_id: dupAttachment.candidate_id })
+                        .eq('id', attachmentId);
+                    await setJobAndAttachmentStatus('extracted', {
+                        finished_at: new Date().toISOString(),
+                        skipped_reason: 'duplicate_file_hash',
+                        candidate_id: dupAttachment.candidate_id,
+                        error_code: null,
+                        error_message: null,
+                    });
+                    return { skipped: true, reason: 'duplicate_file_hash', candidateId: dupAttachment.candidate_id };
+                }
+            }
+            // ─────────────────────────────────────────────────────────────────────────
             const payloadObj = {
                 attachment_id: attachmentId,
                 file_url: fileUrl,
@@ -888,7 +935,7 @@ function startCvParserWorker() {
                 hasPassport: !!identityFields?.passport_no,
                 hasDOB: !!identityFields?.date_of_birth,
             });
-            await parsingJobs.setStatus(jobId, 'extracted', {
+            await setJobAndAttachmentStatus('extracted', {
                 finished_at: new Date().toISOString(),
                 schema_version: parsed.schema_version ?? 'v1',
                 result_json: { ...parsed, identity_fields: identityFields },
@@ -900,7 +947,7 @@ function startCvParserWorker() {
             const { findExistingCandidate, enrichCandidateData, updateMissingFields } = await Promise.resolve().then(() => __importStar(require('../services/progressiveDataCompletionService')));
             if (!hasRealCandidateSignals(parsedCandidate, identityFields)) {
                 console.log(`[CVParser] ⏭  Parsed attachment ${attachmentId} does not contain real candidate signals. Skipping candidate creation.`);
-                await parsingJobs.setStatus(jobId, 'extracted', {
+                await setJobAndAttachmentStatus('extracted', {
                     finished_at: new Date().toISOString(),
                     schema_version: parsed.schema_version ?? 'v1',
                     result_json: { ...parsed, identity_fields: identityFields },
@@ -1632,6 +1679,14 @@ function startCvParserWorker() {
             return { ok: true };
         }
         catch (err) {
+            const db = (0, database_1.supabaseAdminClient)();
+            const { error: attachmentStatusError } = await db
+                .from('inbox_attachments')
+                .update({ parsing_status: 'failed' })
+                .eq('id', attachmentId);
+            if (attachmentStatusError) {
+                console.warn(`[CVParser] Failed to mark attachment ${attachmentId} as failed:`, attachmentStatusError.message);
+            }
             await parsingJobs.setStatus(jobId, 'failed', {
                 finished_at: new Date().toISOString(),
                 error_code: 'PARSING_FAILED',

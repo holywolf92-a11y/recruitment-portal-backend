@@ -211,7 +211,7 @@ async function startGmailBackfill(opts = {}) {
     const maxTotal = opts.maxTotal ?? 10000;
     const delayMs = opts.delayMs ?? 300; // 300ms between messages (safe: ~3 msgs/s)
     const pageDelayMs = opts.pageDelayMs ?? 1000; // 1s between pages (enterprise-safe)
-    const account = opts.account ?? 1;
+    const account = (opts.account ?? 1);
     const authClient = opts.authClient;
     logger.info('Starting Gmail historical backfill', {
         account,

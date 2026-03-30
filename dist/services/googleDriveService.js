@@ -19,6 +19,7 @@ exports.isAcceptedDriveMime = isAcceptedDriveMime;
 exports.driveExtFromMime = driveExtFromMime;
 exports.isDriveConfigured = isDriveConfigured;
 exports.getDriveFolderIds = getDriveFolderIds;
+exports.listAllDriveFiles = listAllDriveFiles;
 exports.listFilesInFolder = listFilesInFolder;
 exports.downloadDriveFile = downloadDriveFile;
 exports.getDriveFileMetadata = getDriveFileMetadata;
@@ -63,9 +64,9 @@ function isAcceptedDriveMime(mimeType) {
 function driveExtFromMime(mimeType) {
     return MIME_TO_EXT[mimeType.toLowerCase().split(';')[0].trim()] ?? 'bin';
 }
-/** Returns true if Drive is fully configured. */
+/** Returns true if Drive is fully configured (only needs refresh token). */
 function isDriveConfigured() {
-    return !!(process.env.GOOGLE_DRIVE_REFRESH_TOKEN && process.env.GOOGLE_DRIVE_FOLDER_IDS);
+    return !!(process.env.GOOGLE_DRIVE_REFRESH_TOKEN);
 }
 /** Get the list of Drive folder IDs to watch (from GOOGLE_DRIVE_FOLDER_IDS). */
 function getDriveFolderIds() {
@@ -84,6 +85,45 @@ function createDriveClient() {
     const auth = new googleapis_1.google.auth.OAuth2(clientId, clientSecret);
     auth.setCredentials({ refresh_token: refreshToken });
     return googleapis_1.google.drive({ version: 'v3', auth });
+}
+/**
+ * Search ALL of the authenticated user's Drive for CV files.
+ * Excludes videos and non-CV file types. Returns files modified after `afterDate`.
+ */
+async function listAllDriveFiles(afterDate) {
+    const drive = createDriveClient();
+    const mimeConditions = Array.from(ACCEPTED_DRIVE_MIMES).map(m => `mimeType = '${m}'`);
+    let q = `trashed = false and (${mimeConditions.join(' or ')})`;
+    if (afterDate) {
+        const iso = afterDate.toISOString();
+        q += ` and modifiedTime > '${iso}'`;
+    }
+    const files = [];
+    let pageToken;
+    do {
+        const res = await drive.files.list({
+            q,
+            fields: 'nextPageToken, files(id, name, mimeType, size, modifiedTime, parents)',
+            orderBy: 'modifiedTime desc',
+            pageSize: 100,
+            ...(pageToken ? { pageToken } : {}),
+        });
+        const batch = res.data.files ?? [];
+        for (const f of batch) {
+            if (f.id && f.name && f.mimeType && isAcceptedDriveMime(f.mimeType)) {
+                files.push({
+                    id: f.id,
+                    name: f.name,
+                    mimeType: f.mimeType,
+                    size: f.size ? Number(f.size) : undefined,
+                    modifiedTime: f.modifiedTime ?? undefined,
+                    parents: f.parents ?? undefined,
+                });
+            }
+        }
+        pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+    return files;
 }
 /**
  * List CV files in a Drive folder.

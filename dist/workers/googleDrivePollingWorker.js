@@ -24,18 +24,17 @@ const database_1 = require("../config/database");
 const googleDriveService_1 = require("../services/googleDriveService");
 const logger = (0, errorHandling_1.createLogger)('GoogleDrivePollingWorker');
 let isDriveRunning = false;
-/** How far back to look on the very first poll (24 hours). After that, only new files. */
-let lastPollTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
+/** How far back to look on the very first poll — scan everything since Jan 1 2024. After that, only new files. */
+let lastPollTime = new Date('2024-01-01T00:00:00.000Z');
 function isDrivePollingEnabled() {
     return process.env.RUN_GOOGLE_DRIVE_POLLING === 'true';
 }
 async function startGoogleDrivePolling(intervalMinutes = 10) {
     if (!(0, googleDriveService_1.isDriveConfigured)()) {
-        logger.warn('Google Drive not configured — set GOOGLE_DRIVE_REFRESH_TOKEN and GOOGLE_DRIVE_FOLDER_IDS');
+        logger.warn('Google Drive not configured — set GOOGLE_DRIVE_REFRESH_TOKEN');
         return;
     }
-    const folderIds = (0, googleDriveService_1.getDriveFolderIds)();
-    logger.info('Starting Google Drive polling worker', { intervalMinutes, folderCount: folderIds.length });
+    logger.info('Starting Google Drive polling worker (scanning all Drive files)', { intervalMinutes });
     // Initial poll
     await pollDriveFolders();
     const intervalMs = intervalMinutes * 60 * 1000;
@@ -58,33 +57,20 @@ async function pollDriveFolders(force = false) {
     let errorCount = 0;
     let skippedCount = 0;
     try {
-        const folderIds = (0, googleDriveService_1.getDriveFolderIds)();
-        logger.info('Polling Google Drive folders', { folderCount: folderIds.length, since: lastPollTime.toISOString() });
-        for (const folderId of folderIds) {
+        logger.info('Polling Google Drive (all files)', { since: lastPollTime.toISOString() });
+        const files = await (0, googleDriveService_1.listAllDriveFiles)(lastPollTime);
+        logger.info(`Found ${files.length} new file(s) in Google Drive`, { count: files.length });
+        for (const file of files) {
             try {
-                const folderName = await (0, googleDriveService_1.getDriveFolderName)(folderId);
-                const files = await (0, googleDriveService_1.listFilesInFolder)(folderId, lastPollTime);
-                if (files.length === 0) {
-                    logger.debug('No new files in Drive folder', { folderId, folderName });
-                    continue;
-                }
-                logger.info(`Found ${files.length} new file(s) in Drive folder`, { folderId, folderName });
-                for (const file of files) {
-                    try {
-                        const result = await processDriveFile(file, folderId, folderName);
-                        if (result === 'processed')
-                            successCount++;
-                        else if (result === 'skipped')
-                            skippedCount++;
-                    }
-                    catch (err) {
-                        logger.error('Failed to process Drive file', { fileId: file.id, fileName: file.name, error: err?.message });
-                        errorCount++;
-                    }
-                }
+                const folderId = file.parents?.[0] ?? 'root';
+                const result = await processDriveFile(file, folderId, 'Google Drive');
+                if (result === 'processed')
+                    successCount++;
+                else if (result === 'skipped')
+                    skippedCount++;
             }
             catch (err) {
-                logger.error('Failed to poll Drive folder', { folderId, error: err?.message });
+                logger.error('Failed to process Drive file', { fileId: file.id, fileName: file.name, error: err?.message });
                 errorCount++;
             }
         }
@@ -99,15 +85,29 @@ async function pollDriveFolders(force = false) {
 async function processDriveFile(file, folderId, folderName) {
     const db = (0, database_1.supabaseAdminClient)();
     const externalId = `drive_${file.id}`;
+    const drivePayload = {
+        fileId: file.id,
+        fileName: file.name,
+        mimeType: file.mimeType,
+        folderId,
+        folderName,
+        modifiedTime: file.modifiedTime,
+        size: file.size,
+    };
     // Dedup: check if we've already processed this file
     const { data: existing } = await db
         .from('inbox_messages')
-        .select('id')
+        .select('id, status, payload, inbox_attachments(id)')
         .eq('source', 'google_drive')
         .eq('external_message_id', externalId)
         .maybeSingle();
-    if (existing) {
+    const existingAttachments = existing?.inbox_attachments ?? [];
+    if (existing && existingAttachments.length > 0) {
         logger.debug('Drive file already processed, skipping', { fileId: file.id, fileName: file.name });
+        return 'skipped';
+    }
+    if (existing?.status === 'duplicate') {
+        logger.debug('Drive file previously marked duplicate, skipping', { fileId: file.id, fileName: file.name });
         return 'skipped';
     }
     logger.info('Processing new Drive file', { fileId: file.id, fileName: file.name, mimeType: file.mimeType });
@@ -118,18 +118,10 @@ async function processDriveFile(file, folderId, folderName) {
         return 'skipped';
     }
     // Create inbox message for tracking
-    const inboxMessage = await (0, inboxService_1.createInboxMessage)({
+    const inboxMessage = existing ?? await (0, inboxService_1.createInboxMessage)({
         source: 'google_drive',
         externalMessageId: externalId,
-        payload: {
-            fileId: file.id,
-            fileName: file.name,
-            mimeType: file.mimeType,
-            folderId,
-            folderName,
-            modifiedTime: file.modifiedTime,
-            size: file.size,
-        },
+        payload: drivePayload,
         status: 'pending',
         receivedAt: file.modifiedTime ? new Date(file.modifiedTime).toISOString() : new Date().toISOString(),
     }).catch((err) => {
@@ -141,30 +133,93 @@ async function processDriveFile(file, folderId, folderName) {
     });
     if (!inboxMessage)
         return 'skipped';
+    if (existing && existingAttachments.length === 0) {
+        logger.warn('Repairing orphaned Drive inbox message with no attachments', {
+            fileId: file.id,
+            fileName: file.name,
+            inboxMessageId: existing.id,
+            status: existing.status,
+        });
+    }
     // Build storage path: google_drive/raw/{folderId}/{fileId}.{ext}
     const ext = (0, googleDriveService_1.driveExtFromMime)(file.mimeType);
     const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 100);
     const storagePath = `google_drive/raw/${folderId}/${file.id}_${safeFileName}`;
-    // Create attachment and enqueue for CV parsing
-    const attachment = await (0, inboxAttachmentService_1.createAttachment)({
-        inboxMessageId: inboxMessage.id,
-        fileBuffer,
-        fileName: file.name,
-        mimeType: file.mimeType,
-        storageBucket: 'candidate-documents',
-        storagePath,
-        messageSource: 'google_drive',
-        messageSubject: `Google Drive: ${folderName}/${file.name}`,
-    });
-    if (!attachment?.id) {
-        logger.warn('Failed to create attachment for Drive file', { fileId: file.id });
-        return 'skipped';
+    try {
+        // Create attachment and enqueue for CV parsing
+        const attachment = await (0, inboxAttachmentService_1.createAttachment)({
+            inboxMessageId: inboxMessage.id,
+            fileBuffer,
+            fileName: file.name,
+            mimeType: file.mimeType,
+            attachmentType: 'cv',
+            storageBucket: 'documents',
+            storagePath,
+            messageSource: 'google_drive',
+            messageSubject: `Google Drive: ${folderName}/${file.name}`,
+        });
+        if (!attachment?.id) {
+            logger.warn('Failed to create attachment for Drive file', { fileId: file.id });
+            await (0, inboxService_1.updateInboxMessage)(inboxMessage.id, {
+                status: 'failed',
+                payload: {
+                    ...(inboxMessage.payload || drivePayload),
+                    lastDriveError: {
+                        code: 'ATTACHMENT_CREATE_RETURNED_EMPTY',
+                        message: 'Attachment creation returned no attachment id',
+                        at: new Date().toISOString(),
+                    },
+                },
+            });
+            return 'skipped';
+        }
+        await (0, inboxAttachmentService_1.enqueueCvParsingJobForAttachment)(attachment.id, { force: true });
+        await (0, inboxService_1.updateInboxMessage)(inboxMessage.id, {
+            status: 'processing',
+            payload: {
+                ...(inboxMessage.payload || drivePayload),
+                repairedAt: existing && existingAttachments.length === 0 ? new Date().toISOString() : undefined,
+            },
+        });
+        logger.info('Enqueued Drive file for CV parsing', {
+            fileId: file.id,
+            fileName: file.name,
+            attachmentId: attachment.id,
+        });
+        return 'processed';
     }
-    await (0, inboxAttachmentService_1.enqueueCvParsingJobForAttachment)(attachment.id, { force: true });
-    logger.info('Enqueued Drive file for CV parsing', {
-        fileId: file.id,
-        fileName: file.name,
-        attachmentId: attachment.id,
-    });
-    return 'processed';
+    catch (err) {
+        const message = String(err?.message || err || 'Unknown Drive attachment error');
+        if (err instanceof errorHandling_1.AppError && err.type === errorHandling_1.ErrorType.DUPLICATE) {
+            await (0, inboxService_1.updateInboxMessage)(inboxMessage.id, {
+                status: 'duplicate',
+                payload: {
+                    ...(inboxMessage.payload || drivePayload),
+                    lastDriveError: {
+                        code: 'DUPLICATE_ATTACHMENT',
+                        message,
+                        at: new Date().toISOString(),
+                    },
+                },
+            });
+            logger.info('Drive file matched existing CV attachment, marked as duplicate', {
+                fileId: file.id,
+                fileName: file.name,
+                inboxMessageId: inboxMessage.id,
+            });
+            return 'skipped';
+        }
+        await (0, inboxService_1.updateInboxMessage)(inboxMessage.id, {
+            status: 'failed',
+            payload: {
+                ...(inboxMessage.payload || drivePayload),
+                lastDriveError: {
+                    code: 'ATTACHMENT_OR_ENQUEUE_FAILED',
+                    message,
+                    at: new Date().toISOString(),
+                },
+            },
+        });
+        throw err;
+    }
 }

@@ -7,6 +7,26 @@ import { documentVerificationQueue } from '../config/queue';
 
 const logger = createLogger('DocumentLinkService');
 
+const CONSTRAINED_DOCUMENT_SOURCES = new Set([
+  'gmail',
+  'email',
+  'whatsapp',
+  'web',
+  'api',
+  'unknown',
+  'manual',
+]);
+
+function normalizeDocumentRecordSource(source: string | null | undefined): string {
+  const normalized = (source || 'unknown').toLowerCase();
+
+  if (normalized === 'google_drive') {
+    return 'web';
+  }
+
+  return CONSTRAINED_DOCUMENT_SOURCES.has(normalized) ? normalized : 'unknown';
+}
+
 interface LinkDocumentInput {
   attachmentId: string;
   extractedCnic?: string;
@@ -106,6 +126,7 @@ export class DocumentLinkService {
       .single();
 
     const source = message?.source || 'unknown';
+    const documentSource = normalizeDocumentRecordSource(source);
     const rawDocType = (attachment.document_type || '').toString().toLowerCase();
     const documentType = (rawDocType && rawDocType !== 'unknown' ? rawDocType : 'other') as DocumentType;
 
@@ -134,7 +155,7 @@ export class DocumentLinkService {
         storage_path: newStoragePath,
         file_name: attachment.file_name,
         mime_type: attachment.mime_type,
-        source: source,
+        source: documentSource,
         received_at: attachment.received_at || new Date().toISOString()
       })
       .select('id,candidate_id,storage_bucket,storage_path,file_name,mime_type')
@@ -206,6 +227,7 @@ export class DocumentLinkService {
       .single();
 
     const source = message?.source || 'unknown';
+    const documentSource = normalizeDocumentRecordSource(source);
     const messageId = message?.external_message_id || attachment.inbox_message_id;
 
     // Generate unmatched storage path
@@ -239,7 +261,7 @@ export class DocumentLinkService {
         storage_bucket: attachment.storage_bucket,
         storage_path: finalPath,
         file_name: attachment.file_name,
-        source: source,
+        source: documentSource,
         extracted_email: input.extractedEmail,
         extracted_phone: input.extractedPhone,
         extracted_name: input.extractedName,

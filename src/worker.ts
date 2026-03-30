@@ -51,6 +51,11 @@ async function main() {
     logger.warn('Skipping WhatsApp media worker (WHATSAPP_ACCESS_TOKEN missing)');
   }
 
+  // ── WhatsApp bridge disconnect monitor ───────────────────────────────────
+  const { startWhatsAppMonitor } = await import('./workers/whatsappMonitorWorker');
+  startWhatsAppMonitor();
+  startedWorkers.push('whatsapp-monitor');
+
   // ── Gmail polling (Account 3: cv.falishaoep@gmail.com) ────────────────────
   if (process.env.RUN_GMAIL_POLLING === 'true') {
     if (process.env.GMAIL_CLIENT_ID && (process.env.GMAIL_REFRESH_TOKEN || process.env.GMAIL3_REFRESH_TOKEN)) {

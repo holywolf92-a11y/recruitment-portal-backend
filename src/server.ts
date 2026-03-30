@@ -115,7 +115,12 @@ try {
         logger.error('Failed to start Hostinger mailbox polling', err);
       });
     }).catch((err) => logger.error('Failed to load Hostinger mailbox polling worker', err));
-    
+
+    // WhatsApp bridge disconnect monitor — emails admin when any account goes offline
+    import('./workers/whatsappMonitorWorker').then(({ startWhatsAppMonitor }) => {
+      startWhatsAppMonitor();
+    }).catch((err) => logger.error('Failed to load WhatsApp monitor worker', err));
+
     // Gmail polling is disabled — outgoing email now uses Hostinger SMTP
     if (process.env.RUN_GMAIL_POLLING === 'true') {
       if (process.env.GMAIL_CLIENT_ID && (process.env.GMAIL_REFRESH_TOKEN || process.env.GMAIL3_REFRESH_TOKEN)) {

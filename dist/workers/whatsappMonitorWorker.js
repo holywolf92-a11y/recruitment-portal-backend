@@ -14,10 +14,10 @@ exports.stopWhatsAppMonitor = stopWhatsAppMonitor;
 const emailService_1 = require("../services/emailService");
 const errorHandling_1 = require("../utils/errorHandling");
 const logger = (0, errorHandling_1.createLogger)('WhatsAppMonitorWorker');
-const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const ALERT_THROTTLE_MS = 60 * 60 * 1000; // 1 hour between alerts per account
 const BRIDGE_URL = process.env.WHATSAPP_BRIDGE_URL || 'http://recruitment-whatsapp-bridge.railway.internal:4310';
-const ALERT_EMAIL = process.env.WHATSAPP_ALERT_EMAIL || process.env.DUPLICATE_ALERT_EMAIL || 'falishamanpower4035@gmail.com';
+const ALERT_EMAIL = process.env.WHATSAPP_ALERT_EMAIL || process.env.DUPLICATE_ALERT_EMAIL || 'falishaoep4035@gmail.com';
 // In-memory state tracking
 const lastKnownStatus = new Map(); // accountId → status
 const lastAlertSentAt = new Map(); // accountId → timestamp

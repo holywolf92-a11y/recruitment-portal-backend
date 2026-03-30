@@ -13,11 +13,11 @@ import { createLogger } from '../utils/errorHandling';
 
 const logger = createLogger('WhatsAppMonitorWorker');
 
-const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const ALERT_THROTTLE_MS = 60 * 60 * 1000; // 1 hour between alerts per account
 
 const BRIDGE_URL = process.env.WHATSAPP_BRIDGE_URL || 'http://recruitment-whatsapp-bridge.railway.internal:4310';
-const ALERT_EMAIL = process.env.WHATSAPP_ALERT_EMAIL || process.env.DUPLICATE_ALERT_EMAIL || 'falishamanpower4035@gmail.com';
+const ALERT_EMAIL = process.env.WHATSAPP_ALERT_EMAIL || process.env.DUPLICATE_ALERT_EMAIL || 'falishaoep4035@gmail.com';
 
 // In-memory state tracking
 const lastKnownStatus = new Map<string, string>(); // accountId → status

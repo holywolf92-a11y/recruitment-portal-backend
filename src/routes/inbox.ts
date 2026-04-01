@@ -19,6 +19,145 @@ import { ParsingJobsService } from '../services/parsingJobsService';
 
 const router = Router();
 
+// GET /cv-inbox/stats — accurate summary counts (2 DB queries, not N queries)
+router.get(
+  '/stats',
+  asyncHandler(async (req: Request, res: Response) => {
+    const since = req.query.since as string | undefined;
+    const db = supabaseAdminClient();
+
+    // Total CV attachments
+    let totalQ = db
+      .from('inbox_attachments')
+      .select('id', { count: 'exact', head: true })
+      .or('attachment_type.eq.cv,attachment_type.is.null');
+    if (since) totalQ = totalQ.gte('created_at', since);
+    const { count: total } = await totalQ;
+
+    // Extracted (candidate linked)
+    let extractedQ = db
+      .from('inbox_attachments')
+      .select('id', { count: 'exact', head: true })
+      .or('attachment_type.eq.cv,attachment_type.is.null')
+      .not('candidate_id', 'is', null);
+    if (since) extractedQ = extractedQ.gte('created_at', since);
+    const { count: extracted } = await extractedQ;
+
+    // linked_candidate_id extracted (WhatsApp flow)
+    let linkedQ = db
+      .from('inbox_attachments')
+      .select('id', { count: 'exact', head: true })
+      .or('attachment_type.eq.cv,attachment_type.is.null')
+      .is('candidate_id', null)
+      .not('linked_candidate_id', 'is', null);
+    if (since) linkedQ = linkedQ.gte('created_at', since);
+    const { count: linked } = await linkedQ;
+
+    const extractedTotal = (extracted ?? 0) + (linked ?? 0);
+    const pending = (total ?? 0) - extractedTotal;
+
+    res.json({
+      total: total ?? 0,
+      extracted: extractedTotal,
+      pending,
+    });
+  })
+);
+
+// GET /cv-inbox/items — efficient single-page fetch (replaces N+1 calls from UI)
+// Returns inbox_attachments joined with message info + latest parsing_job status in 2 queries
+router.get(
+  '/items',
+  asyncHandler(async (req: Request, res: Response) => {
+    const limit = Math.min(parseInt((req.query.limit as string) || '100', 10), 300);
+    const offset = parseInt((req.query.offset as string) || '0', 10);
+    const since = req.query.since as string | undefined;
+    const source = req.query.source as string | undefined;
+
+    const db = supabaseAdminClient();
+
+    // Query 1: inbox_attachments + joined message info
+    let query = db
+      .from('inbox_attachments')
+      .select(
+        `id, file_name, mime_type, attachment_type,
+         candidate_id, linked_candidate_id, inbox_message_id, created_at,
+         inbox_messages(source, received_at, status, payload)`,
+        { count: 'exact' }
+      )
+      .or('attachment_type.eq.cv,attachment_type.is.null')
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (since) query = query.gte('created_at', since);
+
+    const { data, error, count } = await query;
+    if (error) throw new Error(error.message);
+
+    const rows = (data as any[]) || [];
+    const attachmentIds = rows.map((r) => r.id);
+
+    // Query 2: latest parsing job per attachment (one batch query, not N)
+    const jobMap: Record<string, { id: string; status: string; error_message?: string }> = {};
+    if (attachmentIds.length > 0) {
+      const { data: jobs } = await db
+        .from('parsing_jobs')
+        .select('id, status, error_message, inbox_attachment_id, attachment_id, created_at')
+        .or(
+          `inbox_attachment_id.in.(${attachmentIds.join(',')}),attachment_id.in.(${attachmentIds.join(',')})`
+        )
+        .order('created_at', { ascending: false });
+
+      for (const j of (jobs as any[]) || []) {
+        const aid = j.inbox_attachment_id || j.attachment_id;
+        if (aid && !jobMap[aid]) {
+          jobMap[aid] = { id: j.id, status: j.status, error_message: j.error_message };
+        }
+      }
+    }
+
+    const items = rows
+      // Optional source filter (applied in JS since nested resource filter varies by PG version)
+      .filter((r) => !source || (r.inbox_messages as any)?.source === source)
+      .map((r) => {
+        const msg = r.inbox_messages as any;
+        const job = jobMap[r.id];
+        const resolvedCandidateId = r.candidate_id || r.linked_candidate_id;
+
+        let status: string;
+        if (resolvedCandidateId) {
+          status = 'extracted';
+        } else if (!job) {
+          status = 'queued';
+        } else if (job.status === 'extracted') {
+          status = 'extracted';
+        } else if (job.status === 'failed') {
+          status = 'error';
+        } else {
+          status = job.status; // 'processing' | 'queued'
+        }
+
+        return {
+          id: r.id,
+          messageId: r.inbox_message_id,
+          fileName: r.file_name || 'Attachment',
+          mimeType: r.mime_type,
+          candidateId: resolvedCandidateId || null,
+          jobId: job?.id || null,
+          jobStatus: job?.status || null,
+          jobError: job?.error_message || null,
+          status,
+          source: msg?.source || 'unknown',
+          receivedAt: msg?.received_at || r.created_at,
+          senderName: msg?.payload?.sender_name || null,
+          senderContact: msg?.payload?.sender_contact || null,
+        };
+      });
+
+    res.json({ items, total: count ?? 0, limit, offset });
+  })
+);
+
 router.get(
   '/',
   asyncHandler(async (req: Request, res: Response) => {

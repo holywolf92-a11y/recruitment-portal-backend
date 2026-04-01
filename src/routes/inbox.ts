@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { asyncHandler } from '../utils/errorHandling';
+import { supabaseAdminClient } from '../config/database';
 import {
   createInboxMessage,
   deleteInboxMessage,

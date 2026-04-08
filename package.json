@@ -30,8 +30,10 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.93.3",
+    "@types/adm-zip": "^0.5.8",
     "@types/multer": "^2.0.0",
     "@types/nodemailer": "^7.0.9",
+    "adm-zip": "^0.5.17",
     "bullmq": "^5.1.0",
     "cors": "^2.8.5",
     "dotenv": "^16.0.0",

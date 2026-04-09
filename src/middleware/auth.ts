@@ -1,8 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { supabaseAdminClient } from '../config/database';
+import { resolveAuthenticatedUserProfile } from '../services/userService';
 
 export interface AuthRequest extends Request {
-  user?: { id: string; email?: string; role?: string };
+  user?: { id: string; email?: string; role?: string; linkedCandidateId?: string | null };
 }
 
 export async function authenticate(req: AuthRequest, res: Response, next: NextFunction) {
@@ -23,13 +24,17 @@ export async function authenticate(req: AuthRequest, res: Response, next: NextFu
       return res.status(401).json({ error: 'Unauthorized - Invalid token' });
     }
 
-    // Extract role from user metadata (defaults to 'employee' if not set)
-    const role = user.user_metadata?.role || 'employee';
+    const resolved = await resolveAuthenticatedUserProfile(user);
+
+    if (!resolved.isActive) {
+      return res.status(403).json({ error: 'Account is inactive' });
+    }
 
     req.user = {
       id: user.id,
       email: user.email,
-      role: role
+      role: resolved.role,
+      linkedCandidateId: resolved.linkedCandidateId,
     };
 
     next();

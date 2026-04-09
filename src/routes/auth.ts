@@ -79,6 +79,111 @@ router.get('/portal-profile', authenticate, async (req: AuthRequest, res) => {
   }
 });
 
+router.patch('/portal-profile', authenticate, async (req: AuthRequest, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const {
+      name,
+      email,
+      phone,
+      company_name,
+      city_country,
+      partner_type,
+    } = req.body ?? {};
+
+    const nextName = name === undefined ? undefined : String(name || '').trim();
+    const nextEmail = email === undefined ? undefined : String(email || '').trim().toLowerCase();
+    const nextPhone = phone === undefined ? undefined : String(phone || '').trim();
+    const nextCompanyName = company_name === undefined ? undefined : String(company_name || '').trim();
+    const nextCityCountry = city_country === undefined ? undefined : String(city_country || '').trim();
+    const nextPartnerType = partner_type === undefined ? undefined : String(partner_type || '').trim();
+
+    if (nextEmail !== undefined && !nextEmail) {
+      return res.status(400).json({ error: 'Email cannot be empty' });
+    }
+
+    if (nextName !== undefined && !nextName) {
+      return res.status(400).json({ error: 'Name cannot be empty' });
+    }
+
+    const existingUser = await getUserById(user.id);
+    const currentEmail = existingUser?.email || user.email || null;
+    const currentRole = existingUser?.role || user.role;
+    const currentStatus = existingUser?.status || 'Active';
+
+    const updatedUser = existingUser
+      ? await updateAppUserProfile(user.id, {
+          email: nextEmail,
+          name: nextName,
+          phone: nextPhone,
+        })
+      : await upsertAppUserProfile({
+          id: user.id,
+          email: nextEmail || currentEmail || `${user.id}@portal.local`,
+          role: currentRole,
+          name: nextName || null,
+          phone: nextPhone || null,
+          status: currentStatus,
+        });
+
+    const supabase = supabaseAdminClient();
+    const { data: authUserResult } = await supabase.auth.admin.getUserById(user.id);
+    const currentMetadata = authUserResult?.user?.user_metadata || {};
+
+    await supabase.auth.admin.updateUserById(user.id, {
+      email: nextEmail || undefined,
+      user_metadata: {
+        ...currentMetadata,
+        name: updatedUser.name,
+        phone: updatedUser.phone,
+        role: updatedUser.role,
+      },
+    });
+
+    if (updatedUser.role === 'partner') {
+      const portalProfile = await getPortalProfile(user.id);
+      const partnerApplicationId = portalProfile.partnerApplication?.id;
+
+      if (partnerApplicationId) {
+        const partnerUpdates: Record<string, any> = {
+          updated_at: new Date().toISOString(),
+        };
+
+        if (nextCompanyName !== undefined) partnerUpdates.company_name = nextCompanyName || null;
+        if (nextCityCountry !== undefined) partnerUpdates.city_country = nextCityCountry || null;
+        if (nextPartnerType !== undefined) partnerUpdates.partner_type = nextPartnerType || null;
+        if (nextPhone !== undefined) partnerUpdates.phone_number = nextPhone || null;
+        if (nextEmail !== undefined) partnerUpdates.email = nextEmail || null;
+
+        if (Object.keys(partnerUpdates).length > 1) {
+          const { error: partnerUpdateError } = await supabase
+            .from('partner_applications')
+            .update(partnerUpdates)
+            .eq('id', partnerApplicationId);
+
+          if (partnerUpdateError) {
+            throw partnerUpdateError;
+          }
+        }
+      }
+    }
+
+    const refreshedProfile = await getPortalProfile(user.id);
+    return res.json({
+      role: updatedUser.role,
+      linkedCandidateId: refreshedProfile.linkedCandidate?.id || user.linkedCandidateId || null,
+      profile: refreshedProfile,
+    });
+  } catch (error: any) {
+    console.error('Error updating portal profile:', error);
+    return res.status(500).json({ error: error.message || 'Failed to update portal profile' });
+  }
+});
+
 router.post('/candidate-profile/bootstrap', authenticate, async (req: AuthRequest, res) => {
   try {
     const user = req.user;

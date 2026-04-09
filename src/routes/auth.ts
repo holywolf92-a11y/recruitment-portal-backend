@@ -3,7 +3,7 @@ import multer from 'multer';
 import * as XLSX from 'xlsx';
 import AdmZip from 'adm-zip';
 import { authenticate, AuthRequest } from '../middleware/auth';
-import { bootstrapCandidateProfileForAuthUser, deleteAppUserProfile, getPortalProfile, getUserById, getUserProfile, listAppUsers, normalizeAppRole, updateAppUserProfile, upsertAppUserProfile } from '../services/userService';
+import { bootstrapCandidateProfileForAuthUser, deleteAppUserProfile, getLatestPartnerApplicationForUser, getPortalProfile, getUserById, getUserProfile, listAppUsers, normalizeAppRole, updateAppUserProfile, upsertAppUserProfile } from '../services/userService';
 import { createCandidate, type CreateCandidateData } from '../services/candidateService';
 import { isGovernmentEmail } from '../services/progressiveDataCompletionService';
 import { supabaseAdminClient } from '../config/database';
@@ -45,6 +45,11 @@ function sanitizePartnerToken(value?: string | null) {
     .replace(/\|/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isMissingColumnError(error: any, columnName: string) {
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes(columnName.toLowerCase()) && message.includes('column');
 }
 
 function buildPartnerCandidateSource(userId: string, partnerName?: string | null, companyName?: string | null) {
@@ -112,7 +117,7 @@ router.patch('/portal-profile', authenticate, async (req: AuthRequest, res) => {
 
     const existingUser = await getUserById(user.id);
     const currentEmail = existingUser?.email || user.email || null;
-    const currentRole = existingUser?.role || user.role;
+    const currentRole = existingUser?.role || user.role || 'candidate';
     const currentStatus = existingUser?.status || 'Active';
 
     const updatedUser = existingUser
@@ -146,11 +151,19 @@ router.patch('/portal-profile', authenticate, async (req: AuthRequest, res) => {
 
     if (updatedUser.role === 'partner') {
       const portalProfile = await getPortalProfile(user.id);
-      const partnerApplicationId = portalProfile.partnerApplication?.id;
+      const fallbackPartnerApplication = portalProfile.partnerApplication?.id
+        ? portalProfile.partnerApplication
+        : await getLatestPartnerApplicationForUser(
+            user.id,
+            nextEmail || currentEmail,
+            nextPhone !== undefined ? nextPhone : updatedUser.phone,
+          );
+      const partnerApplicationId = fallbackPartnerApplication?.id;
 
       if (partnerApplicationId) {
         const partnerUpdates: Record<string, any> = {
           updated_at: new Date().toISOString(),
+          user_id: user.id,
         };
 
         if (nextCompanyName !== undefined) partnerUpdates.company_name = nextCompanyName || null;
@@ -160,10 +173,18 @@ router.patch('/portal-profile', authenticate, async (req: AuthRequest, res) => {
         if (nextEmail !== undefined) partnerUpdates.email = nextEmail || null;
 
         if (Object.keys(partnerUpdates).length > 1) {
-          const { error: partnerUpdateError } = await supabase
+          let { error: partnerUpdateError } = await supabase
             .from('partner_applications')
             .update(partnerUpdates)
             .eq('id', partnerApplicationId);
+
+          if (partnerUpdateError && isMissingColumnError(partnerUpdateError, 'user_id')) {
+            delete partnerUpdates.user_id;
+            ({ error: partnerUpdateError } = await supabase
+              .from('partner_applications')
+              .update(partnerUpdates)
+              .eq('id', partnerApplicationId));
+          }
 
           if (partnerUpdateError) {
             throw partnerUpdateError;

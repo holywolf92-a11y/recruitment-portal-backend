@@ -249,6 +249,23 @@ router.patch('/portal-profile', authenticate, async (req: AuthRequest, res) => {
         if (employerUpdateError) {
           throw employerUpdateError;
         }
+      } else {
+        // No employer_lead yet — create a shell record so Company Profile and requirements work
+        const createPayload: Record<string, any> = {
+          user_id: user.id,
+          email: employerUpdates.email || updatedUser.email || user.email || null,
+          phone_number: employerUpdates.phone_number || null,
+          company_name: employerUpdates.company_name || null,
+          contact_name: employerUpdates.contact_name || updatedUser.name || null,
+          country: employerUpdates.country || null,
+          city: employerUpdates.city || null,
+          status: 'New',
+        };
+        const { error: createError } = await supabase.from('employer_leads').insert(createPayload);
+        if (createError) {
+          console.error('Failed to create employer_lead shell:', createError.message);
+          // non-fatal — profile update still succeeded
+        }
       }
     }
 
@@ -306,16 +323,30 @@ router.post('/portal-requirements', authenticate, async (req: AuthRequest, res) 
 
     const db = supabaseAdminClient();
 
-    // Get the most recent employer_lead to pull company/contact info
-    const { data: lead } = await db
+    const { data: userData } = await db.from('users').select('email, name, phone').eq('id', user.id).single();
+
+    // Look up employer_lead by user_id first, then fall back to email match
+    let lead: { company_name: string | null; contact_name: string | null; email: string | null; phone_number: string | null } | null = null;
+    const { data: leadByUserId } = await db
       .from('employer_leads')
       .select('company_name, contact_name, email, phone_number')
       .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
+      .order('updated_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    const { data: userData } = await db.from('users').select('email, name, phone').eq('id', user.id).single();
+    if (leadByUserId) {
+      lead = leadByUserId;
+    } else if (userData?.email) {
+      const { data: leadByEmail } = await db
+        .from('employer_leads')
+        .select('company_name, contact_name, email, phone_number')
+        .eq('email', userData.email)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      lead = leadByEmail || null;
+    }
 
     const { professions, quantity, country, city, salary_range, duty_hours, contract_duration, benefits_included, comments } = req.body;
 

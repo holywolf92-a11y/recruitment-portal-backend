@@ -4,9 +4,10 @@ import * as XLSX from 'xlsx';
 import AdmZip from 'adm-zip';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { bootstrapCandidateProfileForAuthUser, deleteAppUserProfile, getLatestPartnerApplicationForUser, getPortalProfile, getUserById, getUserProfile, listAppUsers, normalizeAppRole, updateAppUserProfile, upsertAppUserProfile } from '../services/userService';
-import { createCandidate, type CreateCandidateData } from '../services/candidateService';
+import { type CreateCandidateData } from '../services/candidateService';
 import { isGovernmentEmail } from '../services/progressiveDataCompletionService';
 import { supabaseAdminClient } from '../config/database';
+import { ingestPartnerBulkAttachment, upsertPartnerCandidate, uploadPartnerManualDocument } from '../services/partnerCandidateService';
 
 const bulkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -40,22 +41,9 @@ function splitDisplayName(name?: string | null) {
   };
 }
 
-function sanitizePartnerToken(value?: string | null) {
-  return String(value || '')
-    .replace(/\|/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 function isMissingColumnError(error: any, columnName: string) {
   const message = String(error?.message || '').toLowerCase();
   return message.includes(columnName.toLowerCase()) && message.includes('column');
-}
-
-function buildPartnerCandidateSource(userId: string, partnerName?: string | null, companyName?: string | null) {
-  const safeName = sanitizePartnerToken(partnerName) || 'Partner';
-  const safeCompany = sanitizePartnerToken(companyName);
-  return `Partner|${userId}|${safeName}|${safeCompany}`;
 }
 
 router.get('/me', authenticate, async (req: AuthRequest, res) => {
@@ -247,19 +235,37 @@ router.get('/partner/candidates', authenticate, async (req: AuthRequest, res) =>
     }
 
     const db = supabaseAdminClient();
-    const { data, error } = await db
+    const { data: taggedData, error: taggedError } = await db
       .from('candidates')
-      .select('id,candidate_code,name,status,source,email,phone,cnic,passport,position,country_of_interest,created_at')
+      .select('id,candidate_code,name,status,source,email,phone,cnic_normalized,passport_normalized,position,country_of_interest,partner_id,partner_name,is_partner_candidate,created_at')
+      .eq('partner_id', user.id)
+      .neq('status', 'Deleted')
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    if (taggedError) {
+      throw taggedError;
+    }
+
+    const { data: legacyData, error: legacyError } = await db
+      .from('candidates')
+      .select('id,candidate_code,name,status,source,email,phone,cnic_normalized,passport_normalized,position,country_of_interest,partner_id,partner_name,is_partner_candidate,created_at')
       .ilike('source', `Partner|${user.id}|%`)
       .neq('status', 'Deleted')
       .order('created_at', { ascending: false })
       .limit(20);
 
-    if (error) {
-      throw error;
+    if (legacyError) {
+      throw legacyError;
     }
 
-    return res.json({ candidates: data || [] });
+    const uniqueCandidates = Array.from(new Map([...(taggedData || []), ...(legacyData || [])].map((candidate: any) => [candidate.id, {
+      ...candidate,
+      cnic: candidate.cnic_normalized || null,
+      passport: candidate.passport_normalized || null,
+    }])).values());
+
+    return res.json({ candidates: uniqueCandidates.slice(0, 20) });
   } catch (error: any) {
     console.error('Error fetching partner candidates:', error);
     return res.status(500).json({ error: error.message || 'Failed to load partner candidates' });
@@ -286,39 +292,87 @@ router.post('/partner/candidates', authenticate, async (req: AuthRequest, res) =
       return res.status(400).json({ error: 'Candidate name is required' });
     }
 
-    if (!email && !phone) {
-      return res.status(400).json({ error: 'Provide at least an email or phone number for the candidate' });
+    if (!String(payload.cnic || payload.passport || '').trim()) {
+      return res.status(400).json({ error: 'CNIC / Passport is required' });
+    }
+
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone is required' });
     }
 
     const portalProfile = await getPortalProfile(user.id);
     const partnerName = portalProfile.user?.name || user.email || 'Partner';
     const partnerCompany = portalProfile.partnerApplication?.company_name || null;
 
-    const candidateData: CreateCandidateData = {
-      name,
-      email: email || undefined,
-      phone: phone || undefined,
-      cnic: String(payload.cnic || '').trim() || undefined,
-      passport: String(payload.passport || '').trim() || undefined,
-      position: payload.position,
-      country_of_interest: payload.country_of_interest,
-      nationality: payload.nationality,
-      address: payload.address,
-      status: 'Applied',
-      source: buildPartnerCandidateSource(user.id, partnerName, partnerCompany),
-    };
+    const result = await upsertPartnerCandidate(
+      {
+        name,
+        email: email && !isGovernmentEmail(email) ? email : undefined,
+        phone: phone || undefined,
+        cnic: String(payload.cnic || '').trim() || undefined,
+        passport: String(payload.passport || '').trim() || undefined,
+        position: typeof payload.position === 'string' ? payload.position : undefined,
+        country_of_interest: typeof payload.country_of_interest === 'string' ? payload.country_of_interest : undefined,
+        nationality: typeof payload.nationality === 'string' ? payload.nationality : undefined,
+        address: typeof payload.address === 'string' ? payload.address : undefined,
+      },
+      {
+        partnerId: user.id,
+        partnerName,
+        partnerCompany,
+      },
+    );
 
-    if (candidateData.email && isGovernmentEmail(candidateData.email)) {
-      candidateData.email = undefined;
-    }
-
-    const candidate = await createCandidate(candidateData, user.id);
-    return res.status(201).json({ candidate });
+    return res.status(result.created ? 201 : 200).json({
+      candidate: result.candidate,
+      created: result.created,
+      matchedBy: result.matchedBy,
+      updatedFields: result.updatedFields,
+    });
   } catch (error: any) {
     console.error('Error creating partner candidate:', error);
     return res.status(400).json({ error: error.message || 'Failed to submit partner candidate' });
   }
 });
+
+router.post(
+  '/partner/candidates/:candidateId/documents',
+  authenticate,
+  bulkUpload.single('file'),
+  async (req: AuthRequest, res) => {
+    try {
+      const user = req.user;
+      if (!user) return res.status(401).json({ error: 'Unauthorized' });
+      if (user.role !== 'partner') return res.status(403).json({ error: 'Only partner users can upload partner documents' });
+      if (!req.file) return res.status(400).json({ error: 'File is required' });
+
+      const portalProfile = await getPortalProfile(user.id);
+      const partnerName = portalProfile.user?.name || user.email || 'Partner';
+      const partnerCompany = portalProfile.partnerApplication?.company_name || null;
+      const document = await uploadPartnerManualDocument({
+        candidateId: req.params.candidateId,
+        partner: {
+          partnerId: user.id,
+          partnerName,
+          partnerCompany,
+        },
+        requestedType: String(req.body?.document_type || '').trim() || undefined,
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        buffer: req.file.buffer,
+      });
+
+      return res.status(201).json({
+        success: true,
+        document,
+        message: 'Document uploaded successfully.',
+      });
+    } catch (error: any) {
+      console.error('Error uploading partner candidate document:', error);
+      return res.status(400).json({ error: error.message || 'Failed to upload partner document' });
+    }
+  },
+);
 
 router.post(
   '/partner/candidates/bulk',
@@ -342,30 +396,30 @@ router.post(
       if (rows.length === 0) return res.status(400).json({ error: 'Excel file contains no data rows' });
       if (rows.length > 500) return res.status(400).json({ error: 'Maximum 500 candidates per bulk upload' });
 
-      // Extract ZIP entries indexed by cnic prefix
-      const zipEntries = new Map<string, { buffer: Buffer; filename: string }[]>();
       const zipFile = files?.zip?.[0];
-      if (zipFile) {
-        const zip = new AdmZip(zipFile.buffer);
-        for (const entry of zip.getEntries()) {
-          if (entry.isDirectory) continue;
-          const fname = entry.name.toLowerCase();
-          // Find which CNIC this file belongs to by matching prefix
-          // We'll resolve this per-row below; store all files by first 5 chars as a loose key
-          const buf = entry.getData();
-          const key = fname.replace(/[^0-9a-z]/g, '').slice(0, 13); // cnic digits prefix
-          if (!zipEntries.has(key)) zipEntries.set(key, []);
-          zipEntries.get(key)!.push({ buffer: buf, filename: entry.name });
-        }
-      }
+      const zipEntries = zipFile
+        ? new AdmZip(zipFile.buffer).getEntries().filter((entry) => !entry.isDirectory).map((entry) => ({
+            entry,
+            token: entry.entryName
+              .split('/')
+              .pop()
+              ?.replace(/\.[^.]+$/, '')
+              .replace(/[^0-9a-z]/gi, '')
+              .toLowerCase() || '',
+          }))
+        : [];
 
       const portalProfile = await getPortalProfile(user.id);
       const partnerName = portalProfile.user?.name || user.email || 'Partner';
       const partnerCompany = portalProfile.partnerApplication?.company_name || null;
-      const source = buildPartnerCandidateSource(user.id, partnerName, partnerCompany);
-      const db = supabaseAdminClient();
+      const partnerContext = {
+        partnerId: user.id,
+        partnerName,
+        partnerCompany,
+      };
 
       const created: any[] = [];
+      let updated = 0;
       const errors: Array<{ row: number; name?: string; cnic?: string; error: string }> = [];
 
       for (let i = 0; i < rows.length; i++) {
@@ -376,50 +430,37 @@ router.post(
         const email = String(row['Email'] || row['email'] || row['EMAIL'] || '').trim();
 
         if (!name) { errors.push({ row: i + 2, error: 'Name is required' }); continue; }
-        if (!cnic && !phone && !email) { errors.push({ row: i + 2, name, error: 'Provide CNIC/Passport, phone, or email' }); continue; }
+        if (!cnic) { errors.push({ row: i + 2, name, error: 'CNIC/Passport is required' }); continue; }
+        if (!phone) { errors.push({ row: i + 2, name, error: 'Phone is required' }); continue; }
 
         try {
-          const data: CreateCandidateData = {
-            name,
-            cnic: cnic || undefined,
-            phone: phone || undefined,
-            email: (email && !isGovernmentEmail(email)) ? email : undefined,
-            status: 'Applied',
-            source,
-          };
-          const candidate = await createCandidate(data, user.id);
-          created.push(candidate);
+          const result = await upsertPartnerCandidate(
+            {
+              name,
+              cnic: cnic || undefined,
+              phone: phone || undefined,
+              email: (email && !isGovernmentEmail(email)) ? email : undefined,
+            },
+            partnerContext,
+          );
+          if (!result.created) {
+            updated += 1;
+          }
+          created.push(result.candidate);
 
-          // Match ZIP files to this candidate by cnic digits
-          if (zipFile && cnic) {
-            const cnicKey = cnic.replace(/[^0-9a-z]/gi, '').toLowerCase().slice(0, 13);
-            const matchedFiles = zipEntries.get(cnicKey) || [];
-            for (const { buffer, filename } of matchedFiles) {
-              const fLower = filename.toLowerCase();
-              const isImage = /\.(jpg|jpeg|png)$/i.test(fLower);
-              const isPhoto = isImage && (fLower.includes('photo') || fLower.includes('pic') || fLower.includes('image'));
-              const isCNICDoc = fLower.includes('passport') || fLower.includes('cnic') || fLower.includes('id_');
-
+          if (zipEntries.length > 0 && cnic) {
+            const identityToken = cnic.replace(/[^0-9a-z]/gi, '').toLowerCase();
+            const matchedFiles = zipEntries.filter(({ token }) => token && (token.includes(identityToken) || identityToken.includes(token)));
+            for (const { entry } of matchedFiles) {
               try {
-                if (isPhoto) {
-                  const ext = filename.split('.').pop() || 'jpg';
-                  const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
-                  const { error: photoError } = await db.storage
-                    .from('candidate-photos')
-                    .upload(`${candidate.id}/photo.${ext}`, buffer, { contentType: mime, upsert: true });
-                  if (photoError) console.warn(`ZIP photo upload for ${candidate.id}:`, photoError.message);
-                } else {
-                  const docType = isCNICDoc ? 'passport_cnic' : 'cv';
-                  const ext = filename.split('.').pop() || 'pdf';
-                  const mimeMap: Record<string, string> = { pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png' };
-                  const mime = mimeMap[ext.toLowerCase()] || 'application/octet-stream';
-                  const { error: docError } = await db.storage
-                    .from('candidate-documents')
-                    .upload(`${candidate.id}/${docType}_${Date.now()}.${ext}`, buffer, { contentType: mime, upsert: false });
-                  if (docError) console.warn(`ZIP doc upload for ${candidate.id}:`, docError.message);
-                }
+                await ingestPartnerBulkAttachment({
+                  candidateId: result.candidate.id,
+                  partner: partnerContext,
+                  fileName: entry.entryName.split('/').pop() || entry.entryName,
+                  buffer: entry.getData(),
+                });
               } catch (fileErr: any) {
-                console.warn(`Failed to store ZIP file ${filename} for candidate ${candidate.id}:`, fileErr.message);
+                console.warn(`Failed to ingest ZIP file ${entry.entryName} for candidate ${result.candidate.id}:`, fileErr.message);
               }
             }
           }
@@ -430,7 +471,8 @@ router.post(
 
       return res.status(201).json({
         total: rows.length,
-        created: created.length,
+        created: created.length - updated,
+        updated,
         errors,
         candidates: created,
       });

@@ -132,6 +132,9 @@ export interface CreateCandidateData {
   father_name?: string;
   status?: 'Applied' | 'Pending' | 'Deployed' | 'Cancelled' | string;
   source?: 'WhatsApp' | 'Email' | 'Form' | 'Manual' | string;
+  partner_id?: string;
+  partner_name?: string;
+  is_partner_candidate?: boolean;
   ai_score?: number;
   auto_extracted?: boolean;
   needs_review?: boolean;
@@ -225,6 +228,9 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     father_name: data.father_name,
     status: data.status,
     source: data.source,
+    partner_id: data.partner_id,
+    partner_name: data.partner_name,
+    is_partner_candidate: data.is_partner_candidate,
     ai_score: data.ai_score,
     auto_extracted: data.auto_extracted,
     needs_review: data.needs_review,
@@ -355,6 +361,7 @@ export interface CandidateBrowseMetadata {
 // Narrowing the select cuts list response payload by ~60-80% and reduces Railway egress.
 const LIST_FIELDS = [
   'id', 'candidate_code', 'name', 'status', 'source', 'ai_score',
+  'partner_id', 'partner_name', 'is_partner_candidate',
   'position', 'nationality', 'country_of_interest', 'experience_years',
   'phone', 'email', 'date_of_birth', 'gender', 'marital_status', 'address',
   'passport_normalized', 'cnic_normalized', 'passport_expiry',
@@ -379,7 +386,7 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
   if (filters.search && filters.search.trim()) {
     const q = filters.search.trim();
     query = query.or(
-      `name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%,position.ilike.%${q}%`
+      `name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%,position.ilike.%${q}%,partner_name.ilike.%${q}%`
     );
   }
 
@@ -453,6 +460,7 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
   // Frontend expects 'passport' but database only has 'passport_normalized'
   const mappedCandidates = (data || []).map((candidate: any) => ({
     ...candidate,
+    cnic: candidate.cnic_normalized || candidate.cnic || null,
     passport: candidate.passport_normalized || candidate.passport || null,
   }));
 
@@ -980,6 +988,7 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
     'skills', 'languages', 'education', 'certifications', 'internships',
     'previous_employment', 'passport_expiry', 'professional_summary',
     'status', 'source', 'ai_score', 'auto_extracted', 'needs_review',
+    'partner_id', 'partner_name', 'is_partner_candidate',
     'updated_at', 'field_sources', 'extraction_confidence', 'extraction_source',
     'extracted_at', 'passport_received', 'cnic_received', 'degree_received',
     'medical_received', 'visa_received', 'cv_received', 'photo_received',

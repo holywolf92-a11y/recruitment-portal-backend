@@ -254,7 +254,7 @@ router.patch('/portal-profile', authenticate, async (req: AuthRequest, res) => {
         const createPayload: Record<string, any> = {
           user_id: user.id,
           email: employerUpdates.email || updatedUser.email || user.email || null,
-          phone_number: employerUpdates.phone_number || '',
+          phone_number: employerUpdates.phone_number || null,
           company_name: employerUpdates.company_name || null,
           contact_name: employerUpdates.contact_name || updatedUser.name || null,
           country: employerUpdates.country || null,
@@ -360,7 +360,7 @@ router.post('/portal-requirements', authenticate, async (req: AuthRequest, res) 
         company_name: lead?.company_name || null,
         contact_name: lead?.contact_name || userData?.name || null,
         email: lead?.email || userData?.email || null,
-        phone_number: lead?.phone_number || userData?.phone || '',
+        phone_number: lead?.phone_number || userData?.phone || null,
         user_id: user.id,
         country: country ? String(country).trim() : null,
         city: city ? String(city).trim() : null,

@@ -10,7 +10,7 @@ import {
   validateWebhookToken,
   sendMessage
 } from '../services/whatsappService';
-import { generateWhatsAppReply, shouldReplyWithAI, type AIUserRole } from '../services/whatsappAIService';
+import { generateWhatsAppReply, shouldReplyWithAI, resolvePersonContext } from '../services/whatsappAIService';
 import { AppError, ErrorType } from '../utils/errorHandling';
 import {
   recordInboundMessage,
@@ -354,67 +354,23 @@ router.post(
     // Only when conversation is in AI mode and the bot did not handle the message.
     if (!botHandledMessage && conversationForReply?.reply_mode === 'ai' && shouldReplyWithAI(messageData)) {
       try {
-        // ── Resolve role + name for role-aware AI prompt ────────────────────
-        let aiRole: AIUserRole = null;
-        let aiUserName: string | null = null;
-
-        // 1. Check active bot flow first (cheapest signal)
+        // ── Resolve full person record from Supabase ─────────────────────────
         const botState = await getBotState(effectiveFrom || '').catch(() => null);
-        if (botState?.flow === 'candidate_intake') aiRole = 'candidate';
-        else if (botState?.flow === 'employer_intake') aiRole = 'employer';
-        else if (botState?.flow === 'partner_onboarding') aiRole = 'partner';
+        const personCtx = await resolvePersonContext(effectiveFrom || '').catch(() => ({
+          role: null as null,
+          name: null as string | null,
+        }));
 
-        // Grab any name already collected during the bot flow
-        if (botState?.data?.name) aiUserName = String(botState.data.name);
-
-        // 2. If no active flow, look the phone up in the DB
-        if (!aiRole && effectiveFrom) {
-          const db = supabaseAdminClient();
-          const phone = effectiveFrom.replace(/\D/g, '');
-
-          // Check users table (employer/partner have explicit roles)
-          let appUser: { role: string; name: string } | null = null;
-          try {
-            const { data } = await db
-              .from('users')
-              .select('role, name')
-              .or(`phone.eq.${effectiveFrom},phone.eq.+${phone}`)
-              .maybeSingle();
-            appUser = data;
-          } catch { /* non-fatal */ }
-
-          if (appUser) {
-            if (appUser.role === 'employer') aiRole = 'employer';
-            else if (appUser.role === 'partner') aiRole = 'partner';
-            if (appUser.name) aiUserName = String(appUser.name);
-          }
-
-          // Fall back to candidates table
-          if (!aiRole) {
-            let cand: { name: string } | null = null;
-            try {
-              const { data } = await db
-                .from('candidates')
-                .select('name')
-                .or(`phone.ilike.%${phone}%`)
-                .limit(1)
-                .maybeSingle();
-              cand = data;
-            } catch { /* non-fatal */ }
-
-            if (cand) {
-              aiRole = 'candidate';
-              if (cand.name && !aiUserName) aiUserName = String(cand.name);
-            }
-          }
+        // If bot has a name collected mid-flow, prefer it
+        if (botState?.data?.name && !personCtx.name) {
+          personCtx.name = String(botState.data.name);
         }
-        // ── End role resolution ─────────────────────────────────────────────
+        // ── End resolution ───────────────────────────────────────────────────
 
         const aiReply = await generateWhatsAppReply({
           from: effectiveFrom || '',
           text: messageData.text || '',
-          role: aiRole,
-          userName: aiUserName,
+          personCtx,
           botFlow: botState?.flow ?? null,
         });
 

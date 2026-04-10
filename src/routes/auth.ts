@@ -94,6 +94,16 @@ router.patch('/portal-profile', authenticate, async (req: AuthRequest, res) => {
       company_name,
       city_country,
       partner_type,
+      contact_name,
+      country,
+      city,
+      professions,
+      quantity,
+      salary_range,
+      duty_hours,
+      contract_duration,
+      benefits_included,
+      comments,
     } = req.body ?? {};
 
     const nextName = name === undefined ? undefined : String(name || '').trim();
@@ -102,6 +112,16 @@ router.patch('/portal-profile', authenticate, async (req: AuthRequest, res) => {
     const nextCompanyName = company_name === undefined ? undefined : String(company_name || '').trim();
     const nextCityCountry = city_country === undefined ? undefined : String(city_country || '').trim();
     const nextPartnerType = partner_type === undefined ? undefined : String(partner_type || '').trim();
+    const nextContactName = contact_name === undefined ? undefined : String(contact_name || '').trim();
+    const nextCountry = country === undefined ? undefined : String(country || '').trim();
+    const nextCity = city === undefined ? undefined : String(city || '').trim();
+    const nextProfessions = professions === undefined ? undefined : String(professions || '').trim();
+    const nextQuantity = quantity === undefined ? undefined : String(quantity || '').trim();
+    const nextSalaryRange = salary_range === undefined ? undefined : String(salary_range || '').trim();
+    const nextDutyHours = duty_hours === undefined ? undefined : String(duty_hours || '').trim();
+    const nextContractDuration = contract_duration === undefined ? undefined : String(contract_duration || '').trim();
+    const nextBenefitsIncluded = benefits_included === undefined ? undefined : String(benefits_included || '').trim();
+    const nextComments = comments === undefined ? undefined : String(comments || '').trim();
 
     if (nextEmail !== undefined && !nextEmail) {
       return res.status(400).json({ error: 'Email cannot be empty' });
@@ -185,6 +205,49 @@ router.patch('/portal-profile', authenticate, async (req: AuthRequest, res) => {
           if (partnerUpdateError) {
             throw partnerUpdateError;
           }
+        }
+      }
+    }
+
+    if (updatedUser.role === 'employer') {
+      const portalProfile = await getPortalProfile(user.id);
+      const employerLeadId = portalProfile.employerLead?.id || null;
+
+      const employerUpdates: Record<string, any> = {
+        updated_at: new Date().toISOString(),
+        user_id: user.id,
+      };
+
+      if (nextCompanyName !== undefined) employerUpdates.company_name = nextCompanyName || null;
+      if (nextContactName !== undefined) employerUpdates.contact_name = nextContactName || null;
+      if (nextPhone !== undefined) employerUpdates.phone_number = nextPhone || null;
+      if (nextEmail !== undefined) employerUpdates.email = nextEmail || null;
+      if (nextCountry !== undefined) employerUpdates.country = nextCountry || null;
+      if (nextCity !== undefined) employerUpdates.city = nextCity || null;
+      if (nextProfessions !== undefined) employerUpdates.professions = nextProfessions || null;
+      if (nextQuantity !== undefined) employerUpdates.quantity = nextQuantity || null;
+      if (nextSalaryRange !== undefined) employerUpdates.salary_range = nextSalaryRange || null;
+      if (nextDutyHours !== undefined) employerUpdates.duty_hours = nextDutyHours || null;
+      if (nextContractDuration !== undefined) employerUpdates.contract_duration = nextContractDuration || null;
+      if (nextBenefitsIncluded !== undefined) employerUpdates.benefits_included = nextBenefitsIncluded || null;
+      if (nextComments !== undefined) employerUpdates.comments = nextComments || null;
+
+      if (employerLeadId) {
+        let { error: employerUpdateError } = await supabase
+          .from('employer_leads')
+          .update(employerUpdates)
+          .eq('id', employerLeadId);
+
+        if (employerUpdateError && isMissingColumnError(employerUpdateError, 'user_id')) {
+          delete employerUpdates.user_id;
+          ({ error: employerUpdateError } = await supabase
+            .from('employer_leads')
+            .update(employerUpdates)
+            .eq('id', employerLeadId));
+        }
+
+        if (employerUpdateError) {
+          throw employerUpdateError;
         }
       }
     }
@@ -501,6 +564,7 @@ router.get('/users', authenticate, async (req: AuthRequest, res) => {
       workers: users.filter((user) => user.role === 'worker').length,
       candidates: users.filter((user) => user.role === 'candidate').length,
       partners: users.filter((user) => user.role === 'partner').length,
+      employers: users.filter((user) => user.role === 'employer').length,
     };
 
     return res.json({ users, stats });
@@ -524,7 +588,7 @@ router.patch('/users/:userId', authenticate, async (req: AuthRequest, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    if (role !== undefined && !['admin', 'worker', 'candidate', 'partner'].includes(normalizeAppRole(role))) {
+    if (role !== undefined && !['admin', 'worker', 'candidate', 'partner', 'employer'].includes(normalizeAppRole(role))) {
       return res.status(400).json({ error: 'Invalid role' });
     }
 
@@ -593,7 +657,7 @@ router.post('/users', authenticate, async (req: AuthRequest, res) => {
     }
 
     const normalizedRole = normalizeAppRole(role);
-    if (!['admin', 'worker', 'candidate', 'partner'].includes(normalizedRole)) {
+    if (!['admin', 'worker', 'candidate', 'partner', 'employer'].includes(normalizedRole)) {
       return res.status(400).json({ error: 'Invalid role' });
     }
 

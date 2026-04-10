@@ -19,7 +19,7 @@ import { createLogger } from '../utils/errorHandling';
 import { createCandidate, normalizePhoneE164, updateCandidate } from './candidateService';
 import { DocumentLinkService } from './documentLinkService';
 import { getBotState, setBotState, patchBotData, resetBotState, BotState } from './whatsappBotStateService';
-import { sendText, sendButtons, sendList, sendImage, WaButton, WaListSection } from './whatsappInteractiveService';
+import { sendText, sendButtons, sendList, WaButton, WaListSection } from './whatsappInteractiveService';
 import { recordOutboundMessage } from './whatsappInboxService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
 import { upsertAppUserProfile } from './userService';
@@ -30,7 +30,6 @@ const MAIN_MENU_DEBOUNCE_MS = 45_000;
 
 // ─── Config (set in Railway env) ─────────────────────────────────────────────
 const JOBS_URL        = process.env.WHATSAPP_BOT_JOBS_URL        || 'https://falishajobs.up.railway.app/jobs';
-const WELCOME_IMG_URL = process.env.WHATSAPP_BOT_WELCOME_IMG_URL || '';
 const LINKEDIN_URL    = process.env.WHATSAPP_BOT_LINKEDIN_URL    || 'https://www.linkedin.com/company/falishaenterprises';
 const FACEBOOK_URL    = process.env.WHATSAPP_BOT_FACEBOOK_URL    || 'https://www.facebook.com/falishaenterprises.pk/';
 const INSTAGRAM_URL   = process.env.WHATSAPP_BOT_INSTAGRAM_URL   || 'https://www.instagram.com/falisha.manpower';
@@ -39,6 +38,13 @@ const YOUTUBE_URL     = process.env.WHATSAPP_BOT_YOUTUBE_URL     || 'https://you
 const WA_CHANNEL_URL  = process.env.WHATSAPP_BOT_CHANNEL_URL     || '';
 const BOT_ACTOR_ID = 'whatsapp-bot';
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL);
+const CANDIDATE_REQUIRED_FIELDS = [
+  { key: 'name', label: 'Full Name' },
+  { key: 'profession', label: 'Profession' },
+  { key: 'contact_number', label: 'Contact Number' },
+  { key: 'email', label: 'Email' },
+  { key: 'preferred_country', label: 'Preferred Country' },
+] as const;
 
 // ─── Incoming message shape ──────────────────────────────────────────────────
 
@@ -157,6 +163,154 @@ function normalizeFreeText(value: string): string {
   return value.trim().replace(/\s+/g, ' ');
 }
 
+function normalizeStructuredInputLine(value: string): string {
+  return value
+    .trim()
+    .replace(/^\d+[\)\.\-\s]*/, '')
+    .replace(/^(full name|name|profession|contact number|contact|phone number|phone|email|preferred country|country)\s*:\s*/i, '')
+    .trim();
+}
+
+function generateTrackingToken(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const prefix = chars[Math.floor(Math.random() * chars.length)] + chars[Math.floor(Math.random() * chars.length)];
+  const numbers = Math.floor(100000 + Math.random() * 900000);
+  return `${prefix}${numbers}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function pickStructuredFieldValue(raw: string, labels: string[]): string | null {
+  const labelPattern = labels.map((label) => escapeRegExp(label)).join('|');
+  const fieldPattern = new RegExp(
+    `(?:^|[\\n\\r]|\\b)(?:${labelPattern})\\s*:\\s*(.+?)(?=(?:[\\n\\r]|\\b(?:full name|name|profession|contact number|contact|phone number|phone|email|preferred country|country)\\s*:|$))`,
+    'is',
+  );
+  const match = raw.match(fieldPattern);
+  return match?.[1] ? normalizeFreeText(match[1]) : null;
+}
+
+function parseNumberedSegments(raw: string): string[] {
+  const matches = Array.from(raw.matchAll(/(?:^|\s)([1-5])[\)\.\-:]\s*(.+?)(?=(?:\s+[1-5][\)\.\-:]\s*)|$)/gs));
+  if (matches.length < 5) {
+    return [];
+  }
+
+  return matches
+    .sort((left, right) => Number(left[1]) - Number(right[1]))
+    .map((match) => normalizeFreeText(match[2] || ''))
+    .filter(Boolean);
+}
+
+function parseDelimitedSegments(raw: string): string[] {
+  return raw
+    .split(/\r?\n|\||;/)
+    .map((segment) => normalizeStructuredInputLine(segment))
+    .filter(Boolean);
+}
+
+function parseCommaSeparatedSegments(raw: string): string[] {
+  const segments = raw
+    .split(/\s*,\s*/)
+    .map((segment) => normalizeStructuredInputLine(segment))
+    .filter(Boolean);
+
+  return segments.length >= 5 ? segments : [];
+}
+
+function parseCandidateBasicDetails(
+  raw: string,
+  existingData: Record<string, any> = {},
+): { data: Record<string, string | null>; missingLabels: string[]; invalidEmail: boolean } {
+  const normalizedRaw = raw.trim();
+  const baseData: Record<string, string | null> = {
+    name: existingData.name ?? null,
+    profession: existingData.profession ?? null,
+    contact_number: existingData.contact_number ?? null,
+    email: existingData.email ?? null,
+    preferred_country: existingData.preferred_country ?? null,
+    nationality: existingData.nationality ?? null,
+  };
+  const labeledValues = {
+    name: pickStructuredFieldValue(normalizedRaw, ['full name', 'name']),
+    profession: pickStructuredFieldValue(normalizedRaw, ['profession']),
+    contact_number: pickStructuredFieldValue(normalizedRaw, ['contact number', 'contact', 'phone number', 'phone']),
+    email: pickStructuredFieldValue(normalizedRaw, ['email']),
+    preferred_country: pickStructuredFieldValue(normalizedRaw, ['preferred country', 'country']),
+  };
+
+  const hasLabeledFormat = Object.values(labeledValues).some(Boolean);
+
+  if (hasLabeledFormat) {
+    for (const [key, value] of Object.entries(labeledValues)) {
+      if (value) {
+        baseData[key] = value;
+      }
+    }
+  } else {
+    const numberedSegments = parseNumberedSegments(normalizedRaw);
+    const delimitedSegments = parseDelimitedSegments(normalizedRaw);
+    const commaSeparatedSegments = parseCommaSeparatedSegments(normalizedRaw);
+    const segments = numberedSegments.length >= 5
+      ? numberedSegments
+      : delimitedSegments.length >= 5
+        ? delimitedSegments
+        : commaSeparatedSegments;
+
+    if (segments.length > 0) {
+      const targetKeys = segments.length >= CANDIDATE_REQUIRED_FIELDS.length
+        ? CANDIDATE_REQUIRED_FIELDS.map((field) => field.key)
+        : CANDIDATE_REQUIRED_FIELDS
+            .map((field) => field.key)
+            .filter((fieldKey) => !baseData[fieldKey]);
+
+      segments.forEach((segment, index) => {
+        const targetKey = targetKeys[index];
+        if (targetKey) {
+          baseData[targetKey] = segment;
+        }
+      });
+    }
+  }
+
+  let invalidEmail = false;
+  if (baseData.email && !looksLikeEmail(baseData.email)) {
+    invalidEmail = true;
+    baseData.email = null;
+  }
+
+  const missingLabels = CANDIDATE_REQUIRED_FIELDS
+    .filter((field) => !baseData[field.key])
+    .map((field) => field.label);
+
+  return {
+    data: {
+      ...baseData,
+      email: baseData.email ? baseData.email.toLowerCase() : null,
+    },
+    missingLabels,
+    invalidEmail,
+  };
+}
+
+function buildMissingCandidateFieldsMessage(missingLabels: string[], invalidEmail: boolean): string {
+  const lines = ['Please complete the missing job seeker details:'];
+
+  for (const label of missingLabels) {
+    lines.push(`- ${label}`);
+  }
+
+  if (invalidEmail) {
+    lines.push('- Email must be a valid address');
+  }
+
+  lines.push('');
+  lines.push('Reply with only the missing items, or resend all 5 details in one message.');
+  return lines.join('\n');
+}
+
 function generateTemporaryPassword(): string {
   return `Falisha!${crypto.randomBytes(4).toString('hex')}`;
 }
@@ -177,7 +331,7 @@ async function promptStep(
 
 function buildSocialLinksMessage(): string {
   return [
-    'Stay connected with us:',
+    'Follow Falisha on social media:',
     '',
     `LinkedIn: ${LINKEDIN_URL}`,
     `Facebook: ${FACEBOOK_URL}`,
@@ -186,6 +340,95 @@ function buildSocialLinksMessage(): string {
     `YouTube: ${YOUTUBE_URL}`,
     ...(WA_CHANNEL_URL ? [`WhatsApp Channel: ${WA_CHANNEL_URL}`] : []),
   ].join('\n');
+}
+
+async function sendPortalEntryLink(
+  phoneNumberId: string,
+  accessToken: string,
+  to: string,
+  convId: string | null,
+  audience: 'candidate' | 'employer' | 'partner',
+): Promise<void> {
+  const labels: Record<typeof audience, { title: string; intro: string }> = {
+    candidate: {
+      title: 'Job Seeker Portal',
+      intro: 'Use this link to complete your Falisha candidate intake and get your profile link right away:',
+    },
+    employer: {
+      title: 'Employer Portal',
+      intro: 'Use this link to open your Falisha employer intake and receive dashboard access with login credentials:',
+    },
+    partner: {
+      title: 'Partner Portal',
+      intro: 'Use this link to register as a Falisha partner and receive your portal credentials:',
+    },
+  };
+
+  const details = labels[audience];
+  const portalUrl = `${FRONTEND_URL}/apply/${audience}`;
+
+  await tx(
+    phoneNumberId,
+    accessToken,
+    to,
+    convId,
+    [details.title, '', details.intro, portalUrl, '', 'You can type menu anytime to return here.'].join('\n'),
+  );
+  await tx(phoneNumberId, accessToken, to, convId, buildSocialLinksMessage());
+  await promptStep(
+    phoneNumberId,
+    accessToken,
+    to,
+    convId,
+    'Choose another option or return to the main menu.',
+    [
+      { id: 'main_menu', title: 'Main Menu' },
+      { id: 'talk_human', title: 'Talk to Human' },
+    ],
+    ['main_menu', 'talk_human'],
+    'Falisha',
+  );
+  await resetBotState(to);
+}
+
+async function ensureCandidateOnboardingLink(candidateId: string): Promise<string | null> {
+  const db = supabaseAdminClient();
+  const { data: candidate, error } = await db
+    .from('candidates')
+    .select('id, email_tracking_token')
+    .eq('id', candidateId)
+    .maybeSingle();
+
+  if (error || !candidate) {
+    return null;
+  }
+
+  let trackingToken = String((candidate as any).email_tracking_token || '').trim().toUpperCase();
+  if (!trackingToken) {
+    trackingToken = generateTrackingToken();
+    const { error: updateError } = await db
+      .from('candidates')
+      .update({ email_tracking_token: trackingToken })
+      .eq('id', candidateId);
+
+    if (updateError) {
+      logger.warn('Failed to assign onboarding token to WhatsApp candidate', {
+        candidateId,
+        error: updateError.message,
+      });
+      return null;
+    }
+  }
+
+  return `${FRONTEND_URL}/onboarding?token=${trackingToken}`;
+}
+
+async function saveCandidateProgress(state: BotState, data: Record<string, any>): Promise<string | null> {
+  const candidateId = await upsertWhatsAppCandidate(state, data);
+  if (candidateId) {
+    await patchBotData(state.phoneNumber, { ...data, candidate_id: candidateId });
+  }
+  return candidateId;
 }
 
 // ─── Main Menu ────────────────────────────────────────────────────────────────
@@ -207,17 +450,10 @@ async function showMainMenu(
     }
   }
 
-  // Send welcome image only ONCE per user (idempotent regardless of webhook retries).
-  // Write the flag to DB BEFORE sending so any retry sees it already set.
-  if (WELCOME_IMG_URL && !state.data?.welcomed) {
-    await patchBotData(to, { welcomed: true });
-    await sendImage(phoneNumberId, accessToken, to, WELCOME_IMG_URL, 'Falisha Manpower').catch(() => { /* non-fatal */ });
-  }
-
   const body = [
     'Welcome to Falisha Enterprises 🌍',
     '',
-    'Please choose an option:',
+    'Please choose from the menu below:',
     '',
     'You can type *menu* anytime to return here.',
   ].join('\n');
@@ -299,76 +535,28 @@ async function promptCandidateStep(state: BotState, phoneNumberId: string, acces
   const { phoneNumber, conversationId: convId, step } = state;
 
   switch (step) {
-    case 'name':
+    case 'basic_details':
       await promptStep(
         phoneNumberId,
         accessToken,
         phoneNumber,
         convId,
-        'Step 1/8 - Please enter your Full Name:',
-        [{ id: 'main_menu', title: 'Main Menu' }],
-        ['main_menu'],
-        'Job Seeker',
-      );
-      return;
-    case 'profession':
-      await promptStep(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        'Step 2/8 - Your Profession?',
-        [{ id: 'main_menu', title: 'Main Menu' }],
-        ['main_menu'],
-        'Job Seeker',
-      );
-      return;
-    case 'contact_number':
-      await promptStep(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        'Step 3/8 - Your Contact Number?',
-        [{ id: 'main_menu', title: 'Main Menu' }],
-        ['main_menu'],
-        'Job Seeker',
-      );
-      return;
-    case 'email':
-      await promptStep(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        'Step 4/8 - Your Email?',
         [
-          { id: 'skip', title: 'Skip' },
-          { id: 'main_menu', title: 'Main Menu' },
-        ],
-        ['skip', 'main_menu'],
-        'Job Seeker',
-      );
-      return;
-    case 'nationality':
-      await promptStep(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        'Step 5/8 - Your Nationality?',
-        [{ id: 'main_menu', title: 'Main Menu' }],
-        ['main_menu'],
-        'Job Seeker',
-      );
-      return;
-    case 'preferred_country':
-      await promptStep(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        'Step 6/8 - Preferred Country?',
+          'Step 1/2 - Please send these 5 details in one message:',
+          '',
+          '1. Full Name',
+          '2. Profession',
+          '3. Contact Number',
+          '4. Email',
+          '5. Preferred Country',
+          '',
+          'Example:',
+          'Ali Khan',
+          'Electrician',
+          '+92 300 1234567',
+          'ali@example.com',
+          'Saudi Arabia',
+        ].join('\n'),
         [{ id: 'main_menu', title: 'Main Menu' }],
         ['main_menu'],
         'Job Seeker',
@@ -380,27 +568,13 @@ async function promptCandidateStep(state: BotState, phoneNumberId: string, acces
         accessToken,
         phoneNumber,
         convId,
-        'Step 7/8 - Please upload your CV as a document now.',
+        'Step 2/2 - Upload your CV as a WhatsApp document now, or tap Submit to finish without CV.',
         [
+          { id: 'submit_candidate', title: 'Submit' },
           { id: 'main_menu', title: 'Main Menu' },
           { id: 'talk_human', title: 'Talk to Human' },
         ],
-        ['main_menu', 'talk_human'],
-        'Job Seeker',
-      );
-      return;
-    case 'comments':
-      await promptStep(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        'Step 8/8 - Any comments?',
-        [
-          { id: 'skip', title: 'Skip' },
-          { id: 'main_menu', title: 'Main Menu' },
-        ],
-        ['skip', 'main_menu'],
+        ['submit_candidate', 'main_menu', 'talk_human'],
         'Job Seeker',
       );
       return;
@@ -453,7 +627,7 @@ async function upsertWhatsAppCandidate(state: BotState, data: Record<string, any
     source: 'WhatsApp',
     cv_received: Boolean(data.cv_uploaded),
     auto_extracted: false,
-    needs_review: false,
+    needs_review: true,
   };
 
   if (candidateId) {
@@ -578,7 +752,7 @@ async function finalizeCandidateFlow(
   data: Record<string, any>,
 ): Promise<void> {
   const candidateId = await upsertWhatsAppCandidate(state, data);
-  const loginUrl = `${FRONTEND_URL}/login`;
+  const onboardingLink = candidateId ? await ensureCandidateOnboardingLink(candidateId) : null;
   await saveFormSubmission({
     phoneNumber: state.phoneNumber,
     conversationId: state.conversationId,
@@ -594,33 +768,30 @@ async function finalizeCandidateFlow(
     state.phoneNumber,
     state.conversationId,
     [
-      'Thank you! Your information has been submitted.',
+      'Thank you! Your job seeker profile has been submitted.',
       '',
       `Name: ${data.name}`,
       `Profession: ${data.profession}`,
       `Contact: ${data.contact_number}`,
       `Email: ${data.email || 'Not provided'}`,
-      `Nationality: ${data.nationality}`,
       `Preferred Country: ${data.preferred_country}`,
       `CV Uploaded: ${data.cv_uploaded ? 'Yes' : 'No'}`,
-      `Comments: ${data.comments || 'None'}`,
-      '',
-      `Login or create your candidate account here: ${loginUrl}`,
     ].join('\n'),
   );
-  await tx(
-    phoneNumberId,
-    accessToken,
-    state.phoneNumber,
-    state.conversationId,
-    [
-      'Your candidate profile has been saved.',
-      `Login URL: ${loginUrl}`,
-      '',
-      'Choose Individual on the login screen, then sign in or create your login with Gmail to access your candidate dashboard.',
-      'After login, the system will automatically redirect you to your candidate dashboard.',
-    ].join('\n'),
-  );
+  if (onboardingLink) {
+    await tx(
+      phoneNumberId,
+      accessToken,
+      state.phoneNumber,
+      state.conversationId,
+      [
+        'Your profile link:',
+        onboardingLink,
+        '',
+        'Open this link to complete or edit your profile.',
+      ].join('\n'),
+    );
+  }
   await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
   await promptStep(
     phoneNumberId,
@@ -648,91 +819,52 @@ async function handleCandidateFlow(
   const raw = normalizeFreeText(incoming.rawText || '');
 
   if (!step) {
-    await setBotState(phoneNumber, 'candidate_intake', 'name', {});
-    await promptCandidateStep({ ...state, step: 'name', data: {} }, phoneNumberId, accessToken);
+    await setBotState(phoneNumber, 'candidate_intake', 'basic_details', {});
+    await promptCandidateStep({ ...state, step: 'basic_details', data: {} }, phoneNumberId, accessToken);
     return;
   }
 
-  if (step === 'name') {
+  if (step === 'basic_details') {
     if (!raw) {
       await promptCandidateStep(state, phoneNumberId, accessToken);
       return;
     }
-    const nextData = { ...data, name: raw };
+    const parsed = parseCandidateBasicDetails(incoming.rawText || '', data);
+    const nextData = { ...data, ...parsed.data };
     await patchBotData(phoneNumber, nextData);
-    await setBotState(phoneNumber, 'candidate_intake', 'profession', nextData);
-    await promptCandidateStep({ ...state, step: 'profession', data: nextData }, phoneNumberId, accessToken);
-    return;
-  }
 
-  if (step === 'profession') {
-    if (!raw) {
+    if (parsed.missingLabels.length > 0 || parsed.invalidEmail) {
+      await tx(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        state.conversationId,
+        buildMissingCandidateFieldsMessage(parsed.missingLabels, parsed.invalidEmail),
+      );
       await promptCandidateStep(state, phoneNumberId, accessToken);
       return;
     }
-    const nextData = { ...data, profession: raw };
-    await patchBotData(phoneNumber, nextData);
-    await setBotState(phoneNumber, 'candidate_intake', 'contact_number', nextData);
-    await promptCandidateStep({ ...state, step: 'contact_number', data: nextData }, phoneNumberId, accessToken);
-    return;
-  }
 
-  if (step === 'contact_number') {
-    if (!raw) {
-      await promptCandidateStep(state, phoneNumberId, accessToken);
-      return;
-    }
-    const nextData = { ...data, contact_number: raw };
-    await patchBotData(phoneNumber, nextData);
-    await setBotState(phoneNumber, 'candidate_intake', 'email', nextData);
-    await promptCandidateStep({ ...state, step: 'email', data: nextData }, phoneNumberId, accessToken);
-    return;
-  }
-
-  if (step === 'email') {
-    if (!raw && !isSkipValue(incoming.text, incoming.interactiveId)) {
-      await promptCandidateStep(state, phoneNumberId, accessToken);
-      return;
-    }
-    if (raw && !looksLikeEmail(raw) && !isSkipValue(incoming.text, incoming.interactiveId)) {
-      await tx(phoneNumberId, accessToken, phoneNumber, state.conversationId, 'Please enter a valid email or tap Skip.');
-      await promptCandidateStep(state, phoneNumberId, accessToken);
-      return;
-    }
-    const nextData = { ...data, email: isSkipValue(incoming.text, incoming.interactiveId) ? null : raw };
-    await patchBotData(phoneNumber, nextData);
-    await setBotState(phoneNumber, 'candidate_intake', 'nationality', nextData);
-    await promptCandidateStep({ ...state, step: 'nationality', data: nextData }, phoneNumberId, accessToken);
-    return;
-  }
-
-  if (step === 'nationality') {
-    if (!raw) {
-      await promptCandidateStep(state, phoneNumberId, accessToken);
-      return;
-    }
-    const nextData = { ...data, nationality: raw };
-    await patchBotData(phoneNumber, nextData);
-    await setBotState(phoneNumber, 'candidate_intake', 'preferred_country', nextData);
-    await promptCandidateStep({ ...state, step: 'preferred_country', data: nextData }, phoneNumberId, accessToken);
-    return;
-  }
-
-  if (step === 'preferred_country') {
-    if (!raw) {
-      await promptCandidateStep(state, phoneNumberId, accessToken);
-      return;
-    }
-    const nextData = { ...data, preferred_country: raw };
-    await patchBotData(phoneNumber, nextData);
+    await saveCandidateProgress(state, nextData);
     await setBotState(phoneNumber, 'candidate_intake', 'cv_upload', nextData);
     await promptCandidateStep({ ...state, step: 'cv_upload', data: nextData }, phoneNumberId, accessToken);
     return;
   }
 
   if (step === 'cv_upload') {
-    if (!incoming.hasMedia) {
-      await tx(phoneNumberId, accessToken, phoneNumber, state.conversationId, 'Please upload your CV as a WhatsApp document to continue.');
+    if (incoming.interactiveId === 'submit_candidate' || incoming.text === 'submit') {
+      const nextData = {
+        ...data,
+        cv_uploaded: Boolean(data.cv_uploaded),
+        cv_inbox_message_id: data.cv_inbox_message_id ?? null,
+        cv_file_name: data.cv_file_name ?? null,
+      };
+      await patchBotData(phoneNumber, nextData);
+      await finalizeCandidateFlow(state, phoneNumberId, accessToken, nextData);
+      return;
+    }
+    if (!incoming.hasMedia || incoming.mediaType !== 'document') {
+      await tx(phoneNumberId, accessToken, phoneNumber, state.conversationId, 'Please upload your CV as a WhatsApp document, or tap Submit to finish now.');
       await promptCandidateStep(state, phoneNumberId, accessToken);
       return;
     }
@@ -743,19 +875,9 @@ async function handleCandidateFlow(
       cv_file_name: incoming.fileName || null,
     };
     await patchBotData(phoneNumber, nextData);
-    await setBotState(phoneNumber, 'candidate_intake', 'comments', nextData);
-    await tx(phoneNumberId, accessToken, phoneNumber, state.conversationId, 'CV received.');
-    await promptCandidateStep({ ...state, step: 'comments', data: nextData }, phoneNumberId, accessToken);
-    return;
-  }
-
-  if (step === 'comments') {
-    const nextData = {
-      ...data,
-      comments: isSkipValue(incoming.text, incoming.interactiveId) ? null : raw,
-    };
-    await patchBotData(phoneNumber, nextData);
+    await tx(phoneNumberId, accessToken, phoneNumber, state.conversationId, 'CV received. Submitting your profile now.');
     await finalizeCandidateFlow(state, phoneNumberId, accessToken, nextData);
+    return;
   }
 }
 
@@ -1329,13 +1451,13 @@ async function routeMenuSelection(
 
   switch (menuId) {
     case 'menu_candidate':
-      await handleCandidateFlow({ ...freshState, flow: 'candidate_intake' }, incoming, phoneNumberId, accessToken);
+      await sendPortalEntryLink(phoneNumberId, accessToken, from, state.conversationId, 'candidate');
       break;
     case 'menu_employer':
-      await handleEmployerFlow({ ...freshState, flow: 'employer_intake' }, incoming, phoneNumberId, accessToken);
+      await sendPortalEntryLink(phoneNumberId, accessToken, from, state.conversationId, 'employer');
       break;
     case 'menu_partner':
-      await handlePartnerFlow({ ...freshState, flow: 'partner_onboarding' }, incoming, phoneNumberId, accessToken);
+      await sendPortalEntryLink(phoneNumberId, accessToken, from, state.conversationId, 'partner');
       break;
     case 'menu_jobs':
       await handleJobsFlow({ ...freshState, flow: 'jobs' }, incoming, phoneNumberId, accessToken);

@@ -1,7 +1,7 @@
 import { supabaseAdminClient } from '../config/database';
 import { createCandidate } from './candidateService';
 
-export type AppRole = 'admin' | 'worker' | 'candidate' | 'partner';
+export type AppRole = 'admin' | 'worker' | 'candidate' | 'partner' | 'employer';
 
 export type AppUserStatus = 'Active' | 'Inactive' | 'Suspended';
 
@@ -32,10 +32,33 @@ export type PartnerApplicationRecord = {
   updated_at: string | null;
 };
 
+export type EmployerLeadRecord = {
+  id: string;
+  user_id?: string | null;
+  phone_number: string | null;
+  contact_name: string | null;
+  company_name: string | null;
+  email: string | null;
+  country: string | null;
+  city: string | null;
+  professions: string | null;
+  quantity: string | null;
+  salary_range: string | null;
+  contract_duration: string | null;
+  duty_hours: string | null;
+  benefits_included: string | null;
+  comments: string | null;
+  status: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  payload?: Record<string, any> | null;
+};
+
 export type PortalProfile = {
   user: AppUserRecord | null;
   linkedCandidate: Record<string, any> | null;
   partnerApplication: PartnerApplicationRecord | null;
+  employerLead: EmployerLeadRecord | null;
 };
 
 type AuthUserLike = {
@@ -216,6 +239,10 @@ export function normalizeAppRole(role?: string | null): AppRole {
     return 'partner';
   }
 
+  if (normalized === 'employer' || normalized === 'client') {
+    return 'employer';
+  }
+
   if (normalized === 'candidate') {
     return 'candidate';
   }
@@ -225,6 +252,120 @@ export function normalizeAppRole(role?: string | null): AppRole {
   }
 
   return 'candidate';
+}
+
+async function tryLinkEmployerLeadToUser(employerLeadId: string, userId: string) {
+  const db = supabaseAdminClient();
+  let updateError: any = null;
+  let data: EmployerLeadRecord | null = null;
+
+  ({ data, error: updateError } = await db
+    .from('employer_leads')
+    .update({ user_id: userId, updated_at: new Date().toISOString() })
+    .eq('id', employerLeadId)
+    .is('user_id', null)
+    .select('*')
+    .maybeSingle());
+
+  if (updateError && isMissingColumnError(updateError, 'user_id')) {
+    return null;
+  }
+
+  if (updateError) {
+    throw updateError;
+  }
+
+  if (data) {
+    return data;
+  }
+
+  const { data: refreshed, error: refreshError } = await db
+    .from('employer_leads')
+    .select('*')
+    .eq('id', employerLeadId)
+    .maybeSingle();
+
+  if (refreshError) {
+    throw refreshError;
+  }
+
+  return (refreshed as EmployerLeadRecord | null) || null;
+}
+
+async function findLatestEmployerLeadByIdentity(email?: string | null, phone?: string | null) {
+  const db = supabaseAdminClient();
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPhone = String(phone || '').trim();
+
+  if (normalizedEmail) {
+    const { data, error } = await db
+      .from('employer_leads')
+      .select('*')
+      .ilike('email', normalizedEmail)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      throw error;
+    }
+
+    if (data?.[0]) {
+      return data[0] as EmployerLeadRecord;
+    }
+  }
+
+  if (normalizedPhone) {
+    const { data, error } = await db
+      .from('employer_leads')
+      .select('*')
+      .eq('phone_number', normalizedPhone)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if (error) {
+      throw error;
+    }
+
+    if (data?.[0]) {
+      return data[0] as EmployerLeadRecord;
+    }
+  }
+
+  return null;
+}
+
+export async function getLatestEmployerLeadForUser(userId: string, email?: string | null, phone?: string | null) {
+  const db = supabaseAdminClient();
+
+  const { data: directMatch, error: directError } = await db
+    .from('employer_leads')
+    .select('*')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false })
+    .limit(1);
+
+  if (directError && !isMissingColumnError(directError, 'user_id')) {
+    throw directError;
+  }
+
+  if (directMatch?.[0]) {
+    return directMatch[0] as EmployerLeadRecord;
+  }
+
+  const matchedLead = await findLatestEmployerLeadByIdentity(email, phone);
+  if (matchedLead && userId) {
+    const linkedLead = await tryLinkEmployerLeadToUser(matchedLead.id, userId);
+    if (linkedLead) {
+      return linkedLead;
+    }
+
+    return {
+      ...matchedLead,
+      user_id: userId,
+    } as EmployerLeadRecord;
+  }
+
+  return matchedLead;
 }
 
 export async function getUserById(userId: string) {
@@ -403,7 +544,7 @@ export async function getPortalProfile(userId: string): Promise<PortalProfile> {
 
   linkedCandidate = (existingLinkedCandidate as Record<string, any> | null) || null;
 
-  if (!linkedCandidate) {
+  if (!linkedCandidate && (!user?.role || normalizeAppRole(user.role) === 'candidate')) {
     const { data: authUserResult, error: authUserError } = await db.auth.admin.getUserById(userId);
     if (authUserError) {
       throw authUserError;
@@ -422,11 +563,17 @@ export async function getPortalProfile(userId: string): Promise<PortalProfile> {
     user?.email || candidateRecord?.email || null,
     user?.phone || null,
   );
+  const employerLead = await getLatestEmployerLeadForUser(
+    userId,
+    user?.email || null,
+    user?.phone || null,
+  );
 
   return {
     user,
     linkedCandidate: candidateRecord,
     partnerApplication,
+    employerLead,
   };
 }
 

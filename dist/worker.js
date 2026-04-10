@@ -73,8 +73,11 @@ async function main() {
     startedWorkers.push('document-linking');
     if (process.env.WHATSAPP_ACCESS_TOKEN) {
         const { startWhatsAppMediaWorker } = await Promise.resolve().then(() => __importStar(require('./workers/whatsappMediaWorker')));
+        const { startWhatsAppCandidateReminderWorker } = await Promise.resolve().then(() => __importStar(require('./workers/whatsappCandidateReminderWorker')));
         startWhatsAppMediaWorker();
         startedWorkers.push('whatsapp-media');
+        startWhatsAppCandidateReminderWorker();
+        startedWorkers.push('whatsapp-candidate-reminders');
     }
     else {
         logger.warn('Skipping WhatsApp media worker (WHATSAPP_ACCESS_TOKEN missing)');
@@ -87,7 +90,7 @@ async function main() {
     if (process.env.RUN_GMAIL_POLLING === 'true') {
         if (process.env.GMAIL_CLIENT_ID && (process.env.GMAIL_REFRESH_TOKEN || process.env.GMAIL3_REFRESH_TOKEN)) {
             const { startGmailPolling } = await Promise.resolve().then(() => __importStar(require('./workers/gmailPollingWorker')));
-            startGmailPolling(5).catch((err) => logger.error('Failed to start Gmail polling', err));
+            startGmailPolling(1440).catch((err) => logger.error('Failed to start Gmail polling', err));
             startedWorkers.push('gmail-polling');
             // Historical backfill from 2024-01-01 — Account 3 only
             const { startGmailBackfill } = await Promise.resolve().then(() => __importStar(require('./workers/gmailBackfillWorker')));

@@ -38,6 +38,21 @@ async function safeJobCounts(q) {
     }
 }
 router.get('/queue', async (_req, res) => {
+    // When BullMQ workers are disabled, skip all Redis/Queue interaction entirely.
+    // Calling safeJobCounts() would instantiate 4 BullMQ Queue objects, each opening
+    // 2 persistent IORedis connections (8 total) that send PING keepalives every ~5 s
+    // => ~138K+ commands/day on Upstash for nothing.
+    if (process.env.RUN_WORKER !== 'true') {
+        return res.status(200).json({
+            ok: true,
+            cached: false,
+            redis: { ping: 'SKIPPED', method: 'none' },
+            queue: { name: 'cv-parsing', counts: { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 } },
+            queues: [],
+            workerMode: false,
+            message: 'BullMQ workers disabled — Redis not connected',
+        });
+    }
     try {
         if (queueHealthCache && queueHealthCache.expiresAt > Date.now()) {
             return res.status(queueHealthCache.statusCode).json({

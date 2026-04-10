@@ -166,6 +166,38 @@ const CERTIFICATE_KEYWORDS = [
     ...CERTIFICATE_CORE_KEYWORDS,
     ...CERTIFICATE_PROFESSION_KEYWORDS,
 ];
+const TRUSTED_SPLIT_AI_CONFIDENCE_THRESHOLD = 0.85;
+function normalizeStoredCategory(category) {
+    return (category || '').toString().toLowerCase().replace(/^photo$/, 'photos').replace(/^cv$/, 'cv_resume');
+}
+function buildTrustedStoredAiResult(document) {
+    if (!document || document.verification_status !== documentCategories_1.VERIFICATION_STATUS.PENDING_AI) {
+        return null;
+    }
+    if (!document.ai_processing_completed_at) {
+        return null;
+    }
+    const category = normalizeStoredCategory(document.detected_category || document.category);
+    const confidence = typeof document.ai_confidence === 'number'
+        ? document.ai_confidence
+        : (typeof document.confidence === 'number' ? document.confidence : undefined);
+    if (!category || confidence === undefined || confidence < TRUSTED_SPLIT_AI_CONFIDENCE_THRESHOLD) {
+        return null;
+    }
+    if (category === documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS) {
+        return null;
+    }
+    const extractedIdentity = document.extracted_identity_json && typeof document.extracted_identity_json === 'object'
+        ? document.extracted_identity_json
+        : {};
+    return {
+        success: true,
+        category,
+        confidence,
+        ocr_confidence: typeof document.ocr_confidence === 'number' ? document.ocr_confidence : undefined,
+        extracted_identity: extractedIdentity,
+    };
+}
 /**
  * Sign request body with HMAC-SHA256
  */
@@ -297,64 +329,72 @@ async function processDocumentVerification(job) {
     const db = (0, database_1.supabaseAdminClient)();
     const { data: currentDocument } = await db
         .from('candidate_documents')
-        .select('candidate_id, source')
+        .select('candidate_id, source, category, detected_category, confidence, ai_confidence, ocr_confidence, extracted_identity_json, ai_processing_completed_at, verification_status')
         .eq('id', documentId)
         .maybeSingle();
     if (currentDocument?.candidate_id) {
         candidateId = currentDocument.candidate_id;
     }
     const allowCandidateReassignment = currentDocument?.source !== 'email';
+    const trustedStoredAiResult = buildTrustedStoredAiResult(currentDocument);
     try {
-        // =============================================================================
-        // STEP 1: Log AI scan started
-        // =============================================================================
-        await documentVerificationLogService_1.documentVerificationLogService.logAIScanStarted(requestId, documentId, candidateId);
-        // Update document record: AI processing started
-        await db
-            .from('candidate_documents')
-            .update({
-            ai_processing_started_at: new Date().toISOString(),
-        })
-            .eq('id', documentId);
-        // =============================================================================
-        // STEP 2: Download document from Supabase Storage
-        // =============================================================================
-        const { data: fileData, error: downloadError } = await db.storage
-            .from(storageBucket)
-            .download(storagePath);
-        if (downloadError || !fileData) {
-            throw new Error(`Failed to download document from storage: ${downloadError?.message}`);
+        let aiResult;
+        if (trustedStoredAiResult) {
+            console.log(`[DocumentVerification] Reusing trusted split AI result for document ${documentId} (category=${trustedStoredAiResult.category}, confidence=${trustedStoredAiResult.confidence})`);
+            aiResult = trustedStoredAiResult;
         }
-        // Convert file to base64 for AI service
-        // Supabase storage.download() returns a Blob, so we need to convert it to ArrayBuffer first
-        console.log(`[DocumentVerification] FileData type: ${typeof fileData}, is Blob: ${fileData instanceof Blob}`);
-        const arrayBuffer = await fileData.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        // Validate file is not empty
-        if (buffer.length === 0) {
-            throw new Error('Downloaded file is empty');
+        else {
+            // =============================================================================
+            // STEP 1: Log AI scan started
+            // =============================================================================
+            await documentVerificationLogService_1.documentVerificationLogService.logAIScanStarted(requestId, documentId, candidateId);
+            // Update document record: AI processing started
+            await db
+                .from('candidate_documents')
+                .update({
+                ai_processing_started_at: new Date().toISOString(),
+            })
+                .eq('id', documentId);
+            // =============================================================================
+            // STEP 2: Download document from Supabase Storage
+            // =============================================================================
+            const { data: fileData, error: downloadError } = await db.storage
+                .from(storageBucket)
+                .download(storagePath);
+            if (downloadError || !fileData) {
+                throw new Error(`Failed to download document from storage: ${downloadError?.message}`);
+            }
+            // Convert file to base64 for AI service
+            // Supabase storage.download() returns a Blob, so we need to convert it to ArrayBuffer first
+            console.log(`[DocumentVerification] FileData type: ${typeof fileData}, is Blob: ${fileData instanceof Blob}`);
+            const arrayBuffer = await fileData.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            // Validate file is not empty
+            if (buffer.length === 0) {
+                throw new Error('Downloaded file is empty');
+            }
+            // Log file size and raw content preview for debugging
+            console.log(`[DocumentVerification] File size: ${buffer.length} bytes, fileName: ${fileName}`);
+            console.log(`[DocumentVerification] Raw content preview (first 50 bytes as hex): ${buffer.toString('hex').substring(0, 100)}`);
+            console.log(`[DocumentVerification] Raw content preview (first 50 bytes as text): ${buffer.toString('utf8', 0, Math.min(50, buffer.length))}`);
+            const base64Content = buffer.toString('base64');
+            // Validate base64 encoding
+            if (!base64Content || base64Content.length < 4) {
+                throw new Error(`Invalid base64 content: length=${base64Content?.length || 0}`);
+            }
+            // Log base64 preview for debugging (first 50 chars)
+            console.log(`[DocumentVerification] Base64 preview (first 50 chars): ${base64Content.substring(0, 50)}`);
+            console.log(`[DocumentVerification] Base64 length: ${base64Content.length}`);
+            // Verify base64 is valid (only base64 chars)
+            const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+            if (!base64Regex.test(base64Content)) {
+                console.error(`[DocumentVerification] WARNING: Base64 contains invalid characters! First 100 chars: ${base64Content.substring(0, 100)}`);
+            }
+            // =============================================================================
+            // STEP 3: Call AI categorization service
+            // =============================================================================
+            aiResult = await callAICategorizationService(base64Content, fileName, mimeType);
         }
-        // Log file size and raw content preview for debugging
-        console.log(`[DocumentVerification] File size: ${buffer.length} bytes, fileName: ${fileName}`);
-        console.log(`[DocumentVerification] Raw content preview (first 50 bytes as hex): ${buffer.toString('hex').substring(0, 100)}`);
-        console.log(`[DocumentVerification] Raw content preview (first 50 bytes as text): ${buffer.toString('utf8', 0, Math.min(50, buffer.length))}`);
-        const base64Content = buffer.toString('base64');
-        // Validate base64 encoding
-        if (!base64Content || base64Content.length < 4) {
-            throw new Error(`Invalid base64 content: length=${base64Content?.length || 0}`);
-        }
-        // Log base64 preview for debugging (first 50 chars)
-        console.log(`[DocumentVerification] Base64 preview (first 50 chars): ${base64Content.substring(0, 50)}`);
-        console.log(`[DocumentVerification] Base64 length: ${base64Content.length}`);
-        // Verify base64 is valid (only base64 chars)
-        const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
-        if (!base64Regex.test(base64Content)) {
-            console.error(`[DocumentVerification] WARNING: Base64 contains invalid characters! First 100 chars: ${base64Content.substring(0, 100)}`);
-        }
-        // =============================================================================
-        // STEP 3: Call AI categorization service
-        // =============================================================================
-        const aiResult = await callAICategorizationService(base64Content, fileName, mimeType);
         // Declare errorStage early to avoid "used before declaration" error
         let errorStage = null;
         if (!aiResult.success || aiResult.error) {

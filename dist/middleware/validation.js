@@ -10,6 +10,7 @@ exports.validateName = validateName;
 exports.validateGender = validateGender;
 exports.validateMaritalStatus = validateMaritalStatus;
 exports.validateAddress = validateAddress;
+exports.validatePaymentAmount = validatePaymentAmount;
 exports.validateCandidateData = validateCandidateData;
 exports.validateCandidate = validateCandidate;
 // Email validation pattern
@@ -138,6 +139,21 @@ function validateAddress(address) {
     }
     return null;
 }
+function validatePaymentAmount(paymentAmount) {
+    if (paymentAmount === undefined || paymentAmount === null || paymentAmount === '') {
+        return null;
+    }
+    const parsed = typeof paymentAmount === 'number'
+        ? paymentAmount
+        : Number(String(paymentAmount).replace(/,/g, '').trim());
+    if (!Number.isFinite(parsed)) {
+        return { field: 'payment_amount', message: 'Payment amount must be a valid number' };
+    }
+    if (parsed < 0) {
+        return { field: 'payment_amount', message: 'Payment amount cannot be negative' };
+    }
+    return null;
+}
 function validateCandidateData(data) {
     const errors = [];
     // Required field validation
@@ -186,6 +202,11 @@ function validateCandidateData(data) {
         const addressError = validateAddress(data.address);
         if (addressError)
             errors.push(addressError);
+    }
+    if (data.payment_amount !== undefined) {
+        const paymentError = validatePaymentAmount(data.payment_amount);
+        if (paymentError)
+            errors.push(paymentError);
     }
     return errors;
 }

@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.authenticate = authenticate;
 const database_1 = require("../config/database");
+const userService_1 = require("../services/userService");
 async function authenticate(req, res, next) {
     const auth = req.headers.authorization;
     if (!auth || !auth.startsWith('Bearer ')) {
@@ -16,12 +17,15 @@ async function authenticate(req, res, next) {
             console.error('Auth error:', error?.message || 'User not found');
             return res.status(401).json({ error: 'Unauthorized - Invalid token' });
         }
-        // Extract role from user metadata (defaults to 'employee' if not set)
-        const role = user.user_metadata?.role || 'employee';
+        const resolved = await (0, userService_1.resolveAuthenticatedUserProfile)(user);
+        if (!resolved.isActive) {
+            return res.status(403).json({ error: 'Account is inactive' });
+        }
         req.user = {
             id: user.id,
             email: user.email,
-            role: role
+            role: resolved.role,
+            linkedCandidateId: resolved.linkedCandidateId,
         };
         next();
     }

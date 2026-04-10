@@ -13,8 +13,9 @@ import { createLogger } from '../utils/errorHandling';
 
 const logger = createLogger('WhatsAppMonitorWorker');
 
-const POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-const ALERT_THROTTLE_MS = 60 * 60 * 1000; // 1 hour between alerts per account
+const POLL_INTERVAL_MS = 60 * 60 * 1000;        // 1 hour
+const ALERT_THROTTLE_MS = 60 * 60 * 1000;       // 1 hour — for unexpected drops
+const STUCK_THROTTLE_MS = 24 * 60 * 60 * 1000;  // 24 hours — for already-known disconnects
 
 const BRIDGE_URL = process.env.WHATSAPP_BRIDGE_URL || 'http://recruitment-whatsapp-bridge.railway.internal:4310';
 const ALERT_EMAIL = process.env.WHATSAPP_ALERT_EMAIL || process.env.DUPLICATE_ALERT_EMAIL || 'falishaoep4035@gmail.com';
@@ -40,10 +41,10 @@ async function fetchBridgeStatus(): Promise<BridgeSession[]> {
   return data.sessions ?? [];
 }
 
-function canSendAlert(accountId: string): boolean {
+function canSendAlert(accountId: string, throttleMs = ALERT_THROTTLE_MS): boolean {
   const last = lastAlertSentAt.get(accountId);
   if (!last) return true;
-  return Date.now() - last > ALERT_THROTTLE_MS;
+  return Date.now() - last > throttleMs;
 }
 
 async function sendDisconnectAlert(session: BridgeSession, previousStatus: string): Promise<void> {
@@ -98,11 +99,23 @@ async function runMonitorCheck(): Promise<void> {
     return;
   }
 
+  // Only monitor accounts that are expected to be connected (skip idle/paused-only ones)
+  const IGNORED_STATUSES = new Set(['idle', 'paused']);
+
   for (const session of sessions) {
     const prev = lastKnownStatus.get(session.accountId);
 
-    // First poll — just record current state, no alert
+    // First poll — record current state; if already idle/paused, skip silently forever
     if (prev === undefined) {
+      lastKnownStatus.set(session.accountId, session.status);
+      if (IGNORED_STATUSES.has(session.status)) {
+        logger.info('Account starts in ignored state — won\'t alert', { accountId: session.accountId, status: session.status });
+      }
+      continue;
+    }
+
+    // Skip accounts that have never been connected (idle/paused from the start)
+    if (IGNORED_STATUSES.has(prev) && IGNORED_STATUSES.has(session.status)) {
       lastKnownStatus.set(session.accountId, session.status);
       continue;
     }
@@ -111,9 +124,9 @@ async function runMonitorCheck(): Promise<void> {
     const isNowDisconnected = session.status !== 'connected' && session.status !== 'connecting' && session.status !== 'needs_qr';
 
     // Alert if: was connected and is now degraded/idle (unexpected drop)
-    // OR was degraded/idle and still is after an hour (stuck, hasn't recovered)
     const isUnexpectedDrop = wasConnected && isNowDisconnected;
-    const isStuckDisconnected = !wasConnected && isNowDisconnected && canSendAlert(session.accountId);
+    // For accounts already known to be disconnected, throttle to once per 24 hours
+    const isStuckDisconnected = !wasConnected && isNowDisconnected && !IGNORED_STATUSES.has(prev) && canSendAlert(session.accountId, STUCK_THROTTLE_MS);
 
     if (isUnexpectedDrop || isStuckDisconnected) {
       await sendDisconnectAlert(session, prev);

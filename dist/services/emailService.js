@@ -117,39 +117,57 @@ class EmailService {
         return this.transporter;
     }
     async sendEmailDetailed(options) {
-        // Production: use Resend HTTP API (Railway blocks SMTP ports 25/465/587)
-        if (process.env.RESEND_API_KEY) {
-            const result = await this.sendViaResend(options);
-            await this.auditOutboundEmail(options, result);
-            return result;
+        const MAX_ATTEMPTS = 2;
+        let lastError;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                let result;
+                // Production: use Resend HTTP API (Railway blocks SMTP ports 25/465/587)
+                if (process.env.RESEND_API_KEY) {
+                    result = await this.sendViaResend(options);
+                }
+                else {
+                    // Local dev fallback: Hostinger SMTP (only works outside Railway)
+                    const fromAddress = this.getFromEmail();
+                    const transporter = this.getTransporter();
+                    const info = await transporter.sendMail({
+                        from: `"Falisha Jobs" <${fromAddress}>`,
+                        to: options.to,
+                        subject: options.subject,
+                        text: options.text,
+                        html: options.html,
+                    });
+                    console.log('[EmailService] Email sent via SMTP:', info.messageId);
+                    result = {
+                        sent: true,
+                        provider: 'hostinger-smtp',
+                        from: fromAddress,
+                        to: options.to,
+                        subject: options.subject,
+                        providerMessageId: info.messageId || undefined,
+                    };
+                }
+                await this.auditOutboundEmail(options, result);
+                return result;
+            }
+            catch (error) {
+                lastError = error;
+                console.error(`[EmailService] Send attempt ${attempt}/${MAX_ATTEMPTS} failed:`, error.message);
+                if (attempt < MAX_ATTEMPTS) {
+                    console.log('[EmailService] Retrying in 5 seconds...');
+                    await new Promise((resolve) => setTimeout(resolve, 5000));
+                }
+            }
         }
-        // Local dev fallback: Hostinger SMTP (only works outside Railway)
-        const fromAddress = this.getFromEmail();
-        const transporter = this.getTransporter();
-        try {
-            const info = await transporter.sendMail({
-                from: `"Falisha Jobs" <${fromAddress}>`,
-                to: options.to,
-                subject: options.subject,
-                text: options.text,
-                html: options.html,
-            });
-            console.log('[EmailService] Email sent via SMTP:', info.messageId);
-            const result = {
-                sent: true,
-                provider: 'hostinger-smtp',
-                from: fromAddress,
-                to: options.to,
-                subject: options.subject,
-                providerMessageId: info.messageId || undefined,
-            };
-            await this.auditOutboundEmail(options, result);
-            return result;
-        }
-        catch (error) {
-            console.error('[EmailService] Failed to send email:', error);
-            throw new Error(`Failed to send email: ${error.message}`);
-        }
+        // All attempts exhausted — do not send, just log and return failed result
+        console.error('[EmailService] All send attempts failed. Email NOT sent to:', options.to, '| Error:', lastError?.message);
+        return {
+            sent: false,
+            provider: process.env.RESEND_API_KEY ? 'resend' : 'hostinger-smtp',
+            from: EmailService.PRIMARY_FROM_EMAIL,
+            to: options.to,
+            subject: options.subject,
+        };
     }
     async sendEmail(options) {
         const result = await this.sendEmailDetailed(options);

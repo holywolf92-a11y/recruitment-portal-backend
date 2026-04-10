@@ -42,9 +42,9 @@ const XLSX = __importStar(require("xlsx"));
 const adm_zip_1 = __importDefault(require("adm-zip"));
 const auth_1 = require("../middleware/auth");
 const userService_1 = require("../services/userService");
-const candidateService_1 = require("../services/candidateService");
 const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
 const database_1 = require("../config/database");
+const partnerCandidateService_1 = require("../services/partnerCandidateService");
 const bulkUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 const router = (0, express_1.Router)();
 const VALID_STATUSES = ['Active', 'Inactive', 'Suspended'];
@@ -69,16 +69,16 @@ function splitDisplayName(name) {
         lastName: parts.slice(1).join(' ') || undefined,
     };
 }
-function sanitizePartnerToken(value) {
-    return String(value || '')
-        .replace(/\|/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
+function isMissingColumnError(error, columnName) {
+    const message = String(error?.message || '').toLowerCase();
+    return message.includes(columnName.toLowerCase()) && message.includes('column');
 }
-function buildPartnerCandidateSource(userId, partnerName, companyName) {
-    const safeName = sanitizePartnerToken(partnerName) || 'Partner';
-    const safeCompany = sanitizePartnerToken(companyName);
-    return `Partner|${userId}|${safeName}|${safeCompany}`;
+function mapCandidateIdentityFields(candidate) {
+    return {
+        ...candidate,
+        cnic: candidate.cnic_normalized || candidate.cnic || null,
+        passport: candidate.passport_normalized || candidate.passport || null,
+    };
 }
 router.get('/me', auth_1.authenticate, async (req, res) => {
     const user = req.user;
@@ -103,6 +103,166 @@ router.get('/portal-profile', auth_1.authenticate, async (req, res) => {
     catch (error) {
         console.error('Error fetching portal profile:', error);
         return res.status(500).json({ error: error.message || 'Failed to load portal profile' });
+    }
+});
+router.patch('/portal-profile', auth_1.authenticate, async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        const { name, email, phone, company_name, city_country, partner_type, contact_name, country, city, professions, quantity, salary_range, duty_hours, contract_duration, benefits_included, comments, } = req.body ?? {};
+        const nextName = name === undefined ? undefined : String(name || '').trim();
+        const nextEmail = email === undefined ? undefined : String(email || '').trim().toLowerCase();
+        const nextPhone = phone === undefined ? undefined : String(phone || '').trim();
+        const nextCompanyName = company_name === undefined ? undefined : String(company_name || '').trim();
+        const nextCityCountry = city_country === undefined ? undefined : String(city_country || '').trim();
+        const nextPartnerType = partner_type === undefined ? undefined : String(partner_type || '').trim();
+        const nextContactName = contact_name === undefined ? undefined : String(contact_name || '').trim();
+        const nextCountry = country === undefined ? undefined : String(country || '').trim();
+        const nextCity = city === undefined ? undefined : String(city || '').trim();
+        const nextProfessions = professions === undefined ? undefined : String(professions || '').trim();
+        const nextQuantity = quantity === undefined ? undefined : String(quantity || '').trim();
+        const nextSalaryRange = salary_range === undefined ? undefined : String(salary_range || '').trim();
+        const nextDutyHours = duty_hours === undefined ? undefined : String(duty_hours || '').trim();
+        const nextContractDuration = contract_duration === undefined ? undefined : String(contract_duration || '').trim();
+        const nextBenefitsIncluded = benefits_included === undefined ? undefined : String(benefits_included || '').trim();
+        const nextComments = comments === undefined ? undefined : String(comments || '').trim();
+        if (nextEmail !== undefined && !nextEmail) {
+            return res.status(400).json({ error: 'Email cannot be empty' });
+        }
+        if (nextName !== undefined && !nextName) {
+            return res.status(400).json({ error: 'Name cannot be empty' });
+        }
+        const existingUser = await (0, userService_1.getUserById)(user.id);
+        const currentEmail = existingUser?.email || user.email || null;
+        const currentRole = existingUser?.role || user.role || 'candidate';
+        const currentStatus = existingUser?.status || 'Active';
+        const updatedUser = existingUser
+            ? await (0, userService_1.updateAppUserProfile)(user.id, {
+                email: nextEmail,
+                name: nextName,
+                phone: nextPhone,
+            })
+            : await (0, userService_1.upsertAppUserProfile)({
+                id: user.id,
+                email: nextEmail || currentEmail || `${user.id}@portal.local`,
+                role: currentRole,
+                name: nextName || null,
+                phone: nextPhone || null,
+                status: currentStatus,
+            });
+        const supabase = (0, database_1.supabaseAdminClient)();
+        const { data: authUserResult } = await supabase.auth.admin.getUserById(user.id);
+        const currentMetadata = authUserResult?.user?.user_metadata || {};
+        await supabase.auth.admin.updateUserById(user.id, {
+            email: nextEmail || undefined,
+            user_metadata: {
+                ...currentMetadata,
+                name: updatedUser.name,
+                phone: updatedUser.phone,
+                role: updatedUser.role,
+            },
+        });
+        if (updatedUser.role === 'partner') {
+            const portalProfile = await (0, userService_1.getPortalProfile)(user.id);
+            const fallbackPartnerApplication = portalProfile.partnerApplication?.id
+                ? portalProfile.partnerApplication
+                : await (0, userService_1.getLatestPartnerApplicationForUser)(user.id, nextEmail || currentEmail, nextPhone !== undefined ? nextPhone : updatedUser.phone);
+            const partnerApplicationId = fallbackPartnerApplication?.id;
+            if (partnerApplicationId) {
+                const partnerUpdates = {
+                    updated_at: new Date().toISOString(),
+                    user_id: user.id,
+                };
+                if (nextCompanyName !== undefined)
+                    partnerUpdates.company_name = nextCompanyName || null;
+                if (nextCityCountry !== undefined)
+                    partnerUpdates.city_country = nextCityCountry || null;
+                if (nextPartnerType !== undefined)
+                    partnerUpdates.partner_type = nextPartnerType || null;
+                if (nextPhone !== undefined)
+                    partnerUpdates.phone_number = nextPhone || null;
+                if (nextEmail !== undefined)
+                    partnerUpdates.email = nextEmail || null;
+                if (Object.keys(partnerUpdates).length > 1) {
+                    let { error: partnerUpdateError } = await supabase
+                        .from('partner_applications')
+                        .update(partnerUpdates)
+                        .eq('id', partnerApplicationId);
+                    if (partnerUpdateError && isMissingColumnError(partnerUpdateError, 'user_id')) {
+                        delete partnerUpdates.user_id;
+                        ({ error: partnerUpdateError } = await supabase
+                            .from('partner_applications')
+                            .update(partnerUpdates)
+                            .eq('id', partnerApplicationId));
+                    }
+                    if (partnerUpdateError) {
+                        throw partnerUpdateError;
+                    }
+                }
+            }
+        }
+        if (updatedUser.role === 'employer') {
+            const portalProfile = await (0, userService_1.getPortalProfile)(user.id);
+            const employerLeadId = portalProfile.employerLead?.id || null;
+            const employerUpdates = {
+                updated_at: new Date().toISOString(),
+                user_id: user.id,
+            };
+            if (nextCompanyName !== undefined)
+                employerUpdates.company_name = nextCompanyName || null;
+            if (nextContactName !== undefined)
+                employerUpdates.contact_name = nextContactName || null;
+            if (nextPhone !== undefined)
+                employerUpdates.phone_number = nextPhone || null;
+            if (nextEmail !== undefined)
+                employerUpdates.email = nextEmail || null;
+            if (nextCountry !== undefined)
+                employerUpdates.country = nextCountry || null;
+            if (nextCity !== undefined)
+                employerUpdates.city = nextCity || null;
+            if (nextProfessions !== undefined)
+                employerUpdates.professions = nextProfessions || null;
+            if (nextQuantity !== undefined)
+                employerUpdates.quantity = nextQuantity || null;
+            if (nextSalaryRange !== undefined)
+                employerUpdates.salary_range = nextSalaryRange || null;
+            if (nextDutyHours !== undefined)
+                employerUpdates.duty_hours = nextDutyHours || null;
+            if (nextContractDuration !== undefined)
+                employerUpdates.contract_duration = nextContractDuration || null;
+            if (nextBenefitsIncluded !== undefined)
+                employerUpdates.benefits_included = nextBenefitsIncluded || null;
+            if (nextComments !== undefined)
+                employerUpdates.comments = nextComments || null;
+            if (employerLeadId) {
+                let { error: employerUpdateError } = await supabase
+                    .from('employer_leads')
+                    .update(employerUpdates)
+                    .eq('id', employerLeadId);
+                if (employerUpdateError && isMissingColumnError(employerUpdateError, 'user_id')) {
+                    delete employerUpdates.user_id;
+                    ({ error: employerUpdateError } = await supabase
+                        .from('employer_leads')
+                        .update(employerUpdates)
+                        .eq('id', employerLeadId));
+                }
+                if (employerUpdateError) {
+                    throw employerUpdateError;
+                }
+            }
+        }
+        const refreshedProfile = await (0, userService_1.getPortalProfile)(user.id);
+        return res.json({
+            role: updatedUser.role,
+            linkedCandidateId: refreshedProfile.linkedCandidate?.id || user.linkedCandidateId || null,
+            profile: refreshedProfile,
+        });
+    }
+    catch (error) {
+        console.error('Error updating portal profile:', error);
+        return res.status(500).json({ error: error.message || 'Failed to update portal profile' });
     }
 });
 router.post('/candidate-profile/bootstrap', auth_1.authenticate, async (req, res) => {
@@ -141,17 +301,28 @@ router.get('/partner/candidates', auth_1.authenticate, async (req, res) => {
             return res.status(403).json({ error: 'Only partner users can view partner submissions' });
         }
         const db = (0, database_1.supabaseAdminClient)();
-        const { data, error } = await db
+        const { data: taggedData, error: taggedError } = await db
             .from('candidates')
-            .select('id,candidate_code,name,status,source,email,phone,cnic,passport,position,country_of_interest,created_at')
+            .select('id,candidate_code,name,status,source,email,phone,cnic_normalized,passport_normalized,position,country_of_interest,partner_id,partner_name,is_partner_candidate,created_at')
+            .eq('partner_id', user.id)
+            .neq('status', 'Deleted')
+            .order('created_at', { ascending: false })
+            .limit(20);
+        if (taggedError) {
+            throw taggedError;
+        }
+        const { data: legacyData, error: legacyError } = await db
+            .from('candidates')
+            .select('id,candidate_code,name,status,source,email,phone,cnic_normalized,passport_normalized,position,country_of_interest,partner_id,partner_name,is_partner_candidate,created_at')
             .ilike('source', `Partner|${user.id}|%`)
             .neq('status', 'Deleted')
             .order('created_at', { ascending: false })
             .limit(20);
-        if (error) {
-            throw error;
+        if (legacyError) {
+            throw legacyError;
         }
-        return res.json({ candidates: data || [] });
+        const uniqueCandidates = Array.from(new Map([...(taggedData || []), ...(legacyData || [])].map((candidate) => [candidate.id, mapCandidateIdentityFields(candidate)])).values());
+        return res.json({ candidates: uniqueCandidates.slice(0, 20) });
     }
     catch (error) {
         console.error('Error fetching partner candidates:', error);
@@ -174,34 +345,75 @@ router.post('/partner/candidates', auth_1.authenticate, async (req, res) => {
         if (!name) {
             return res.status(400).json({ error: 'Candidate name is required' });
         }
-        if (!email && !phone) {
-            return res.status(400).json({ error: 'Provide at least an email or phone number for the candidate' });
+        if (!String(payload.cnic || payload.passport || '').trim()) {
+            return res.status(400).json({ error: 'CNIC / Passport is required' });
+        }
+        if (!phone) {
+            return res.status(400).json({ error: 'Phone is required' });
         }
         const portalProfile = await (0, userService_1.getPortalProfile)(user.id);
         const partnerName = portalProfile.user?.name || user.email || 'Partner';
         const partnerCompany = portalProfile.partnerApplication?.company_name || null;
-        const candidateData = {
+        const result = await (0, partnerCandidateService_1.upsertPartnerCandidate)({
             name,
-            email: email || undefined,
+            email: email && !(0, progressiveDataCompletionService_1.isGovernmentEmail)(email) ? email : undefined,
             phone: phone || undefined,
             cnic: String(payload.cnic || '').trim() || undefined,
             passport: String(payload.passport || '').trim() || undefined,
-            position: payload.position,
-            country_of_interest: payload.country_of_interest,
-            nationality: payload.nationality,
-            address: payload.address,
-            status: 'Applied',
-            source: buildPartnerCandidateSource(user.id, partnerName, partnerCompany),
-        };
-        if (candidateData.email && (0, progressiveDataCompletionService_1.isGovernmentEmail)(candidateData.email)) {
-            candidateData.email = undefined;
-        }
-        const candidate = await (0, candidateService_1.createCandidate)(candidateData, user.id);
-        return res.status(201).json({ candidate });
+            position: typeof payload.position === 'string' ? payload.position : undefined,
+            country_of_interest: typeof payload.country_of_interest === 'string' ? payload.country_of_interest : undefined,
+            nationality: typeof payload.nationality === 'string' ? payload.nationality : undefined,
+            address: typeof payload.address === 'string' ? payload.address : undefined,
+        }, {
+            partnerId: user.id,
+            partnerName,
+            partnerCompany,
+        });
+        return res.status(result.created ? 201 : 200).json({
+            candidate: mapCandidateIdentityFields(result.candidate),
+            created: result.created,
+            matchedBy: result.matchedBy,
+            updatedFields: result.updatedFields,
+        });
     }
     catch (error) {
         console.error('Error creating partner candidate:', error);
         return res.status(400).json({ error: error.message || 'Failed to submit partner candidate' });
+    }
+});
+router.post('/partner/candidates/:candidateId/documents', auth_1.authenticate, bulkUpload.single('file'), async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user)
+            return res.status(401).json({ error: 'Unauthorized' });
+        if (user.role !== 'partner')
+            return res.status(403).json({ error: 'Only partner users can upload partner documents' });
+        if (!req.file)
+            return res.status(400).json({ error: 'File is required' });
+        const portalProfile = await (0, userService_1.getPortalProfile)(user.id);
+        const partnerName = portalProfile.user?.name || user.email || 'Partner';
+        const partnerCompany = portalProfile.partnerApplication?.company_name || null;
+        const document = await (0, partnerCandidateService_1.uploadPartnerManualDocument)({
+            candidateId: req.params.candidateId,
+            partner: {
+                partnerId: user.id,
+                partnerName,
+                partnerCompany,
+            },
+            requestedType: String(req.body?.document_type || '').trim() || undefined,
+            fileName: req.file.originalname,
+            mimeType: req.file.mimetype,
+            buffer: req.file.buffer,
+        });
+        return res.status(201).json({
+            success: true,
+            document,
+            message: 'Document uploaded successfully.',
+        });
+    }
+    catch (error) {
+        console.error('Error uploading partner candidate document:', error);
+        return res.status(400).json({ error: error.message || 'Failed to upload partner document' });
     }
 });
 router.post('/partner/candidates/bulk', auth_1.authenticate, bulkUpload.fields([{ name: 'excel', maxCount: 1 }, { name: 'zip', maxCount: 1 }]), async (req, res) => {
@@ -223,30 +435,28 @@ router.post('/partner/candidates/bulk', auth_1.authenticate, bulkUpload.fields([
             return res.status(400).json({ error: 'Excel file contains no data rows' });
         if (rows.length > 500)
             return res.status(400).json({ error: 'Maximum 500 candidates per bulk upload' });
-        // Extract ZIP entries indexed by cnic prefix
-        const zipEntries = new Map();
         const zipFile = files?.zip?.[0];
-        if (zipFile) {
-            const zip = new adm_zip_1.default(zipFile.buffer);
-            for (const entry of zip.getEntries()) {
-                if (entry.isDirectory)
-                    continue;
-                const fname = entry.name.toLowerCase();
-                // Find which CNIC this file belongs to by matching prefix
-                // We'll resolve this per-row below; store all files by first 5 chars as a loose key
-                const buf = entry.getData();
-                const key = fname.replace(/[^0-9a-z]/g, '').slice(0, 13); // cnic digits prefix
-                if (!zipEntries.has(key))
-                    zipEntries.set(key, []);
-                zipEntries.get(key).push({ buffer: buf, filename: entry.name });
-            }
-        }
+        const zipEntries = zipFile
+            ? new adm_zip_1.default(zipFile.buffer).getEntries().filter((entry) => !entry.isDirectory).map((entry) => ({
+                entry,
+                token: entry.entryName
+                    .split('/')
+                    .pop()
+                    ?.replace(/\.[^.]+$/, '')
+                    .replace(/[^0-9a-z]/gi, '')
+                    .toLowerCase() || '',
+            }))
+            : [];
         const portalProfile = await (0, userService_1.getPortalProfile)(user.id);
         const partnerName = portalProfile.user?.name || user.email || 'Partner';
         const partnerCompany = portalProfile.partnerApplication?.company_name || null;
-        const source = buildPartnerCandidateSource(user.id, partnerName, partnerCompany);
-        const db = (0, database_1.supabaseAdminClient)();
+        const partnerContext = {
+            partnerId: user.id,
+            partnerName,
+            partnerCompany,
+        };
         const created = [];
+        let updated = 0;
         const errors = [];
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
@@ -258,54 +468,39 @@ router.post('/partner/candidates/bulk', auth_1.authenticate, bulkUpload.fields([
                 errors.push({ row: i + 2, error: 'Name is required' });
                 continue;
             }
-            if (!cnic && !phone && !email) {
-                errors.push({ row: i + 2, name, error: 'Provide CNIC/Passport, phone, or email' });
+            if (!cnic) {
+                errors.push({ row: i + 2, name, error: 'CNIC/Passport is required' });
+                continue;
+            }
+            if (!phone) {
+                errors.push({ row: i + 2, name, error: 'Phone is required' });
                 continue;
             }
             try {
-                const data = {
+                const result = await (0, partnerCandidateService_1.upsertPartnerCandidate)({
                     name,
                     cnic: cnic || undefined,
                     phone: phone || undefined,
                     email: (email && !(0, progressiveDataCompletionService_1.isGovernmentEmail)(email)) ? email : undefined,
-                    status: 'Applied',
-                    source,
-                };
-                const candidate = await (0, candidateService_1.createCandidate)(data, user.id);
-                created.push(candidate);
-                // Match ZIP files to this candidate by cnic digits
-                if (zipFile && cnic) {
-                    const cnicKey = cnic.replace(/[^0-9a-z]/gi, '').toLowerCase().slice(0, 13);
-                    const matchedFiles = zipEntries.get(cnicKey) || [];
-                    for (const { buffer, filename } of matchedFiles) {
-                        const fLower = filename.toLowerCase();
-                        const isImage = /\.(jpg|jpeg|png)$/i.test(fLower);
-                        const isPhoto = isImage && (fLower.includes('photo') || fLower.includes('pic') || fLower.includes('image'));
-                        const isCNICDoc = fLower.includes('passport') || fLower.includes('cnic') || fLower.includes('id_');
+                }, partnerContext);
+                if (!result.created) {
+                    updated += 1;
+                }
+                created.push(result.candidate);
+                if (zipEntries.length > 0 && cnic) {
+                    const identityToken = cnic.replace(/[^0-9a-z]/gi, '').toLowerCase();
+                    const matchedFiles = zipEntries.filter(({ token }) => token && (token.includes(identityToken) || identityToken.includes(token)));
+                    for (const { entry } of matchedFiles) {
                         try {
-                            if (isPhoto) {
-                                const ext = filename.split('.').pop() || 'jpg';
-                                const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
-                                const { error: photoError } = await db.storage
-                                    .from('candidate-photos')
-                                    .upload(`${candidate.id}/photo.${ext}`, buffer, { contentType: mime, upsert: true });
-                                if (photoError)
-                                    console.warn(`ZIP photo upload for ${candidate.id}:`, photoError.message);
-                            }
-                            else {
-                                const docType = isCNICDoc ? 'passport_cnic' : 'cv';
-                                const ext = filename.split('.').pop() || 'pdf';
-                                const mimeMap = { pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png' };
-                                const mime = mimeMap[ext.toLowerCase()] || 'application/octet-stream';
-                                const { error: docError } = await db.storage
-                                    .from('candidate-documents')
-                                    .upload(`${candidate.id}/${docType}_${Date.now()}.${ext}`, buffer, { contentType: mime, upsert: false });
-                                if (docError)
-                                    console.warn(`ZIP doc upload for ${candidate.id}:`, docError.message);
-                            }
+                            await (0, partnerCandidateService_1.ingestPartnerBulkAttachment)({
+                                candidateId: result.candidate.id,
+                                partner: partnerContext,
+                                fileName: entry.entryName.split('/').pop() || entry.entryName,
+                                buffer: entry.getData(),
+                            });
                         }
                         catch (fileErr) {
-                            console.warn(`Failed to store ZIP file ${filename} for candidate ${candidate.id}:`, fileErr.message);
+                            console.warn(`Failed to ingest ZIP file ${entry.entryName} for candidate ${result.candidate.id}:`, fileErr.message);
                         }
                     }
                 }
@@ -316,7 +511,8 @@ router.post('/partner/candidates/bulk', auth_1.authenticate, bulkUpload.fields([
         }
         return res.status(201).json({
             total: rows.length,
-            created: created.length,
+            created: created.length - updated,
+            updated,
             errors,
             candidates: created,
         });
@@ -339,6 +535,7 @@ router.get('/users', auth_1.authenticate, async (req, res) => {
             workers: users.filter((user) => user.role === 'worker').length,
             candidates: users.filter((user) => user.role === 'candidate').length,
             partners: users.filter((user) => user.role === 'partner').length,
+            employers: users.filter((user) => user.role === 'employer').length,
         };
         return res.json({ users, stats });
     }
@@ -358,7 +555,7 @@ router.patch('/users/:userId', auth_1.authenticate, async (req, res) => {
         if (!existingUser) {
             return res.status(404).json({ error: 'User not found' });
         }
-        if (role !== undefined && !['admin', 'worker', 'candidate', 'partner'].includes((0, userService_1.normalizeAppRole)(role))) {
+        if (role !== undefined && !['admin', 'worker', 'candidate', 'partner', 'employer'].includes((0, userService_1.normalizeAppRole)(role))) {
             return res.status(400).json({ error: 'Invalid role' });
         }
         if (status !== undefined && !VALID_STATUSES.includes(String(status))) {
@@ -410,7 +607,7 @@ router.post('/users', auth_1.authenticate, async (req, res) => {
             return res.status(400).json({ error: 'Email and password are required' });
         }
         const normalizedRole = (0, userService_1.normalizeAppRole)(role);
-        if (!['admin', 'worker', 'candidate', 'partner'].includes(normalizedRole)) {
+        if (!['admin', 'worker', 'candidate', 'partner', 'employer'].includes(normalizedRole)) {
             return res.status(400).json({ error: 'Invalid role' });
         }
         if (normalizedRole === 'candidate' && !candidateId) {

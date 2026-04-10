@@ -56,6 +56,7 @@ const aiProfilePhotoExtractionService_1 = require("../services/aiProfilePhotoExt
 const whatsappService_1 = require("../services/whatsappService");
 const whatsappInboxService_1 = require("../services/whatsappInboxService");
 const professionInferenceService_1 = require("../services/professionInferenceService");
+const singleCvHeuristics_1 = require("../utils/singleCvHeuristics");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 const STORAGE_BUCKET = 'documents';
@@ -94,6 +95,67 @@ function hasMeaningfulText(value) {
         return false;
     const lower = normalized.toLowerCase();
     return !['unknown', 'n/a', 'na', 'none', 'null', 'undefined', 'not provided', 'missing'].includes(lower);
+}
+async function ensureOriginalCvCandidateDocument(args) {
+    const { db, candidate, attachmentId, fileName, mimeType, fileBytes, reason } = args;
+    const { data: existingCvDoc, error: existingCvErr } = await db
+        .from('candidate_documents')
+        .select('id')
+        .eq('inbox_attachment_id', attachmentId)
+        .limit(1);
+    if (!existingCvErr && existingCvDoc && existingCvDoc.length > 0) {
+        return;
+    }
+    const timestamp = Date.now();
+    const sanitizedFileName = String(fileName).replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    const destPath = `${candidate.id}/cv_resume/${timestamp}_${sanitizedFileName}`;
+    const upload = await db.storage.from(STORAGE_BUCKET).upload(destPath, fileBytes, {
+        upsert: true,
+        contentType: mimeType,
+    });
+    const uploadErr = upload?.error;
+    if (uploadErr) {
+        throw new Error(`Failed to copy CV to candidate storage: ${uploadErr.message || 'unknown error'}`);
+    }
+    const cvDocData = {
+        candidate_id: candidate.id,
+        inbox_attachment_id: attachmentId,
+        document_type: 'other',
+        category: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+        detected_category: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+        confidence: null,
+        storage_bucket: STORAGE_BUCKET,
+        storage_path: destPath,
+        file_name: (0, documentNaming_1.generateDescriptiveFilename)({ doc_type: 'cv_resume' }, candidate.name || undefined, timestamp),
+        mime_type: mimeType,
+        source: 'web',
+        status: 'received',
+        verification_status: documentCategories_1.VERIFICATION_STATUS.PENDING_AI,
+        received_at: new Date().toISOString(),
+    };
+    const { data: createdCvDoc, error: cvInsErr } = await db
+        .from('candidate_documents')
+        .insert(cvDocData)
+        .select()
+        .single();
+    if (cvInsErr || !createdCvDoc) {
+        throw cvInsErr || new Error('Failed to create candidate_documents CV entry');
+    }
+    const requestId = (0, documentVerificationLogService_1.generateRequestId)();
+    try {
+        await queue_1.documentVerificationQueue.add('verify-document', {
+            requestId,
+            documentId: createdCvDoc.id,
+            candidateId: candidate.id,
+            storageBucket: STORAGE_BUCKET,
+            storagePath: destPath,
+            fileName: createdCvDoc.file_name,
+            mimeType,
+        }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
+    }
+    catch (qErr) {
+        console.warn(`[CVParser] Failed to enqueue verification for original CV doc (${reason}) (non-fatal):`, qErr?.message || qErr);
+    }
 }
 function hasRealCandidateSignals(parsedCandidate, identityFields) {
     const primaryIdentitySignals = [
@@ -1224,65 +1286,15 @@ function startCvParserWorker() {
             // ============================================================================
             if (newCandidate?.id && mimeType !== 'application/pdf') {
                 try {
-                    const { data: existingCvDoc, error: existingCvErr } = await db
-                        .from('candidate_documents')
-                        .select('id')
-                        .eq('inbox_attachment_id', attachmentId)
-                        .limit(1);
-                    if (!existingCvErr && (!existingCvDoc || existingCvDoc.length === 0)) {
-                        const timestamp = Date.now();
-                        const sanitizedFileName = String(fileName).replace(/[^a-zA-Z0-9.\-_]/g, '_');
-                        const destPath = `${newCandidate.id}/cv_resume/${timestamp}_${sanitizedFileName}`;
-                        const upload = await db.storage.from(STORAGE_BUCKET).upload(destPath, fileBytes, {
-                            upsert: true,
-                            contentType: mimeType,
-                        });
-                        const uploadErr = upload?.error;
-                        if (uploadErr) {
-                            throw new Error(`Failed to copy CV to candidate storage: ${uploadErr.message || 'unknown error'}`);
-                        }
-                        const cvDocData = {
-                            candidate_id: newCandidate.id,
-                            inbox_attachment_id: attachmentId,
-                            document_type: 'other',
-                            category: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
-                            detected_category: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
-                            confidence: null,
-                            storage_bucket: STORAGE_BUCKET,
-                            storage_path: destPath,
-                            file_name: (0, documentNaming_1.generateDescriptiveFilename)({ doc_type: 'cv_resume' }, newCandidate.name, timestamp),
-                            mime_type: mimeType,
-                            source: 'web',
-                            status: 'received',
-                            verification_status: documentCategories_1.VERIFICATION_STATUS.PENDING_AI,
-                            received_at: new Date().toISOString(),
-                        };
-                        const { data: createdCvDoc, error: cvInsErr } = await db
-                            .from('candidate_documents')
-                            .insert(cvDocData)
-                            .select()
-                            .single();
-                        if (cvInsErr || !createdCvDoc) {
-                            console.warn('[CVParser] Failed to create candidate_documents CV entry (non-fatal):', cvInsErr);
-                        }
-                        else {
-                            const requestId = (0, documentVerificationLogService_1.generateRequestId)();
-                            try {
-                                await queue_1.documentVerificationQueue.add('verify-document', {
-                                    requestId,
-                                    documentId: createdCvDoc.id,
-                                    candidateId: newCandidate.id,
-                                    storageBucket: STORAGE_BUCKET,
-                                    storagePath: destPath,
-                                    fileName: createdCvDoc.file_name,
-                                    mimeType,
-                                }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
-                            }
-                            catch (qErr) {
-                                console.warn('[CVParser] Failed to enqueue verification for original CV doc (non-fatal):', qErr?.message || qErr);
-                            }
-                        }
-                    }
+                    await ensureOriginalCvCandidateDocument({
+                        db,
+                        candidate: newCandidate,
+                        attachmentId,
+                        fileName,
+                        mimeType,
+                        fileBytes,
+                        reason: 'non_pdf_upload',
+                    });
                 }
                 catch (ensureErr) {
                     console.warn('[CVParser] Failed to ensure original CV candidate_document (non-fatal):', ensureErr?.message || ensureErr);
@@ -1294,295 +1306,317 @@ function startCvParserWorker() {
             // ============================================================================
             if (newCandidate?.id && mimeType === 'application/pdf') {
                 try {
-                    console.log(`[CVParser] PDF detected for attachment ${attachmentId}. Running split-and-categorize for candidate ${newCandidate.id}...`);
-                    // Avoid creating duplicate split documents on reprocessing unless explicitly forced.
-                    let shouldSkipSplit = false;
-                    if (!force) {
-                        const { data: existingSplitDocs, error: existingErr } = await db
-                            .from('candidate_documents')
-                            .select('id')
-                            .eq('inbox_attachment_id', attachmentId)
-                            .limit(1);
-                        if (!existingErr && existingSplitDocs && existingSplitDocs.length > 0) {
-                            console.log(`[CVParser] Split documents already exist for attachment ${attachmentId}; skipping split-and-categorize (use force=1 to override).`);
-                            shouldSkipSplit = true;
-                        }
-                    }
-                    if (shouldSkipSplit) {
-                        // Skip split doc creation to avoid duplicates.
+                    const shouldSkipSingleCvSplit = (0, singleCvHeuristics_1.shouldSkipSplitAndCategorizeForSingleCvUpload)({
+                        fileName,
+                        attachmentKind: attachmentMeta?.attachment_kind,
+                        parsedCandidate,
+                    });
+                    if (shouldSkipSingleCvSplit) {
+                        console.log(`[CVParser] PDF detected for attachment ${attachmentId}. Skipping split-and-categorize for likely single CV upload.`);
+                        await ensureOriginalCvCandidateDocument({
+                            db,
+                            candidate: newCandidate,
+                            attachmentId,
+                            fileName,
+                            mimeType,
+                            fileBytes,
+                            reason: 'single_cv_pdf_skip',
+                        });
                     }
                     else {
-                        // Preserve original PDF for audit/reprocessing
-                        const uploadId = (0, crypto_2.randomUUID)();
-                        const originalPath = await (0, splitUploadService_1.preserveOriginalPdf)(fileBytes, uploadId, mimeType);
-                        console.log(`[CVParser] Original PDF preserved at: ${originalPath}`);
-                        const splitResult = await (0, splitUploadService_1.callSplitAndCategorize)(fileBase64, fileName, mimeType, undefined, true);
-                        const docs = (splitResult?.documents || []).slice().sort((a, b) => {
-                            const aIsCv = String(a?.doc_type || '').toLowerCase() === 'cv_resume';
-                            const bIsCv = String(b?.doc_type || '').toLowerCase() === 'cv_resume';
-                            if (aIsCv === bIsCv)
-                                return 0;
-                            return aIsCv ? -1 : 1;
-                        });
-                        console.log(`[CVParser] Split returned ${docs.length} document(s) (engine=${splitResult.engine_used})`);
-                        // Only create records when we have at least 1 doc (normally always true)
-                        for (const d of docs) {
-                            try {
-                                const folder = (0, splitUploadService_1.docTypeToFolder)(d.doc_type);
-                                const pdfBuffer = Buffer.from(d.pdf_base64, 'base64');
-                                const docTypeLower = (d.doc_type || '').toLowerCase();
-                                // Special handling: if parser produced a PHOTOS PDF section, try hybrid extraction
-                                // from that section instead of scanning the whole CV.
-                                if ((docTypeLower === 'photo' || docTypeLower === 'photos') && d.is_image !== true) {
-                                    try {
-                                        console.log(`[CVParser] Photos PDF detected for candidate ${newCandidate.id}. Attempting hybrid extraction from photos section...`);
-                                        const extractionResult = await (0, hybridPhotoExtractionService_1.extractProfilePhotoHybrid)(newCandidate.id, attachmentId, pdfBuffer);
-                                        if (extractionResult.success && extractionResult.photoBuffer) {
-                                            const uploaded = await (0, hybridPhotoExtractionService_1.uploadExtractedPhotoToCandidatePhotos)(newCandidate.id, attachmentId, extractionResult.photoBuffer);
-                                            console.log(`[CVParser] ✅ Hybrid photos-section extraction succeeded (method=${extractionResult.method}). Skipping split_photos document creation.`, {
-                                                candidateId: newCandidate.id,
-                                                attachmentId,
-                                                storagePath: uploaded.storagePath,
-                                            });
-                                            continue;
-                                        }
-                                        console.log(`[CVParser] Hybrid photos-section extraction did not produce a photo. Continuing with normal split document creation.`, {
-                                            candidateId: newCandidate.id,
-                                            attachmentId,
-                                        });
-                                    }
-                                    catch (hyErr) {
-                                        console.warn(`[CVParser] Hybrid photos-section extraction error; continuing with normal split document creation:`, hyErr?.message || hyErr);
-                                    }
-                                }
-                                // Use shared utility to handle image detection, profile photo saving, and storage upload
-                                let processed;
-                                try {
-                                    processed = await (0, splitDocumentProcessor_1.processSplitDocument)(d, newCandidate.id, uploadId, folder);
-                                }
-                                catch (processErr) {
-                                    console.error(`[CVParser] Failed to process split doc ${d.doc_type}:`, processErr.message);
-                                    continue;
-                                }
-                                // Map parser doc_type to candidate_documents category
-                                const categoryMap = {
-                                    cv_resume: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
-                                    passport: documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT,
-                                    national_id: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
-                                    cnic: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
-                                    driving_license: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
-                                    police_character_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
-                                    police_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
-                                    educational_documents: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                    educational_document: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                    degree: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                    diploma: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                    transcript: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-                                    experience_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
-                                    experience_certificates: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
-                                    employment_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
-                                    navttc_report: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
-                                    navttc_reports: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
-                                    navttc: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
-                                    medical_reports: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
-                                    medical_certificate: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
-                                    certificates: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
-                                    certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
-                                    professional_certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
-                                    contracts: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
-                                    contract: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
-                                    photos: documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS,
-                                    other_documents: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
-                                };
-                                const category = categoryMap[d.doc_type] || documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
-                                // Map parser doc_type to DB constraint document_type
-                                const docTypeMap = {
-                                    passport: 'passport',
-                                    cnic: 'cnic',
-                                    national_id: 'cnic',
-                                    police_character_certificate: 'police_character_certificate',
-                                    police_certificate: 'police_character_certificate',
-                                    educational_documents: 'degree',
-                                    educational_document: 'degree',
-                                    degree: 'degree',
-                                    diploma: 'degree',
-                                    transcript: 'degree',
-                                    experience_certificate: 'certificate',
-                                    experience_certificates: 'certificate',
-                                    employment_certificate: 'certificate',
-                                    navttc_report: 'certificate',
-                                    navttc_reports: 'certificate',
-                                    navttc: 'certificate',
-                                    cv_resume: 'other',
-                                    medical_reports: 'medical',
-                                    medical_certificate: 'medical',
-                                    certificate: 'certificate',
-                                    certificates: 'certificate',
-                                    professional_certificate: 'certificate',
-                                    driving_license: 'other',
-                                    contracts: 'other',
-                                    contract: 'other',
-                                    photos: 'other',
-                                    other_documents: 'other',
-                                };
-                                const dbDocumentType = docTypeMap[d.doc_type] || 'other';
-                                // For extracted profile photos, set verification_status to 'verified' to skip approval workflow
-                                const verificationStatus = processed.shouldAutoVerify
-                                    ? documentCategories_1.VERIFICATION_STATUS.VERIFIED
-                                    : documentCategories_1.VERIFICATION_STATUS.PENDING_AI;
-                                // Important: candidate_documents has a unique index on inbox_attachment_id in some deployments.
-                                // We only attach inbox_attachment_id to the CV/resume row to keep idempotency without blocking
-                                // creation of multiple extracted documents.
-                                const isCvResumeDoc = docTypeLower === 'cv_resume';
-                                const splitDocData = {
-                                    candidate_id: newCandidate.id,
-                                    inbox_attachment_id: isCvResumeDoc ? attachmentId : null,
-                                    document_type: dbDocumentType,
-                                    category,
-                                    detected_category: category,
-                                    confidence: d.confidence ?? null,
-                                    storage_bucket: STORAGE_BUCKET,
-                                    storage_path: processed.storagePath,
-                                    file_name: (0, documentNaming_1.generateDescriptiveFilename)({
-                                        doc_type: d.doc_type,
-                                        pages: d.pages,
-                                        split_strategy: d.split_strategy,
-                                        page_number: d.pages && d.pages.length === 1 ? d.pages[0] : undefined,
-                                    }, newCandidate.name, Date.now()),
-                                    mime_type: processed.mimeType, // Use detected MIME type (image/jpeg for photos)
-                                    source: 'web',
-                                    status: 'received',
-                                    verification_status: verificationStatus, // Auto-verify extracted photos
-                                    received_at: new Date().toISOString(),
-                                };
-                                const { data: createdDoc, error: insErr } = await db
-                                    .from('candidate_documents')
-                                    .insert(splitDocData)
-                                    .select()
-                                    .single();
-                                if (insErr || !createdDoc) {
-                                    console.error(`[CVParser] Failed to create candidate_document for ${d.doc_type}:`, insErr);
-                                    await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
-                                    continue;
-                                }
-                                // Permanent safety net: if a photos split is still a PDF, immediately try AI extraction
-                                // from that specific split document before leaving the parse flow.
-                                if (category === documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS && processed.mimeType === 'application/pdf') {
-                                    try {
-                                        const { data: candidatePhotoState } = await db
-                                            .from('candidates')
-                                            .select('profile_photo_bucket, profile_photo_path, profile_photo_url')
-                                            .eq('id', newCandidate.id)
-                                            .maybeSingle();
-                                        if (!hasProfilePhoto(candidatePhotoState)) {
-                                            const aiResult = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfUsingAI)({
-                                                candidateId: newCandidate.id,
-                                                documentId: createdDoc.id,
-                                                maxPages: 10,
-                                            });
-                                            console.log(`[CVParser] ✅ AI extracted profile photo from split photos PDF`, {
-                                                candidateId: newCandidate.id,
-                                                documentId: createdDoc.id,
-                                                pageUsed: aiResult.pageUsed,
-                                                confidence: aiResult.confidence,
-                                            });
-                                        }
-                                    }
-                                    catch (aiExtractErr) {
-                                        console.warn(`[CVParser] AI extraction from split photos PDF failed (non-fatal):`, aiExtractErr?.message || aiExtractErr);
-                                    }
-                                }
-                                // Enqueue verification job (skip for auto-verified photos)
-                                if (verificationStatus !== documentCategories_1.VERIFICATION_STATUS.VERIFIED) {
-                                    const splitRequestId = (0, documentVerificationLogService_1.generateRequestId)();
-                                    try {
-                                        await queue_1.documentVerificationQueue.add('verify-document', {
-                                            requestId: splitRequestId,
-                                            documentId: createdDoc.id,
-                                            candidateId: newCandidate.id,
-                                            storageBucket: STORAGE_BUCKET,
-                                            storagePath: processed.storagePath,
-                                            fileName: createdDoc.file_name,
-                                            mimeType: processed.mimeType,
-                                        }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
-                                    }
-                                    catch (qErr) {
-                                        console.error(`[CVParser] Failed to enqueue verification for split doc ${createdDoc.id}:`, qErr?.message || qErr);
-                                    }
-                                }
-                                else {
-                                    console.log(`[CVParser] ⏭️  Skipped AI verification for auto-verified photo ${createdDoc.id}`);
-                                }
-                            }
-                            catch (oneErr) {
-                                console.error(`[CVParser] Error processing split doc:`, oneErr?.message || oneErr);
-                            }
-                        }
-                        // If the splitter didn't emit a cv_resume doc, create a single CV entry so the
-                        // original CV is visible in the candidate documents list (and to keep split idempotency).
-                        try {
-                            const { data: hasLinked, error: hasLinkedErr } = await db
+                        console.log(`[CVParser] PDF detected for attachment ${attachmentId}. Running split-and-categorize for candidate ${newCandidate.id}...`);
+                        // Avoid creating duplicate split documents on reprocessing unless explicitly forced.
+                        let shouldSkipSplit = false;
+                        if (!force) {
+                            const { data: existingSplitDocs, error: existingErr } = await db
                                 .from('candidate_documents')
                                 .select('id')
                                 .eq('inbox_attachment_id', attachmentId)
                                 .limit(1);
-                            if (!hasLinkedErr && (!hasLinked || hasLinked.length === 0)) {
-                                const timestamp = Date.now();
-                                const sanitizedFileName = String(fileName).replace(/[^a-zA-Z0-9.\-_]/g, '_');
-                                const destPath = `${newCandidate.id}/cv_resume/${timestamp}_${sanitizedFileName}`;
-                                const upload = await db.storage.from(STORAGE_BUCKET).upload(destPath, fileBytes, {
-                                    upsert: true,
-                                    contentType: mimeType,
-                                });
-                                const uploadErr = upload?.error;
-                                if (uploadErr) {
-                                    throw new Error(`Failed to copy CV to candidate storage: ${uploadErr.message || 'unknown error'}`);
-                                }
-                                const cvDocData = {
-                                    candidate_id: newCandidate.id,
-                                    inbox_attachment_id: attachmentId,
-                                    document_type: 'other',
-                                    category: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
-                                    detected_category: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
-                                    confidence: null,
-                                    storage_bucket: STORAGE_BUCKET,
-                                    storage_path: destPath,
-                                    file_name: (0, documentNaming_1.generateDescriptiveFilename)({ doc_type: 'cv_resume' }, newCandidate.name, timestamp),
-                                    mime_type: mimeType,
-                                    source: 'web',
-                                    status: 'received',
-                                    verification_status: documentCategories_1.VERIFICATION_STATUS.PENDING_AI,
-                                    received_at: new Date().toISOString(),
-                                };
-                                const { data: createdCvDoc, error: cvInsErr } = await db
-                                    .from('candidate_documents')
-                                    .insert(cvDocData)
-                                    .select()
-                                    .single();
-                                if (cvInsErr || !createdCvDoc) {
-                                    console.warn('[CVParser] Failed to create fallback cv_resume candidate_document (non-fatal):', cvInsErr);
-                                }
-                                else {
-                                    const requestId = (0, documentVerificationLogService_1.generateRequestId)();
-                                    try {
-                                        await queue_1.documentVerificationQueue.add('verify-document', {
-                                            requestId,
-                                            documentId: createdCvDoc.id,
-                                            candidateId: newCandidate.id,
-                                            storageBucket: STORAGE_BUCKET,
-                                            storagePath: destPath,
-                                            fileName: createdCvDoc.file_name,
-                                            mimeType,
-                                        }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
+                            if (!existingErr && existingSplitDocs && existingSplitDocs.length > 0) {
+                                console.log(`[CVParser] Split documents already exist for attachment ${attachmentId}; skipping split-and-categorize (use force=1 to override).`);
+                                shouldSkipSplit = true;
+                            }
+                        }
+                        if (shouldSkipSplit) {
+                            // Skip split doc creation to avoid duplicates.
+                        }
+                        else {
+                            // Preserve original PDF for audit/reprocessing
+                            const uploadId = (0, crypto_2.randomUUID)();
+                            const originalPath = await (0, splitUploadService_1.preserveOriginalPdf)(fileBytes, uploadId, mimeType);
+                            console.log(`[CVParser] Original PDF preserved at: ${originalPath}`);
+                            const splitResult = await (0, splitUploadService_1.callSplitAndCategorize)(fileBase64, fileName, mimeType, undefined, true);
+                            const docs = (splitResult?.documents || []).slice().sort((a, b) => {
+                                const aIsCv = String(a?.doc_type || '').toLowerCase() === 'cv_resume';
+                                const bIsCv = String(b?.doc_type || '').toLowerCase() === 'cv_resume';
+                                if (aIsCv === bIsCv)
+                                    return 0;
+                                return aIsCv ? -1 : 1;
+                            });
+                            console.log(`[CVParser] Split returned ${docs.length} document(s) (engine=${splitResult.engine_used})`);
+                            // Only create records when we have at least 1 doc (normally always true)
+                            for (const d of docs) {
+                                try {
+                                    const folder = (0, splitUploadService_1.docTypeToFolder)(d.doc_type);
+                                    const pdfBuffer = Buffer.from(d.pdf_base64, 'base64');
+                                    const docTypeLower = (d.doc_type || '').toLowerCase();
+                                    // Special handling: if parser produced a PHOTOS PDF section, try hybrid extraction
+                                    // from that section instead of scanning the whole CV.
+                                    if ((docTypeLower === 'photo' || docTypeLower === 'photos') && d.is_image !== true) {
+                                        try {
+                                            console.log(`[CVParser] Photos PDF detected for candidate ${newCandidate.id}. Attempting hybrid extraction from photos section...`);
+                                            const extractionResult = await (0, hybridPhotoExtractionService_1.extractProfilePhotoHybrid)(newCandidate.id, attachmentId, pdfBuffer);
+                                            if (extractionResult.success && extractionResult.photoBuffer) {
+                                                const uploaded = await (0, hybridPhotoExtractionService_1.uploadExtractedPhotoToCandidatePhotos)(newCandidate.id, attachmentId, extractionResult.photoBuffer);
+                                                console.log(`[CVParser] ✅ Hybrid photos-section extraction succeeded (method=${extractionResult.method}). Skipping split_photos document creation.`, {
+                                                    candidateId: newCandidate.id,
+                                                    attachmentId,
+                                                    storagePath: uploaded.storagePath,
+                                                });
+                                                continue;
+                                            }
+                                            console.log(`[CVParser] Hybrid photos-section extraction did not produce a photo. Continuing with normal split document creation.`, {
+                                                candidateId: newCandidate.id,
+                                                attachmentId,
+                                            });
+                                        }
+                                        catch (hyErr) {
+                                            console.warn(`[CVParser] Hybrid photos-section extraction error; continuing with normal split document creation:`, hyErr?.message || hyErr);
+                                        }
                                     }
-                                    catch (qErr) {
-                                        console.warn('[CVParser] Failed to enqueue verification for fallback cv_resume (non-fatal):', qErr?.message || qErr);
+                                    // Use shared utility to handle image detection, profile photo saving, and storage upload
+                                    let processed;
+                                    try {
+                                        processed = await (0, splitDocumentProcessor_1.processSplitDocument)(d, newCandidate.id, uploadId, folder);
+                                    }
+                                    catch (processErr) {
+                                        console.error(`[CVParser] Failed to process split doc ${d.doc_type}:`, processErr.message);
+                                        continue;
+                                    }
+                                    // Map parser doc_type to candidate_documents category
+                                    const categoryMap = {
+                                        cv_resume: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+                                        passport: documentCategories_1.DOCUMENT_CATEGORIES.PASSPORT,
+                                        national_id: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                        cnic: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                        driving_license: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                        police_character_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+                                        police_certificate: documentCategories_1.DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+                                        educational_documents: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                        educational_document: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                        degree: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                        diploma: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                        transcript: documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+                                        experience_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+                                        experience_certificates: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+                                        employment_certificate: documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+                                        navttc_report: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+                                        navttc_reports: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+                                        navttc: documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+                                        medical_reports: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+                                        medical_certificate: documentCategories_1.DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+                                        certificates: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+                                        certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+                                        professional_certificate: documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+                                        contracts: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
+                                        contract: documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
+                                        photos: documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS,
+                                        other_documents: documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+                                    };
+                                    const category = categoryMap[d.doc_type] || documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS;
+                                    // Map parser doc_type to DB constraint document_type
+                                    const docTypeMap = {
+                                        passport: 'passport',
+                                        cnic: 'cnic',
+                                        national_id: 'cnic',
+                                        police_character_certificate: 'police_character_certificate',
+                                        police_certificate: 'police_character_certificate',
+                                        educational_documents: 'degree',
+                                        educational_document: 'degree',
+                                        degree: 'degree',
+                                        diploma: 'degree',
+                                        transcript: 'degree',
+                                        experience_certificate: 'certificate',
+                                        experience_certificates: 'certificate',
+                                        employment_certificate: 'certificate',
+                                        navttc_report: 'certificate',
+                                        navttc_reports: 'certificate',
+                                        navttc: 'certificate',
+                                        cv_resume: 'other',
+                                        medical_reports: 'medical',
+                                        medical_certificate: 'medical',
+                                        certificate: 'certificate',
+                                        certificates: 'certificate',
+                                        professional_certificate: 'certificate',
+                                        driving_license: 'other',
+                                        contracts: 'other',
+                                        contract: 'other',
+                                        photos: 'other',
+                                        other_documents: 'other',
+                                    };
+                                    const dbDocumentType = docTypeMap[d.doc_type] || 'other';
+                                    // For extracted profile photos, set verification_status to 'verified' to skip approval workflow
+                                    const verificationStatus = processed.shouldAutoVerify
+                                        ? documentCategories_1.VERIFICATION_STATUS.VERIFIED
+                                        : documentCategories_1.VERIFICATION_STATUS.PENDING_AI;
+                                    // Important: candidate_documents has a unique index on inbox_attachment_id in some deployments.
+                                    // We only attach inbox_attachment_id to the CV/resume row to keep idempotency without blocking
+                                    // creation of multiple extracted documents.
+                                    const isCvResumeDoc = docTypeLower === 'cv_resume';
+                                    const splitDocData = {
+                                        candidate_id: newCandidate.id,
+                                        inbox_attachment_id: isCvResumeDoc ? attachmentId : null,
+                                        document_type: dbDocumentType,
+                                        category,
+                                        detected_category: category,
+                                        confidence: d.confidence ?? null,
+                                        ai_confidence: d.confidence ?? null,
+                                        extracted_identity_json: d.identity && typeof d.identity === 'object' ? d.identity : {},
+                                        ai_processing_completed_at: d.confidence != null ? new Date().toISOString() : null,
+                                        storage_bucket: STORAGE_BUCKET,
+                                        storage_path: processed.storagePath,
+                                        file_name: (0, documentNaming_1.generateDescriptiveFilename)({
+                                            doc_type: d.doc_type,
+                                            pages: d.pages,
+                                            split_strategy: d.split_strategy,
+                                            page_number: d.pages && d.pages.length === 1 ? d.pages[0] : undefined,
+                                        }, newCandidate.name, Date.now()),
+                                        mime_type: processed.mimeType, // Use detected MIME type (image/jpeg for photos)
+                                        source: 'web',
+                                        status: 'received',
+                                        verification_status: verificationStatus, // Auto-verify extracted photos
+                                        received_at: new Date().toISOString(),
+                                    };
+                                    const { data: createdDoc, error: insErr } = await db
+                                        .from('candidate_documents')
+                                        .insert(splitDocData)
+                                        .select()
+                                        .single();
+                                    if (insErr || !createdDoc) {
+                                        console.error(`[CVParser] Failed to create candidate_document for ${d.doc_type}:`, insErr);
+                                        await db.storage.from(STORAGE_BUCKET).remove([processed.storagePath]);
+                                        continue;
+                                    }
+                                    // Permanent safety net: if a photos split is still a PDF, immediately try AI extraction
+                                    // from that specific split document before leaving the parse flow.
+                                    if (category === documentCategories_1.DOCUMENT_CATEGORIES.PHOTOS && processed.mimeType === 'application/pdf') {
+                                        try {
+                                            const { data: candidatePhotoState } = await db
+                                                .from('candidates')
+                                                .select('profile_photo_bucket, profile_photo_path, profile_photo_url')
+                                                .eq('id', newCandidate.id)
+                                                .maybeSingle();
+                                            if (!hasProfilePhoto(candidatePhotoState)) {
+                                                const aiResult = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfUsingAI)({
+                                                    candidateId: newCandidate.id,
+                                                    documentId: createdDoc.id,
+                                                    maxPages: 10,
+                                                });
+                                                console.log(`[CVParser] ✅ AI extracted profile photo from split photos PDF`, {
+                                                    candidateId: newCandidate.id,
+                                                    documentId: createdDoc.id,
+                                                    pageUsed: aiResult.pageUsed,
+                                                    confidence: aiResult.confidence,
+                                                });
+                                            }
+                                        }
+                                        catch (aiExtractErr) {
+                                            console.warn(`[CVParser] AI extraction from split photos PDF failed (non-fatal):`, aiExtractErr?.message || aiExtractErr);
+                                        }
+                                    }
+                                    // Enqueue verification job (skip for auto-verified photos)
+                                    if (verificationStatus !== documentCategories_1.VERIFICATION_STATUS.VERIFIED) {
+                                        const splitRequestId = (0, documentVerificationLogService_1.generateRequestId)();
+                                        try {
+                                            await queue_1.documentVerificationQueue.add('verify-document', {
+                                                requestId: splitRequestId,
+                                                documentId: createdDoc.id,
+                                                candidateId: newCandidate.id,
+                                                storageBucket: STORAGE_BUCKET,
+                                                storagePath: processed.storagePath,
+                                                fileName: createdDoc.file_name,
+                                                mimeType: processed.mimeType,
+                                            }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
+                                        }
+                                        catch (qErr) {
+                                            console.error(`[CVParser] Failed to enqueue verification for split doc ${createdDoc.id}:`, qErr?.message || qErr);
+                                        }
+                                    }
+                                    else {
+                                        console.log(`[CVParser] ⏭️  Skipped AI verification for auto-verified photo ${createdDoc.id}`);
+                                    }
+                                }
+                                catch (oneErr) {
+                                    console.error(`[CVParser] Error processing split doc:`, oneErr?.message || oneErr);
+                                }
+                            }
+                            // If the splitter didn't emit a cv_resume doc, create a single CV entry so the
+                            // original CV is visible in the candidate documents list (and to keep split idempotency).
+                            try {
+                                const { data: hasLinked, error: hasLinkedErr } = await db
+                                    .from('candidate_documents')
+                                    .select('id')
+                                    .eq('inbox_attachment_id', attachmentId)
+                                    .limit(1);
+                                if (!hasLinkedErr && (!hasLinked || hasLinked.length === 0)) {
+                                    const timestamp = Date.now();
+                                    const sanitizedFileName = String(fileName).replace(/[^a-zA-Z0-9.\-_]/g, '_');
+                                    const destPath = `${newCandidate.id}/cv_resume/${timestamp}_${sanitizedFileName}`;
+                                    const upload = await db.storage.from(STORAGE_BUCKET).upload(destPath, fileBytes, {
+                                        upsert: true,
+                                        contentType: mimeType,
+                                    });
+                                    const uploadErr = upload?.error;
+                                    if (uploadErr) {
+                                        throw new Error(`Failed to copy CV to candidate storage: ${uploadErr.message || 'unknown error'}`);
+                                    }
+                                    const cvDocData = {
+                                        candidate_id: newCandidate.id,
+                                        inbox_attachment_id: attachmentId,
+                                        document_type: 'other',
+                                        category: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+                                        detected_category: documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+                                        confidence: null,
+                                        storage_bucket: STORAGE_BUCKET,
+                                        storage_path: destPath,
+                                        file_name: (0, documentNaming_1.generateDescriptiveFilename)({ doc_type: 'cv_resume' }, newCandidate.name, timestamp),
+                                        mime_type: mimeType,
+                                        source: 'web',
+                                        status: 'received',
+                                        verification_status: documentCategories_1.VERIFICATION_STATUS.PENDING_AI,
+                                        received_at: new Date().toISOString(),
+                                    };
+                                    const { data: createdCvDoc, error: cvInsErr } = await db
+                                        .from('candidate_documents')
+                                        .insert(cvDocData)
+                                        .select()
+                                        .single();
+                                    if (cvInsErr || !createdCvDoc) {
+                                        console.warn('[CVParser] Failed to create fallback cv_resume candidate_document (non-fatal):', cvInsErr);
+                                    }
+                                    else {
+                                        const requestId = (0, documentVerificationLogService_1.generateRequestId)();
+                                        try {
+                                            await queue_1.documentVerificationQueue.add('verify-document', {
+                                                requestId,
+                                                documentId: createdCvDoc.id,
+                                                candidateId: newCandidate.id,
+                                                storageBucket: STORAGE_BUCKET,
+                                                storagePath: destPath,
+                                                fileName: createdCvDoc.file_name,
+                                                mimeType,
+                                            }, { attempts: 3, backoff: { type: 'exponential', delay: 2000 } });
+                                        }
+                                        catch (qErr) {
+                                            console.warn('[CVParser] Failed to enqueue verification for fallback cv_resume (non-fatal):', qErr?.message || qErr);
+                                        }
                                     }
                                 }
                             }
-                        }
-                        catch (fallbackErr) {
-                            console.warn('[CVParser] Failed to ensure fallback cv_resume after split (non-fatal):', fallbackErr?.message || fallbackErr);
+                            catch (fallbackErr) {
+                                console.warn('[CVParser] Failed to ensure fallback cv_resume after split (non-fatal):', fallbackErr?.message || fallbackErr);
+                            }
                         }
                     }
                 }

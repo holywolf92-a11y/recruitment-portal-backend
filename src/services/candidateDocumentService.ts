@@ -10,6 +10,7 @@ import { generateDescriptiveFilename } from '../utils/documentNaming';
 import { processSplitDocument } from '../utils/splitDocumentProcessor';
 import { extractProfilePhotoHybrid, uploadExtractedPhotoToCandidatePhotos } from './hybridPhotoExtractionService';
 import { extractProfilePhotoFromPdfUsingAI } from './aiProfilePhotoExtractionService';
+import { shouldSkipSplitAndCategorizeForSingleCvUpload } from '../utils/singleCvHeuristics';
 
 const STORAGE_BUCKET = 'documents';
 
@@ -257,6 +258,11 @@ export async function uploadCandidateDocument(
     // ============================================================================
     if (data.mime_type === 'application/pdf') {
       try {
+        if (shouldSkipSplitAndCategorizeForSingleCvUpload({ fileName: data.file_name })) {
+          console.log('[UploadDocument] PDF looks like an obvious single CV upload, skipping split-and-categorize');
+          throw new Error('skip_single_cv_split');
+        }
+
         console.log(`[UploadDocument] PDF detected, attempting split-and-categorize`);
         
         // Preserve original PDF
@@ -440,6 +446,9 @@ export async function uploadCandidateDocument(
               category,
               detected_category: category,
               confidence: splitDoc.confidence || null,
+              ai_confidence: splitDoc.confidence || null,
+              extracted_identity_json: splitDoc.identity && typeof splitDoc.identity === 'object' ? splitDoc.identity : {},
+              ai_processing_completed_at: splitDoc.confidence != null ? new Date().toISOString() : null,
               storage_bucket: STORAGE_BUCKET,
               storage_path: processed.storagePath,
               file_name: descriptiveFilename,
@@ -534,7 +543,11 @@ export async function uploadCandidateDocument(
           // Fall through to single-document flow below
         }
       } catch (splitError: any) {
-        console.error(`[UploadDocument] Split-and-categorize failed, falling back to single-document flow:`, splitError.message);
+        if (splitError?.message === 'skip_single_cv_split') {
+          console.log('[UploadDocument] Continuing with single-document flow for likely single CV PDF');
+        } else {
+          console.error(`[UploadDocument] Split-and-categorize failed, falling back to single-document flow:`, splitError.message);
+        }
         // Fall through to single-document flow below
       }
     }

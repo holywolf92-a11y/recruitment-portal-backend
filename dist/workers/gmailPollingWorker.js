@@ -78,7 +78,27 @@ async function pollGmail(authClient, accountNum = 1) {
         logger.info(`Found ${messages.length} messages to process`);
         let successCount = 0;
         let errorCount = 0;
-        for (const msg of messages) {
+        // Pre-filter: check which message IDs are already in DB (one batch query)
+        // This prevents downloading full email + PDF attachments for already-stored messages
+        const db = (0, database_1.supabaseAdminClient)();
+        const candidateExternalIds = messages
+            .filter(m => m.id)
+            .map(m => `gmail_${m.id}`);
+        const { data: existingRows } = await db
+            .from('inbox_messages')
+            .select('external_message_id')
+            .in('external_message_id', candidateExternalIds);
+        const alreadySeenIds = new Set((existingRows || []).map((r) => r.external_message_id));
+        const newMessages = messages.filter(m => m.id && !alreadySeenIds.has(`gmail_${m.id}`));
+        if (newMessages.length < messages.length) {
+            logger.debug(`Skipping ${messages.length - newMessages.length} already-stored messages (no download needed)`);
+        }
+        if (newMessages.length === 0) {
+            logger.info('No new Gmail messages to process (all already stored)');
+            isRunning = false;
+            return { successCount: 0, errorCount: 0 };
+        }
+        for (const msg of newMessages) {
             if (!msg.id)
                 continue;
             try {
@@ -86,7 +106,6 @@ async function pollGmail(authClient, accountNum = 1) {
                 if (!fullMessage.attachments || fullMessage.attachments.length === 0) {
                     continue;
                 }
-                const db = (0, database_1.supabaseAdminClient)();
                 const threadId = fullMessage.threadId;
                 // STRATEGY 1 (PRIMARY): Extract tracking token from subject [#ABC12345]
                 // This is the most reliable method for matching email replies to candidates

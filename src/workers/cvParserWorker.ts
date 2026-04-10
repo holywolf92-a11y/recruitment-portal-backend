@@ -17,6 +17,7 @@ import { extractProfilePhotoFromPdfUsingAI } from '../services/aiProfilePhotoExt
 import { sendMessage, sendTemplateMessage } from '../services/whatsappService';
 import { ensureConversationForPhone, recordOutboundMessage } from '../services/whatsappInboxService';
 import { inferProfessionFromCvData } from '../services/professionInferenceService';
+import { shouldSkipSplitAndCategorizeForSingleCvUpload } from '../utils/singleCvHeuristics';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
@@ -60,6 +61,86 @@ function hasMeaningfulText(value: unknown): boolean {
   if (!normalized) return false;
   const lower = normalized.toLowerCase();
   return !['unknown', 'n/a', 'na', 'none', 'null', 'undefined', 'not provided', 'missing'].includes(lower);
+}
+
+async function ensureOriginalCvCandidateDocument(args: {
+  db: any;
+  candidate: { id: string; name?: string | null };
+  attachmentId: string;
+  fileName: string;
+  mimeType: string;
+  fileBytes: Buffer;
+  reason: string;
+}): Promise<void> {
+  const { db, candidate, attachmentId, fileName, mimeType, fileBytes, reason } = args;
+  const { data: existingCvDoc, error: existingCvErr } = await db
+    .from('candidate_documents')
+    .select('id')
+    .eq('inbox_attachment_id', attachmentId)
+    .limit(1);
+
+  if (!existingCvErr && existingCvDoc && existingCvDoc.length > 0) {
+    return;
+  }
+
+  const timestamp = Date.now();
+  const sanitizedFileName = String(fileName).replace(/[^a-zA-Z0-9.\-_]/g, '_');
+  const destPath = `${candidate.id}/cv_resume/${timestamp}_${sanitizedFileName}`;
+
+  const upload = await db.storage.from(STORAGE_BUCKET).upload(destPath, fileBytes, {
+    upsert: true,
+    contentType: mimeType,
+  });
+  const uploadErr = (upload as any)?.error;
+  if (uploadErr) {
+    throw new Error(`Failed to copy CV to candidate storage: ${uploadErr.message || 'unknown error'}`);
+  }
+
+  const cvDocData: any = {
+    candidate_id: candidate.id,
+    inbox_attachment_id: attachmentId,
+    document_type: 'other',
+    category: DOCUMENT_CATEGORIES.CV_RESUME,
+    detected_category: DOCUMENT_CATEGORIES.CV_RESUME,
+    confidence: null,
+    storage_bucket: STORAGE_BUCKET,
+    storage_path: destPath,
+    file_name: generateDescriptiveFilename({ doc_type: 'cv_resume' }, candidate.name || undefined, timestamp),
+    mime_type: mimeType,
+    source: 'web',
+    status: 'received',
+    verification_status: VERIFICATION_STATUS.PENDING_AI,
+    received_at: new Date().toISOString(),
+  };
+
+  const { data: createdCvDoc, error: cvInsErr } = await db
+    .from('candidate_documents')
+    .insert(cvDocData)
+    .select()
+    .single();
+
+  if (cvInsErr || !createdCvDoc) {
+    throw cvInsErr || new Error('Failed to create candidate_documents CV entry');
+  }
+
+  const requestId = generateRequestId();
+  try {
+    await documentVerificationQueue.add(
+      'verify-document',
+      {
+        requestId,
+        documentId: createdCvDoc.id,
+        candidateId: candidate.id,
+        storageBucket: STORAGE_BUCKET,
+        storagePath: destPath,
+        fileName: createdCvDoc.file_name,
+        mimeType,
+      },
+      { attempts: 3, backoff: { type: 'exponential', delay: 2000 } }
+    );
+  } catch (qErr: any) {
+    console.warn(`[CVParser] Failed to enqueue verification for original CV doc (${reason}) (non-fatal):`, qErr?.message || qErr);
+  }
 }
 
 function hasRealCandidateSignals(parsedCandidate: any, identityFields?: any): boolean {
@@ -1351,76 +1432,15 @@ export function startCvParserWorker() {
         // ============================================================================
         if (newCandidate?.id && mimeType !== 'application/pdf') {
           try {
-            const { data: existingCvDoc, error: existingCvErr } = await db
-              .from('candidate_documents')
-              .select('id')
-              .eq('inbox_attachment_id', attachmentId)
-              .limit(1);
-
-            if (!existingCvErr && (!existingCvDoc || existingCvDoc.length === 0)) {
-              const timestamp = Date.now();
-              const sanitizedFileName = String(fileName).replace(/[^a-zA-Z0-9.\-_]/g, '_');
-              const destPath = `${newCandidate.id}/cv_resume/${timestamp}_${sanitizedFileName}`;
-
-              const upload = await db.storage.from(STORAGE_BUCKET).upload(destPath, fileBytes, {
-                upsert: true,
-                contentType: mimeType,
-              });
-              const uploadErr = (upload as any)?.error;
-              if (uploadErr) {
-                throw new Error(`Failed to copy CV to candidate storage: ${uploadErr.message || 'unknown error'}`);
-              }
-
-              const cvDocData: any = {
-                candidate_id: newCandidate.id,
-                inbox_attachment_id: attachmentId,
-                document_type: 'other',
-                category: DOCUMENT_CATEGORIES.CV_RESUME,
-                detected_category: DOCUMENT_CATEGORIES.CV_RESUME,
-                confidence: null,
-                storage_bucket: STORAGE_BUCKET,
-                storage_path: destPath,
-                file_name: generateDescriptiveFilename(
-                  { doc_type: 'cv_resume' },
-                  newCandidate.name,
-                  timestamp
-                ),
-                mime_type: mimeType,
-                source: 'web',
-                status: 'received',
-                verification_status: VERIFICATION_STATUS.PENDING_AI,
-                received_at: new Date().toISOString(),
-              };
-
-              const { data: createdCvDoc, error: cvInsErr } = await db
-                .from('candidate_documents')
-                .insert(cvDocData)
-                .select()
-                .single();
-
-              if (cvInsErr || !createdCvDoc) {
-                console.warn('[CVParser] Failed to create candidate_documents CV entry (non-fatal):', cvInsErr);
-              } else {
-                const requestId = generateRequestId();
-                try {
-                  await documentVerificationQueue.add(
-                    'verify-document',
-                    {
-                      requestId,
-                      documentId: createdCvDoc.id,
-                      candidateId: newCandidate.id,
-                      storageBucket: STORAGE_BUCKET,
-                      storagePath: destPath,
-                      fileName: createdCvDoc.file_name,
-                      mimeType,
-                    },
-                    { attempts: 3, backoff: { type: 'exponential', delay: 2000 } }
-                  );
-                } catch (qErr: any) {
-                  console.warn('[CVParser] Failed to enqueue verification for original CV doc (non-fatal):', qErr?.message || qErr);
-                }
-              }
-            }
+            await ensureOriginalCvCandidateDocument({
+              db,
+              candidate: newCandidate,
+              attachmentId,
+              fileName,
+              mimeType,
+              fileBytes,
+              reason: 'non_pdf_upload',
+            });
           } catch (ensureErr: any) {
             console.warn('[CVParser] Failed to ensure original CV candidate_document (non-fatal):', ensureErr?.message || ensureErr);
           }
@@ -1432,6 +1452,24 @@ export function startCvParserWorker() {
         // ============================================================================
         if (newCandidate?.id && mimeType === 'application/pdf') {
           try {
+            const shouldSkipSingleCvSplit = shouldSkipSplitAndCategorizeForSingleCvUpload({
+              fileName,
+              attachmentKind: attachmentMeta?.attachment_kind,
+              parsedCandidate,
+            });
+
+            if (shouldSkipSingleCvSplit) {
+              console.log(`[CVParser] PDF detected for attachment ${attachmentId}. Skipping split-and-categorize for likely single CV upload.`);
+              await ensureOriginalCvCandidateDocument({
+                db,
+                candidate: newCandidate,
+                attachmentId,
+                fileName,
+                mimeType,
+                fileBytes,
+                reason: 'single_cv_pdf_skip',
+              });
+            } else {
             console.log(`[CVParser] PDF detected for attachment ${attachmentId}. Running split-and-categorize for candidate ${newCandidate.id}...`);
 
             // Avoid creating duplicate split documents on reprocessing unless explicitly forced.
@@ -1595,6 +1633,9 @@ export function startCvParserWorker() {
                   category,
                   detected_category: category,
                   confidence: d.confidence ?? null,
+                  ai_confidence: d.confidence ?? null,
+                  extracted_identity_json: d.identity && typeof d.identity === 'object' ? d.identity : {},
+                  ai_processing_completed_at: d.confidence != null ? new Date().toISOString() : null,
                   storage_bucket: STORAGE_BUCKET,
                   storage_path: processed.storagePath,
                   file_name: generateDescriptiveFilename(
@@ -1752,6 +1793,7 @@ export function startCvParserWorker() {
               }
             } catch (fallbackErr: any) {
               console.warn('[CVParser] Failed to ensure fallback cv_resume after split (non-fatal):', fallbackErr?.message || fallbackErr);
+            }
             }
             }
           } catch (splitErr: any) {

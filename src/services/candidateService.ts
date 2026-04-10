@@ -54,6 +54,24 @@ export function parseCandidateStatus(value?: string | null, fallback: CandidateS
   }
 }
 
+export function parseCandidatePaymentAmount(value?: number | string | null, fallback = 0): number {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  const parsed = typeof value === 'number' ? value : Number(String(value).replace(/,/g, '').trim());
+  if (!Number.isFinite(parsed)) {
+    throw new Error('Payment amount must be a valid number');
+  }
+
+  const normalized = Math.round(parsed);
+  if (normalized < 0) {
+    throw new Error('Payment amount cannot be negative');
+  }
+
+  return normalized;
+}
+
 // Generate candidate code in FL-03-26-1 format.
 // The candidate_code field is the shared reference used across inbox ingestion,
 // candidate management, Excel browser, and employer-safe CV output.
@@ -152,6 +170,7 @@ export interface CreateCandidateData {
   name: string;
   father_name?: string;
   status?: CandidateStatus | string;
+  payment_amount?: number;
   source?: 'WhatsApp' | 'Email' | 'Form' | 'Manual' | string;
   partner_id?: string;
   partner_name?: string;
@@ -248,6 +267,7 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     name: truncCreate(data.name, VARCHAR_LIMITS_CREATE.name),
     father_name: data.father_name,
     status: parseCandidateStatus(data.status, 'Applied'),
+    payment_amount: parseCandidatePaymentAmount(data.payment_amount, 0),
     source: data.source,
     partner_id: data.partner_id,
     partner_name: data.partner_name,
@@ -381,7 +401,7 @@ export interface CandidateBrowseMetadata {
 // professional_summary, education, certifications) that are only needed in the detail view.
 // Narrowing the select cuts list response payload by ~60-80% and reduces Railway egress.
 const LIST_FIELDS = [
-  'id', 'candidate_code', 'name', 'status', 'source', 'ai_score',
+  'id', 'candidate_code', 'name', 'status', 'payment_amount', 'source', 'ai_score',
   'partner_id', 'partner_name', 'is_partner_candidate',
   'position', 'nationality', 'country_of_interest', 'experience_years',
   'phone', 'email', 'date_of_birth', 'gender', 'marital_status', 'address',
@@ -954,6 +974,9 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
   if (data.status !== undefined) {
     updateData.status = parseCandidateStatus(data.status, 'Applied');
   }
+  if (data.payment_amount !== undefined) {
+    updateData.payment_amount = parseCandidatePaymentAmount(data.payment_amount, 0);
+  }
   if (data.cnic) {
     updateData.cnic_normalized = normalizeCNIC(data.cnic);
   }
@@ -1008,7 +1031,7 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
     'nationality', 'position', 'experience_years', 'country_of_interest',
     'skills', 'languages', 'education', 'certifications', 'internships',
     'previous_employment', 'passport_expiry', 'professional_summary',
-    'status', 'source', 'ai_score', 'auto_extracted', 'needs_review',
+    'status', 'payment_amount', 'source', 'ai_score', 'auto_extracted', 'needs_review',
     'partner_id', 'partner_name', 'is_partner_candidate',
     'updated_at', 'field_sources', 'extraction_confidence', 'extraction_source',
     'extracted_at', 'passport_received', 'cnic_received', 'degree_received',

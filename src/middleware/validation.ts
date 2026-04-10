@@ -144,6 +144,26 @@ export function validateAddress(address: string): ValidationError | null {
   return null;
 }
 
+export function validatePaymentAmount(paymentAmount: unknown): ValidationError | null {
+  if (paymentAmount === undefined || paymentAmount === null || paymentAmount === '') {
+    return null;
+  }
+
+  const parsed = typeof paymentAmount === 'number'
+    ? paymentAmount
+    : Number(String(paymentAmount).replace(/,/g, '').trim());
+
+  if (!Number.isFinite(parsed)) {
+    return { field: 'payment_amount', message: 'Payment amount must be a valid number' };
+  }
+
+  if (parsed < 0) {
+    return { field: 'payment_amount', message: 'Payment amount cannot be negative' };
+  }
+
+  return null;
+}
+
 export function validateCandidateData(data: any): ValidationError[] {
   const errors: ValidationError[] = [];
 
@@ -192,6 +212,11 @@ export function validateCandidateData(data: any): ValidationError[] {
   if (data.address !== undefined) {
     const addressError = validateAddress(data.address);
     if (addressError) errors.push(addressError);
+  }
+
+  if (data.payment_amount !== undefined) {
+    const paymentError = validatePaymentAmount(data.payment_amount);
+    if (paymentError) errors.push(paymentError);
   }
 
   return errors;

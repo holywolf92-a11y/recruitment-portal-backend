@@ -33,6 +33,27 @@ export function normalizePhoneE164(phone: string): string | null {
   return null;
 }
 
+export const CANDIDATE_STATUS_VALUES = ['Applied', 'Pending', 'Deployed'] as const;
+export type CandidateStatus = (typeof CANDIDATE_STATUS_VALUES)[number];
+
+export function parseCandidateStatus(value?: string | null, fallback: CandidateStatus = 'Applied'): CandidateStatus {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+
+  switch (normalized) {
+    case 'applied':
+      return 'Applied';
+    case 'pending':
+      return 'Pending';
+    case 'deployed':
+      return 'Deployed';
+    default:
+      throw new Error(`Invalid status: ${value}. Allowed values are ${CANDIDATE_STATUS_VALUES.join(', ')}`);
+  }
+}
+
 // Generate candidate code in FL-03-26-1 format.
 // The candidate_code field is the shared reference used across inbox ingestion,
 // candidate management, Excel browser, and employer-safe CV output.
@@ -130,7 +151,7 @@ export async function checkForDuplicates(cnic?: string, passport?: string, exclu
 export interface CreateCandidateData {
   name: string;
   father_name?: string;
-  status?: 'Applied' | 'Pending' | 'Deployed' | 'Cancelled' | string;
+  status?: CandidateStatus | string;
   source?: 'WhatsApp' | 'Email' | 'Form' | 'Manual' | string;
   partner_id?: string;
   partner_name?: string;
@@ -226,7 +247,7 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     candidate_code: candidateCode,
     name: truncCreate(data.name, VARCHAR_LIMITS_CREATE.name),
     father_name: data.father_name,
-    status: data.status,
+    status: parseCandidateStatus(data.status, 'Applied'),
     source: data.source,
     partner_id: data.partner_id,
     partner_name: data.partner_name,
@@ -637,7 +658,7 @@ export async function getDailyStats(filters: DailyStatsFilters, userId: string):
     buildBaseQuery().eq('status', 'Applied'),
     buildBaseQuery().eq('status', 'Deployed'),
     buildBaseQuery().eq('status', 'Pending'),
-    buildBaseQuery().eq('status', 'Cancelled'),
+    buildBaseQuery().eq('status', '__unused__'),
     buildBaseQuery().or('cv_received.eq.true,passport_received.eq.true'),
   ]);
 
@@ -647,7 +668,7 @@ export async function getDailyStats(filters: DailyStatsFilters, userId: string):
     applied: appliedRes.count ?? 0,
     verified: verifiedRes.count ?? 0,
     pending: pendingRes.count ?? 0,
-    rejected: rejectedRes.count ?? 0,
+    rejected: 0,
     documents_uploaded: docsRes.count ?? 0,
   };
 }
@@ -900,7 +921,7 @@ function calculateAgeFromDOB(dateOfBirth: string): number | '' {
 
 export async function bulkUpdateCandidateStatus(
   candidateIds: string[],
-  status: 'Applied' | 'Pending' | 'Deployed' | 'Cancelled' | string,
+  status: CandidateStatus | string,
   userId: string
 ) {
   const db = supabaseAdminClient();
@@ -909,14 +930,11 @@ export async function bulkUpdateCandidateStatus(
     throw new Error('candidateIds must be a non-empty array');
   }
 
-  const allowed = new Set(['Applied', 'Pending', 'Deployed', 'Cancelled']);
-  if (!allowed.has(status)) {
-    throw new Error(`Invalid status: ${status}`);
-  }
+  const normalizedStatus = parseCandidateStatus(status);
 
   const { data, error } = await db
     .from('candidates')
-    .update({ status, updated_at: new Date().toISOString() })
+    .update({ status: normalizedStatus, updated_at: new Date().toISOString() })
     .in('id', candidateIds)
     .select('id,status');
 
@@ -933,6 +951,9 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
 
   // Normalize identifiers if provided
   const updateData: any = { ...data };
+  if (data.status !== undefined) {
+    updateData.status = parseCandidateStatus(data.status, 'Applied');
+  }
   if (data.cnic) {
     updateData.cnic_normalized = normalizeCNIC(data.cnic);
   }

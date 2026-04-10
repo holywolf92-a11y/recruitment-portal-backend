@@ -16,20 +16,29 @@
 
 import { supabaseAdminClient } from '../config/database';
 import { createLogger } from '../utils/errorHandling';
+import { createCandidate, normalizePhoneE164, updateCandidate } from './candidateService';
+import { DocumentLinkService } from './documentLinkService';
 import { getBotState, setBotState, patchBotData, resetBotState, BotState } from './whatsappBotStateService';
 import { sendText, sendButtons, sendList, sendImage, WaButton, WaListSection } from './whatsappInteractiveService';
 import { recordOutboundMessage } from './whatsappInboxService';
+import { resolveFrontendUrl } from '../utils/publicUrl';
+import { upsertAppUserProfile } from './userService';
+import crypto from 'crypto';
 
 const logger = createLogger('WhatsAppBot');
 const MAIN_MENU_DEBOUNCE_MS = 45_000;
 
 // ─── Config (set in Railway env) ─────────────────────────────────────────────
-const JOBS_URL        = process.env.WHATSAPP_BOT_JOBS_URL        || 'https://falisha.com/jobs';
-const WELCOME_IMG_URL = process.env.WHATSAPP_BOT_WELCOME_IMG_URL || '';   // public image URL or ''
-const INSTAGRAM_URL   = process.env.WHATSAPP_BOT_INSTAGRAM_URL   || 'https://instagram.com/falishamanpower';
-const FACEBOOK_URL    = process.env.WHATSAPP_BOT_FACEBOOK_URL    || 'https://facebook.com/falishamanpower';
-const YOUTUBE_URL     = process.env.WHATSAPP_BOT_YOUTUBE_URL     || '';
+const JOBS_URL        = process.env.WHATSAPP_BOT_JOBS_URL        || 'https://falishajobs.up.railway.app/jobs';
+const WELCOME_IMG_URL = process.env.WHATSAPP_BOT_WELCOME_IMG_URL || '';
+const LINKEDIN_URL    = process.env.WHATSAPP_BOT_LINKEDIN_URL    || 'https://www.linkedin.com/company/falishaenterprises';
+const FACEBOOK_URL    = process.env.WHATSAPP_BOT_FACEBOOK_URL    || 'https://www.facebook.com/falishaenterprises.pk/';
+const INSTAGRAM_URL   = process.env.WHATSAPP_BOT_INSTAGRAM_URL   || 'https://www.instagram.com/falisha.manpower';
+const TIKTOK_URL      = process.env.WHATSAPP_BOT_TIKTOK_URL      || 'https://www.tiktok.com/@falishamanpower';
+const YOUTUBE_URL     = process.env.WHATSAPP_BOT_YOUTUBE_URL     || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
 const WA_CHANNEL_URL  = process.env.WHATSAPP_BOT_CHANNEL_URL     || '';
+const BOT_ACTOR_ID = 'whatsapp-bot';
+const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL);
 
 // ─── Incoming message shape ──────────────────────────────────────────────────
 
@@ -55,7 +64,7 @@ function isGreeting(text: string): boolean {
 }
 
 function isMainMenuRequest(text: string, id: string): boolean {
-  return id === 'main_menu' || text === 'menu' || text === 'main menu' || text === 'home';
+  return id === 'main_menu' || text === 'menu' || text === 'main menu' || text === 'return to main menu' || text === 'home';
 }
 
 function isTalkHumanRequest(text: string, id: string): boolean {
@@ -130,6 +139,55 @@ const NAV_BUTTONS: WaButton[] = [
   { id: 'talk_human', title: 'Talk to Human' },
 ];
 
+const MAIN_MENU_BUTTONS: WaButton[] = [
+  { id: 'menu_candidate', title: 'Job Seeker' },
+  { id: 'menu_employer', title: 'Employer' },
+  { id: 'menu_partner', title: 'Become Partner' },
+];
+
+function isSkipValue(text: string, id: string): boolean {
+  return id === 'skip' || text === 'skip' || text === 'no' || text === 'none' || text === 'n/a';
+}
+
+function looksLikeEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function normalizeFreeText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function generateTemporaryPassword(): string {
+  return `Falisha!${crypto.randomBytes(4).toString('hex')}`;
+}
+
+async function promptStep(
+  phoneNumberId: string,
+  accessToken: string,
+  to: string,
+  convId: string | null,
+  body: string,
+  buttons: WaButton[],
+  expectedIds: string[],
+  header?: string,
+): Promise<void> {
+  await ix(phoneNumberId, accessToken, to, convId, body, buttons, header);
+  await setExpectedInteractive(to, expectedIds);
+}
+
+function buildSocialLinksMessage(): string {
+  return [
+    'Stay connected with us:',
+    '',
+    `LinkedIn: ${LINKEDIN_URL}`,
+    `Facebook: ${FACEBOOK_URL}`,
+    `Instagram: ${INSTAGRAM_URL}`,
+    `TikTok: ${TIKTOK_URL}`,
+    `YouTube: ${YOUTUBE_URL}`,
+    ...(WA_CHANNEL_URL ? [`WhatsApp Channel: ${WA_CHANNEL_URL}`] : []),
+  ].join('\n');
+}
+
 // ─── Main Menu ────────────────────────────────────────────────────────────────
 
 async function showMainMenu(
@@ -157,27 +215,17 @@ async function showMainMenu(
   }
 
   const body = [
-    'Assalam o Alaikum! Welcome to *Falisha Manpower*. 👋',
+    'Welcome to Falisha Enterprises 🌍',
     '',
-    'How can we help you today? Please select an option:',
+    'Please choose an option:',
+    '',
+    'You can type *menu* anytime to return here.',
   ].join('\n');
 
-  const sections: WaListSection[] = [
-    {
-      rows: [
-        { id: 'menu_candidate', title: '👷 Looking for a Job',    description: 'Submit your CV & profile' },
-        { id: 'menu_employer',  title: '🏢 Start Recruiting',     description: 'Hire skilled workers' },
-        { id: 'menu_partner',   title: '🤝 Become a Partner',     description: 'Join as sub-agent/agency' },
-        { id: 'menu_jobs',      title: '📋 See All Jobs',         description: 'Browse open positions' },
-        { id: 'menu_social',    title: '📣 Follow Our Channels',  description: 'Stay updated on new jobs' },
-      ],
-    },
-  ];
-
-  await lx(phoneNumberId, accessToken, to, convId, body, 'View Options', sections);
+  await ix(phoneNumberId, accessToken, to, convId, body, MAIN_MENU_BUTTONS, 'Falisha');
   await patchBotData(to, {
     last_main_menu_at: new Date().toISOString(),
-    expected_interactive_ids: ['menu_candidate', 'menu_employer', 'menu_partner', 'menu_jobs', 'menu_social'],
+    expected_interactive_ids: MAIN_MENU_BUTTONS.map((button) => button.id),
   });
 }
 
@@ -197,94 +245,24 @@ async function repromptActiveFlow(
   accessToken: string,
 ): Promise<void> {
   const { phoneNumber, conversationId: convId } = state;
-
-  if (state.flow === 'candidate_intake') {
-    if (state.step === 'profession') {
-      await lx(phoneNumberId, accessToken, phoneNumber, convId, 'Please select your profession:', 'Select Profession', [{ rows: PROFESSION_ROWS }]);
-      await setExpectedInteractive(phoneNumber, PROFESSION_ROWS.map((r) => r.id));
-      return;
-    }
-    if (state.step === 'experience') {
-      await lx(phoneNumberId, accessToken, phoneNumber, convId, 'Please select your experience level:', 'Select Experience', [{ rows: EXPERIENCE_ROWS }]);
-      await setExpectedInteractive(phoneNumber, EXPERIENCE_ROWS.map((r) => r.id));
-      return;
-    }
-    if (state.step === 'country') {
-      await lx(phoneNumberId, accessToken, phoneNumber, convId, 'Please select your preferred country:', 'Select Country', [{ rows: COUNTRY_ROWS }]);
-      await setExpectedInteractive(phoneNumber, COUNTRY_ROWS.map((r) => r.id));
-      return;
-    }
-    if (state.step === 'upload_waiting') {
-      await ix(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        'Please send your CV/documents, or tap *Done* if finished.',
-        [
-          { id: 'candidate_done', title: "Done / I'm finished" },
-          { id: 'talk_human', title: 'Talk to Human' },
-          { id: 'main_menu', title: 'Main Menu' },
-        ],
-      );
-      await setExpectedInteractive(phoneNumber, ['candidate_done', 'talk_human', 'main_menu']);
-      return;
-    }
+  if (!state.step) {
+    await showMainMenu(phoneNumberId, accessToken, phoneNumber, convId, state, { force: true });
+    return;
   }
 
-  if (state.flow === 'employer_intake') {
-    if (state.step === 'country') {
-      await lx(phoneNumberId, accessToken, phoneNumber, convId, 'Please select a country:', 'Select Country', [{ rows: EMPLOYER_COUNTRY_ROWS }]);
-      await setExpectedInteractive(phoneNumber, EMPLOYER_COUNTRY_ROWS.map((r) => r.id));
+  switch (state.flow) {
+    case 'candidate_intake':
+      await promptCandidateStep(state, phoneNumberId, accessToken);
       return;
-    }
-    if (state.step === 'benefits') {
-      await ix(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        '🍽 Does the package include accommodation, food, and transport?',
-        [
-          { id: 'ben_yes', title: '✅ Yes, included' },
-          { id: 'ben_no', title: '❌ No' },
-          { id: 'ben_partial', title: 'Partially' },
-        ],
-      );
-      await setExpectedInteractive(phoneNumber, ['ben_yes', 'ben_no', 'ben_partial']);
+    case 'employer_intake':
+      await promptEmployerStep(state, phoneNumberId, accessToken);
       return;
-    }
+    case 'partner_onboarding':
+      await promptPartnerStep(state, phoneNumberId, accessToken);
+      return;
+    default:
+      await showMainMenu(phoneNumberId, accessToken, phoneNumber, convId, state, { force: true });
   }
-
-  if (state.flow === 'partner_onboarding') {
-    if (state.step === 'phone_confirm') {
-      await ix(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        'Please confirm your contact number:',
-        [
-          { id: 'pc_use_this', title: 'Use this number ✅' },
-          { id: 'pc_enter_diff', title: 'Enter different number' },
-        ],
-      );
-      await setExpectedInteractive(phoneNumber, ['pc_use_this', 'pc_enter_diff']);
-      return;
-    }
-    if (state.step === 'partner_type') {
-      await lx(phoneNumberId, accessToken, phoneNumber, convId, '🤝 What type of partner are you?', 'Select Type', [{ rows: PARTNER_TYPE_ROWS }]);
-      await setExpectedInteractive(phoneNumber, PARTNER_TYPE_ROWS.map((r) => r.id));
-      return;
-    }
-    if (state.step === 'email') {
-      await ix(phoneNumberId, accessToken, phoneNumber, convId, '📧 (Optional) Please share your *email address*, or tap Skip:', [{ id: 'email_skip', title: '⏭ Skip' }]);
-      await setExpectedInteractive(phoneNumber, ['email_skip']);
-      return;
-    }
-  }
-
-  await showMainMenu(phoneNumberId, accessToken, phoneNumber, convId, state, { force: true });
 }
 
 // ─── Talk to Human ────────────────────────────────────────────────────────────
@@ -317,46 +295,347 @@ async function switchToHuman(
 
 // ─── Flow A: Candidate Intake ─────────────────────────────────────────────────
 
-const PROFESSION_ROWS: WaListSection['rows'] = [
-  { id: 'prof_electrician',  title: '⚡ Electrician' },
-  { id: 'prof_plumber',      title: '🔧 Plumber' },
-  { id: 'prof_welder',       title: '🔥 Welder' },
-  { id: 'prof_mason',        title: '🧱 Mason / Construction' },
-  { id: 'prof_driver',       title: '🚗 Driver' },
-  { id: 'prof_cook',         title: '🍳 Cook / Chef' },
-  { id: 'prof_nurse',        title: '🏥 Nurse / Healthcare' },
-  { id: 'prof_technician',   title: '🛠 Technician' },
-  { id: 'prof_engineer',     title: '👷 Engineer' },
-  { id: 'prof_other',        title: '🔹 Other' },
-];
+async function promptCandidateStep(state: BotState, phoneNumberId: string, accessToken: string): Promise<void> {
+  const { phoneNumber, conversationId: convId, step } = state;
 
-const EXPERIENCE_ROWS: WaListSection['rows'] = [
-  { id: 'exp_1_2',  title: '1 – 2 years' },
-  { id: 'exp_3_5',  title: '3 – 5 years' },
-  { id: 'exp_6_10', title: '6 – 10 years' },
-  { id: 'exp_10p',  title: '10+ years' },
-];
-
-const COUNTRY_ROWS: WaListSection['rows'] = [
-  { id: 'ctr_saudi',    title: '🇸🇦 Saudi Arabia' },
-  { id: 'ctr_uae',      title: '🇦🇪 UAE' },
-  { id: 'ctr_qatar',    title: '🇶🇦 Qatar' },
-  { id: 'ctr_oman',     title: '🇴🇲 Oman' },
-  { id: 'ctr_kuwait',   title: '🇰🇼 Kuwait' },
-  { id: 'ctr_bahrain',  title: '🇧🇭 Bahrain' },
-  { id: 'ctr_malaysia', title: '🇲🇾 Malaysia' },
-  { id: 'ctr_europe',   title: '🇪🇺 Europe' },
-  { id: 'ctr_other',    title: '🌍 Other' },
-];
-
-function professionLabel(id: string): string {
-  return PROFESSION_ROWS.find((r) => r.id === id)?.title ?? id;
+  switch (step) {
+    case 'name':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 1/8 - Please enter your Full Name:',
+        [{ id: 'main_menu', title: 'Main Menu' }],
+        ['main_menu'],
+        'Job Seeker',
+      );
+      return;
+    case 'profession':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 2/8 - Your Profession?',
+        [{ id: 'main_menu', title: 'Main Menu' }],
+        ['main_menu'],
+        'Job Seeker',
+      );
+      return;
+    case 'contact_number':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 3/8 - Your Contact Number?',
+        [{ id: 'main_menu', title: 'Main Menu' }],
+        ['main_menu'],
+        'Job Seeker',
+      );
+      return;
+    case 'email':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 4/8 - Your Email?',
+        [
+          { id: 'skip', title: 'Skip' },
+          { id: 'main_menu', title: 'Main Menu' },
+        ],
+        ['skip', 'main_menu'],
+        'Job Seeker',
+      );
+      return;
+    case 'nationality':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 5/8 - Your Nationality?',
+        [{ id: 'main_menu', title: 'Main Menu' }],
+        ['main_menu'],
+        'Job Seeker',
+      );
+      return;
+    case 'preferred_country':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 6/8 - Preferred Country?',
+        [{ id: 'main_menu', title: 'Main Menu' }],
+        ['main_menu'],
+        'Job Seeker',
+      );
+      return;
+    case 'cv_upload':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 7/8 - Please upload your CV as a document now.',
+        [
+          { id: 'main_menu', title: 'Main Menu' },
+          { id: 'talk_human', title: 'Talk to Human' },
+        ],
+        ['main_menu', 'talk_human'],
+        'Job Seeker',
+      );
+      return;
+    case 'comments':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 8/8 - Any comments?',
+        [
+          { id: 'skip', title: 'Skip' },
+          { id: 'main_menu', title: 'Main Menu' },
+        ],
+        ['skip', 'main_menu'],
+        'Job Seeker',
+      );
+      return;
+  }
 }
-function experienceLabel(id: string): string {
-  return EXPERIENCE_ROWS.find((r) => r.id === id)?.title ?? id;
+
+async function upsertWhatsAppCandidate(state: BotState, data: Record<string, any>): Promise<string | null> {
+  const db = supabaseAdminClient();
+  const normalizedPhone = normalizePhoneE164(data.contact_number || state.phoneNumber) || data.contact_number || state.phoneNumber;
+  const email = data.email ? normalizeFreeText(String(data.email)).toLowerCase() : null;
+
+  let candidateId: string | null = null;
+
+  const { data: conversation } = await db
+    .from('whatsapp_conversations')
+    .select('candidate_id')
+    .eq('phone_number', state.phoneNumber)
+    .maybeSingle();
+
+  if ((conversation as any)?.candidate_id) {
+    candidateId = (conversation as any).candidate_id;
+  }
+
+  if (!candidateId && normalizedPhone) {
+    const { data: existingByPhone } = await db
+      .from('candidates')
+      .select('id')
+      .eq('phone', normalizedPhone)
+      .maybeSingle();
+    candidateId = (existingByPhone as any)?.id ?? null;
+  }
+
+  if (!candidateId && email) {
+    const { data: existingByEmail } = await db
+      .from('candidates')
+      .select('id')
+      .ilike('email', email)
+      .limit(1)
+      .maybeSingle();
+    candidateId = (existingByEmail as any)?.id ?? null;
+  }
+
+  const candidatePayload = {
+    name: data.name,
+    position: data.profession,
+    phone: normalizedPhone,
+    email: email || undefined,
+    nationality: data.nationality || undefined,
+    country_of_interest: data.preferred_country || undefined,
+    source: 'WhatsApp',
+    cv_received: Boolean(data.cv_uploaded),
+    auto_extracted: false,
+    needs_review: false,
+  };
+
+  if (candidateId) {
+    await updateCandidate(candidateId, candidatePayload, BOT_ACTOR_ID);
+  } else {
+    const created = await createCandidate(candidatePayload, BOT_ACTOR_ID);
+    candidateId = created?.id ?? null;
+  }
+
+  if (candidateId) {
+    await db
+      .from('whatsapp_conversations')
+      .update({ candidate_id: candidateId, display_name: data.name || null })
+      .eq('phone_number', state.phoneNumber);
+
+    const documentLinkService = new DocumentLinkService();
+    await documentLinkService.reconcileDocumentsForCandidate(candidateId).catch(() => undefined);
+  }
+
+  return candidateId;
 }
-function countryLabel(id: string): string {
-  return COUNTRY_ROWS.find((r) => r.id === id)?.title ?? id;
+
+async function findExistingAuthUserByEmail(email?: string | null) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (!normalizedEmail) {
+    return null;
+  }
+
+  const supabase = supabaseAdminClient();
+  const { data, error } = await supabase.auth.admin.listUsers();
+  if (error) {
+    throw error;
+  }
+
+  return data.users.find((user) => String(user.email || '').trim().toLowerCase() === normalizedEmail) || null;
+}
+
+async function ensurePartnerPortalAccount(data: Record<string, any>, partnerApplicationId?: string | null) {
+  const email = String(data.email || '').trim().toLowerCase();
+  if (!email) {
+    return { created: false, userId: null, password: null, dashboardUrl: `${FRONTEND_URL}/partner/dashboard` };
+  }
+
+  const supabase = supabaseAdminClient();
+  const existingAuthUser = await findExistingAuthUserByEmail(email);
+  const password = existingAuthUser ? null : generateTemporaryPassword();
+
+  const authUser = existingAuthUser || (await (async () => {
+    const { data: created, error } = await supabase.auth.admin.createUser({
+      email,
+      password: password!,
+      email_confirm: true,
+      user_metadata: {
+        name: data.name || null,
+        phone: data.contact || null,
+        role: 'partner',
+      },
+    });
+    if (error) {
+      throw error;
+    }
+    return created.user;
+  })());
+
+  await upsertAppUserProfile({
+    id: authUser.id,
+    email: authUser.email || email,
+    role: 'partner',
+    name: data.name || null,
+    phone: data.contact || null,
+    status: 'Active',
+  });
+
+  if (partnerApplicationId) {
+    const { error: linkError } = await supabase
+      .from('partner_applications')
+      .update({ user_id: authUser.id, updated_at: new Date().toISOString() })
+      .eq('id', partnerApplicationId)
+      .is('user_id', null);
+
+    if (linkError) {
+      logger.warn('Failed to link partner application to auth user (non-fatal)', {
+        partnerApplicationId,
+        userId: authUser.id,
+        error: linkError.message,
+      });
+    }
+  }
+
+  return {
+    created: !existingAuthUser,
+    userId: authUser.id,
+    password,
+    dashboardUrl: `${FRONTEND_URL}/partner/dashboard`,
+  };
+}
+
+async function saveFormSubmission(args: {
+  phoneNumber: string;
+  conversationId: string | null;
+  flowType: string;
+  entityType: string;
+  entityId?: string | null;
+  submissionData: Record<string, any>;
+}): Promise<void> {
+  const db = supabaseAdminClient();
+  await db.from('whatsapp_form_submissions').insert({
+    phone_number: args.phoneNumber,
+    conversation_id: args.conversationId,
+    flow_type: args.flowType,
+    entity_type: args.entityType,
+    entity_id: args.entityId ?? null,
+    submission_data: args.submissionData,
+    status: 'submitted',
+  });
+}
+
+async function finalizeCandidateFlow(
+  state: BotState,
+  phoneNumberId: string,
+  accessToken: string,
+  data: Record<string, any>,
+): Promise<void> {
+  const candidateId = await upsertWhatsAppCandidate(state, data);
+  const loginUrl = `${FRONTEND_URL}/login`;
+  await saveFormSubmission({
+    phoneNumber: state.phoneNumber,
+    conversationId: state.conversationId,
+    flowType: 'job_seeker',
+    entityType: 'candidate',
+    entityId: candidateId,
+    submissionData: data,
+  }).catch((err) => logger.warn('Failed to store WhatsApp candidate submission (non-fatal)', { error: err?.message }));
+
+  await tx(
+    phoneNumberId,
+    accessToken,
+    state.phoneNumber,
+    state.conversationId,
+    [
+      'Thank you! Your information has been submitted.',
+      '',
+      `Name: ${data.name}`,
+      `Profession: ${data.profession}`,
+      `Contact: ${data.contact_number}`,
+      `Email: ${data.email || 'Not provided'}`,
+      `Nationality: ${data.nationality}`,
+      `Preferred Country: ${data.preferred_country}`,
+      `CV Uploaded: ${data.cv_uploaded ? 'Yes' : 'No'}`,
+      `Comments: ${data.comments || 'None'}`,
+      '',
+      `Login or create your candidate account here: ${loginUrl}`,
+    ].join('\n'),
+  );
+  await tx(
+    phoneNumberId,
+    accessToken,
+    state.phoneNumber,
+    state.conversationId,
+    [
+      'Your candidate profile has been saved.',
+      `Login URL: ${loginUrl}`,
+      '',
+      'Choose Individual on the login screen, then sign in or create your login with Gmail to access your candidate dashboard.',
+      'After login, the system will automatically redirect you to your candidate dashboard.',
+    ].join('\n'),
+  );
+  await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
+  await promptStep(
+    phoneNumberId,
+    accessToken,
+    state.phoneNumber,
+    state.conversationId,
+    'You are all set.',
+    [
+      { id: 'main_menu', title: 'Main Menu' },
+      { id: 'talk_human', title: 'Talk to Human' },
+    ],
+    ['main_menu', 'talk_human'],
+    'Falisha',
+  );
+  await resetBotState(state.phoneNumber);
 }
 
 async function handleCandidateFlow(
@@ -365,380 +644,166 @@ async function handleCandidateFlow(
   phoneNumberId: string,
   accessToken: string,
 ): Promise<void> {
-  const { phoneNumber, conversationId: convId, step, data } = state;
-  const id    = incoming.interactiveId;
-  const text  = incoming.text;
+  const { phoneNumber, step, data } = state;
+  const raw = normalizeFreeText(incoming.rawText || '');
 
-  // ── Step: name ────────────────────────────────────────────────────────────
-  if (!step || step === 'name') {
-    if (!step) {
-      // Just entered this flow
-      await setBotState(phoneNumber, 'candidate_intake', 'name', {});
-      await tx(
-        phoneNumberId, accessToken, phoneNumber, convId,
-        '👷 Great! Let\'s build your profile.\n\nPlease type your *Full Name*:',
-      );
-      return;
-    }
-    if (incoming.type === 'text' && text.length > 0) {
-      await patchBotData(phoneNumber, { name: incoming.rawText.trim() });
-      await setBotState(phoneNumber, 'candidate_intake', 'profession', { ...data, name: incoming.rawText.trim() });
-      await setExpectedInteractive(phoneNumber, []);
-      await lx(
-        phoneNumberId, accessToken, phoneNumber, convId,
-        `Thanks *${incoming.rawText.trim()}*! 👍\n\nWhat is your *Profession / Trade*?`,
-        'Select Profession',
-        [{ rows: PROFESSION_ROWS }],
-      );
-      await setExpectedInteractive(phoneNumber, PROFESSION_ROWS.map((r) => r.id));
-      return;
-    }
-    await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please type your full name to continue.');
+  if (!step) {
+    await setBotState(phoneNumber, 'candidate_intake', 'name', {});
+    await promptCandidateStep({ ...state, step: 'name', data: {} }, phoneNumberId, accessToken);
     return;
   }
 
-  // ── Step: profession ──────────────────────────────────────────────────────
+  if (step === 'name') {
+    if (!raw) {
+      await promptCandidateStep(state, phoneNumberId, accessToken);
+      return;
+    }
+    const nextData = { ...data, name: raw };
+    await patchBotData(phoneNumber, nextData);
+    await setBotState(phoneNumber, 'candidate_intake', 'profession', nextData);
+    await promptCandidateStep({ ...state, step: 'profession', data: nextData }, phoneNumberId, accessToken);
+    return;
+  }
+
   if (step === 'profession') {
-    const profId = id.startsWith('prof_') ? id : null;
-    const profText = profId ? professionLabel(profId) : incoming.rawText.trim();
-    if (!profId && text.length === 0) {
-      await lx(
-        phoneNumberId, accessToken, phoneNumber, convId,
-        'Please select your profession:',
-        'Select Profession',
-        [{ rows: PROFESSION_ROWS }],
-      );
+    if (!raw) {
+      await promptCandidateStep(state, phoneNumberId, accessToken);
       return;
     }
-    const newData = { ...data, profession: profText };
-    await setBotState(phoneNumber, 'candidate_intake', 'experience', newData);
-    await lx(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      '📅 How many years of experience do you have?',
-      'Select Experience',
-      [{ rows: EXPERIENCE_ROWS }],
-    );
-    await setExpectedInteractive(phoneNumber, EXPERIENCE_ROWS.map((r) => r.id));
+    const nextData = { ...data, profession: raw };
+    await patchBotData(phoneNumber, nextData);
+    await setBotState(phoneNumber, 'candidate_intake', 'contact_number', nextData);
+    await promptCandidateStep({ ...state, step: 'contact_number', data: nextData }, phoneNumberId, accessToken);
     return;
   }
 
-  // ── Step: experience ──────────────────────────────────────────────────────
-  if (step === 'experience') {
-    const expId = id.startsWith('exp_') ? id : null;
-    const expText = expId ? experienceLabel(expId) : incoming.rawText.trim();
-    if (!expId && text.length === 0) {
-      await lx(
-        phoneNumberId, accessToken, phoneNumber, convId,
-        'Please select your experience level:',
-        'Select Experience',
-        [{ rows: EXPERIENCE_ROWS }],
-      );
+  if (step === 'contact_number') {
+    if (!raw) {
+      await promptCandidateStep(state, phoneNumberId, accessToken);
       return;
     }
-    const newData = { ...data, experience: expText };
-    await setBotState(phoneNumber, 'candidate_intake', 'country', newData);
-    await lx(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      '🌍 Which country are you interested in working in?',
-      'Select Country',
-      [{ rows: COUNTRY_ROWS }],
-    );
-    await setExpectedInteractive(phoneNumber, COUNTRY_ROWS.map((r) => r.id));
+    const nextData = { ...data, contact_number: raw };
+    await patchBotData(phoneNumber, nextData);
+    await setBotState(phoneNumber, 'candidate_intake', 'email', nextData);
+    await promptCandidateStep({ ...state, step: 'email', data: nextData }, phoneNumberId, accessToken);
     return;
   }
 
-  // ── Step: country ─────────────────────────────────────────────────────────
-  if (step === 'country') {
-    const ctrId = id.startsWith('ctr_') ? id : null;
-    const ctrText = ctrId ? countryLabel(ctrId) : incoming.rawText.trim();
-    if (!ctrId && text.length === 0) {
-      await lx(
-        phoneNumberId, accessToken, phoneNumber, convId,
-        'Please select your preferred country:',
-        'Select Country',
-        [{ rows: COUNTRY_ROWS }],
-      );
+  if (step === 'email') {
+    if (!raw && !isSkipValue(incoming.text, incoming.interactiveId)) {
+      await promptCandidateStep(state, phoneNumberId, accessToken);
       return;
     }
-    const newData: Record<string, any> = { ...data, preferred_country: ctrText };
-    await setBotState(phoneNumber, 'candidate_intake', 'upload_prompt', newData);
-
-    await tx(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      [
-        `✅ Profile summary:`,
-        `• Name: *${newData.name || 'Not set'}*`,
-        `• Profession: *${newData.profession || 'Not set'}*`,
-        `• Experience: *${newData.experience || 'Not set'}*`,
-        `• Country: *${newData.preferred_country}*`,
-        '',
-        '📎 Now please upload your documents.',
-        'Send them as *files* (not photos) for best quality:',
-        '',
-        '✅ CV / Resume *(required)*',
-        '📘 Passport *(recommended)*',
-        '🪪 CNIC',
-        '🎓 Certificates / Degree',
-        '🚗 Driving License',
-        '',
-        'You can send multiple files one by one. Tap *Done* when finished.',
-      ].join('\n'),
-    );
-    await ix(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      'Ready to upload your documents?',
-      [
-        { id: 'candidate_done',  title: "Done / I'm finished" },
-        { id: 'main_menu',       title: 'Main Menu' },
-        { id: 'talk_human',      title: 'Talk to Human' },
-      ],
-    );
-    await setExpectedInteractive(phoneNumber, ['candidate_done', 'main_menu', 'talk_human']);
-    await setBotState(phoneNumber, 'candidate_intake', 'upload_waiting', newData);
+    if (raw && !looksLikeEmail(raw) && !isSkipValue(incoming.text, incoming.interactiveId)) {
+      await tx(phoneNumberId, accessToken, phoneNumber, state.conversationId, 'Please enter a valid email or tap Skip.');
+      await promptCandidateStep(state, phoneNumberId, accessToken);
+      return;
+    }
+    const nextData = { ...data, email: isSkipValue(incoming.text, incoming.interactiveId) ? null : raw };
+    await patchBotData(phoneNumber, nextData);
+    await setBotState(phoneNumber, 'candidate_intake', 'nationality', nextData);
+    await promptCandidateStep({ ...state, step: 'nationality', data: nextData }, phoneNumberId, accessToken);
     return;
   }
 
-  // ── Step: upload_waiting — accept any media, offer "Done" button ──────────
-  if (step === 'upload_waiting') {
-    if (incoming.hasMedia) {
-      // Media is handled by the existing WhatsApp media worker (CV parsing pipeline).
-      // Just acknowledge and keep waiting.
-      await ix(
-        phoneNumberId, accessToken, phoneNumber, convId,
-        '📥 Document received! Send more or tap *Done* when finished.',
-        [
-          { id: 'candidate_done', title: "Done / I'm finished" },
-          { id: 'talk_human',     title: 'Talk to Human' },
-        ],
-      );
-      await setExpectedInteractive(phoneNumber, ['candidate_done', 'talk_human']);
+  if (step === 'nationality') {
+    if (!raw) {
+      await promptCandidateStep(state, phoneNumberId, accessToken);
       return;
     }
-
-    if (id === 'candidate_done' || text === 'done' || text === 'finished') {
-      await confirmCandidateProfile(state, phoneNumberId, accessToken);
-      return;
-    }
-
-    // They typed something while we're waiting for upload
-    await ix(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      'Please send your CV and documents now, or tap *Done* if you\'re finished.',
-      [
-        { id: 'candidate_done', title: "Done / I'm finished" },
-        { id: 'talk_human',     title: 'Talk to Human' },
-      ],
-    );
-    await setExpectedInteractive(phoneNumber, ['candidate_done', 'talk_human']);
+    const nextData = { ...data, nationality: raw };
+    await patchBotData(phoneNumber, nextData);
+    await setBotState(phoneNumber, 'candidate_intake', 'preferred_country', nextData);
+    await promptCandidateStep({ ...state, step: 'preferred_country', data: nextData }, phoneNumberId, accessToken);
     return;
   }
 
-  // ── Step: post_actions ────────────────────────────────────────────────────
-  if (step === 'post_actions') {
-    if (id === 'candidate_upload_more') {
-      await setBotState(phoneNumber, 'candidate_intake', 'upload_waiting', data);
-      await ix(
-        phoneNumberId,
-        accessToken,
-        phoneNumber,
-        convId,
-        'Great, please send additional documents now. Tap *Done* when finished.',
-        [
-          { id: 'candidate_done', title: "Done / I'm finished" },
-          { id: 'talk_human', title: 'Talk to Human' },
-          { id: 'main_menu', title: 'Main Menu' },
-        ],
-      );
-      await setExpectedInteractive(phoneNumber, ['candidate_done', 'talk_human', 'main_menu']);
+  if (step === 'preferred_country') {
+    if (!raw) {
+      await promptCandidateStep(state, phoneNumberId, accessToken);
       return;
     }
-    if (id === 'menu_jobs') {
-      await handleJobsFlow({ ...state, flow: 'jobs' }, incoming, phoneNumberId, accessToken);
-      return;
-    }
-    await ix(
-      phoneNumberId,
-      accessToken,
-      phoneNumber,
-      convId,
-      'Please choose an option below:',
-      [
-        { id: 'candidate_upload_more', title: 'Upload More Docs' },
-        { id: 'menu_jobs', title: 'See Jobs' },
-        { id: 'talk_human', title: 'Talk to Human' },
-      ],
-    );
-    await setExpectedInteractive(phoneNumber, ['candidate_upload_more', 'menu_jobs', 'talk_human']);
+    const nextData = { ...data, preferred_country: raw };
+    await patchBotData(phoneNumber, nextData);
+    await setBotState(phoneNumber, 'candidate_intake', 'cv_upload', nextData);
+    await promptCandidateStep({ ...state, step: 'cv_upload', data: nextData }, phoneNumberId, accessToken);
     return;
   }
-}
 
-async function confirmCandidateProfile(
-  state: BotState,
-  phoneNumberId: string,
-  accessToken: string,
-): Promise<void> {
-  const { phoneNumber, conversationId: convId, data } = state;
-  await setBotState(phoneNumber, 'candidate_intake', 'post_actions', data);
-  await tx(
-    phoneNumberId, accessToken, phoneNumber, convId,
-    [
-      '🎉 *Thank you!* Your profile has been created.',
-      '',
-      `• Name: *${data.name || 'Pending'}*`,
-      `• Profession: *${data.profession || 'Pending'}*`,
-      `• Experience: *${data.experience || 'Pending'}*`,
-      `• Country: *${data.preferred_country || 'Pending'}*`,
-      '',
-      'Our team will review your profile and contact you shortly. You can also send more documents anytime.',
-      '',
-      '— Falisha Manpower Team',
-    ].join('\n'),
-  );
-  await ix(
-    phoneNumberId, accessToken, phoneNumber, convId,
-    'What would you like to do next?',
-    [
-      { id: 'candidate_upload_more', title: 'Upload More Docs' },
-      { id: 'menu_jobs',      title: 'See Jobs' },
-      { id: 'talk_human',     title: 'Talk to Human' },
-    ],
-  );
-  await setExpectedInteractive(phoneNumber, ['candidate_upload_more', 'menu_jobs', 'talk_human']);
+  if (step === 'cv_upload') {
+    if (!incoming.hasMedia) {
+      await tx(phoneNumberId, accessToken, phoneNumber, state.conversationId, 'Please upload your CV as a WhatsApp document to continue.');
+      await promptCandidateStep(state, phoneNumberId, accessToken);
+      return;
+    }
+    const nextData = {
+      ...data,
+      cv_uploaded: true,
+      cv_inbox_message_id: incoming.inboxMessageId,
+      cv_file_name: incoming.fileName || null,
+    };
+    await patchBotData(phoneNumber, nextData);
+    await setBotState(phoneNumber, 'candidate_intake', 'comments', nextData);
+    await tx(phoneNumberId, accessToken, phoneNumber, state.conversationId, 'CV received.');
+    await promptCandidateStep({ ...state, step: 'comments', data: nextData }, phoneNumberId, accessToken);
+    return;
+  }
+
+  if (step === 'comments') {
+    const nextData = {
+      ...data,
+      comments: isSkipValue(incoming.text, incoming.interactiveId) ? null : raw,
+    };
+    await patchBotData(phoneNumber, nextData);
+    await finalizeCandidateFlow(state, phoneNumberId, accessToken, nextData);
+  }
 }
 
 // ─── Flow B: Employer Intake ──────────────────────────────────────────────────
 
-const EMPLOYER_COUNTRY_ROWS: WaListSection['rows'] = [
-  { id: 'ec_saudi',   title: '🇸🇦 Saudi Arabia' },
-  { id: 'ec_uae',     title: '🇦🇪 UAE' },
-  { id: 'ec_qatar',   title: '🇶🇦 Qatar' },
-  { id: 'ec_oman',    title: '🇴🇲 Oman' },
-  { id: 'ec_kuwait',  title: '🇰🇼 Kuwait' },
-  { id: 'ec_bahrain', title: '🇧🇭 Bahrain' },
-  { id: 'ec_other',   title: '🌍 Other' },
-];
+async function promptEmployerStep(state: BotState, phoneNumberId: string, accessToken: string): Promise<void> {
+  const { phoneNumber, conversationId: convId, step } = state;
 
-async function handleEmployerFlow(
-  state: BotState,
-  incoming: BotIncoming,
-  phoneNumberId: string,
-  accessToken: string,
-): Promise<void> {
-  const { phoneNumber, conversationId: convId, step, data } = state;
-  const id   = incoming.interactiveId;
-  const text = incoming.text;
-  const raw  = incoming.rawText.trim();
-
-  // Entry
-  if (!step || step === 'country') {
-    if (!step) {
-      await setBotState(phoneNumber, 'employer_intake', 'country', {});
-      await lx(
-        phoneNumberId, accessToken, phoneNumber, convId,
-        '🏢 Great! Let\'s set up your recruitment request.\n\n*Which country are you recruiting from?*',
-        'Select Country',
-        [{ rows: EMPLOYER_COUNTRY_ROWS }],
+  switch (step) {
+    case 'company_name':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 1/8 - Company Name?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Employer');
+      return;
+    case 'contact_number':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 2/8 - Contact Number?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Employer');
+      return;
+    case 'email':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 3/8 - Email Address?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Employer');
+      return;
+    case 'country':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 4/8 - Country?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Employer');
+      return;
+    case 'employees_required':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 5/8 - Number of Employees Required?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Employer');
+      return;
+    case 'job_profession':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 6/8 - Job Profession?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Employer');
+      return;
+    case 'salary':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 7/8 - Salary?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Employer');
+      return;
+    case 'duty_hours':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 7/8 - Duty Hours?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Employer');
+      return;
+    case 'comments':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 8/8 - Any comments?',
+        [
+          { id: 'skip', title: 'Skip' },
+          { id: 'main_menu', title: 'Main Menu' },
+        ],
+        ['skip', 'main_menu'],
+        'Employer',
       );
-      await setExpectedInteractive(phoneNumber, EMPLOYER_COUNTRY_ROWS.map((r) => r.id));
       return;
-    }
-    const ctrId = id.startsWith('ec_') ? id : null;
-    const ctrText = ctrId
-      ? (EMPLOYER_COUNTRY_ROWS.find((r) => r.id === ctrId)?.title ?? ctrId)
-      : raw;
-    if (!ctrId && raw.length === 0) {
-      await lx(phoneNumberId, accessToken, phoneNumber, convId, 'Please select a country:', 'Select Country', [{ rows: EMPLOYER_COUNTRY_ROWS }]);
-      return;
-    }
-    await setBotState(phoneNumber, 'employer_intake', 'professions', { ...data, country: ctrText });
-    await tx(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      '👷 What professions / trades do you need?\n\nPlease type them separated by commas.\n\n_Example:_ Electricians, Plumbers, Welders, Drivers',
-    );
-    return;
-  }
-
-  if (step === 'professions') {
-    if (raw.length === 0) { await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please type the professions you need.'); return; }
-    await setBotState(phoneNumber, 'employer_intake', 'quantity', { ...data, professions: raw });
-    await tx(phoneNumberId, accessToken, phoneNumber, convId, '🔢 How many workers do you need in total?\n\n_Example:_ 25');
-    return;
-  }
-
-  if (step === 'quantity') {
-    if (raw.length === 0) { await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please enter the number of workers needed.'); return; }
-    await setBotState(phoneNumber, 'employer_intake', 'salary', { ...data, quantity: raw });
-    await tx(phoneNumberId, accessToken, phoneNumber, convId, '💰 What is the *salary range* (per month)?\n\n_Example:_ SAR 1500 – 2000');
-    return;
-  }
-
-  if (step === 'salary') {
-    if (raw.length === 0) { await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please enter the salary range.'); return; }
-    await setBotState(phoneNumber, 'employer_intake', 'duration', { ...data, salary_range: raw });
-    await tx(phoneNumberId, accessToken, phoneNumber, convId, '📅 What is the *contract duration*?\n\n_Example:_ 2 years');
-    return;
-  }
-
-  if (step === 'duration') {
-    if (raw.length === 0) { await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please enter the contract duration.'); return; }
-    await setBotState(phoneNumber, 'employer_intake', 'benefits', { ...data, contract_duration: raw });
-    await ix(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      '🍽 Does the package include accommodation, food, and transport?',
-      [
-        { id: 'ben_yes',      title: '✅ Yes, included' },
-        { id: 'ben_no',       title: '❌ No' },
-        { id: 'ben_partial',  title: 'Partially' },
-      ],
-    );
-    await setExpectedInteractive(phoneNumber, ['ben_yes', 'ben_no', 'ben_partial']);
-    return;
-  }
-
-  if (step === 'benefits') {
-    const benMap: Record<string, string> = { ben_yes: 'Yes', ben_no: 'No', ben_partial: 'Partial' };
-    const ben = (benMap[id] ?? raw) || 'Not specified';
-    await setBotState(phoneNumber, 'employer_intake', 'city', { ...data, benefits_included: ben });
-    await tx(phoneNumberId, accessToken, phoneNumber, convId, '📍 What is the *work city / location*?');
-    return;
-  }
-
-  if (step === 'city') {
-    if (raw.length === 0) { await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please enter the work city/location.'); return; }
-    const newData: Record<string, any> = { ...data, city: raw };
-    await setBotState(phoneNumber, 'employer_intake', 'confirmed', newData);
-    await saveEmployerLead(phoneNumber, convId, newData);
-    await tx(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      [
-        '✅ *Recruitment Request Submitted!*',
-        '',
-        `• Country: *${newData.country}*`,
-        `• Professions: *${newData.professions}*`,
-        `• Quantity: *${newData.quantity}*`,
-        `• Salary: *${newData.salary_range}*`,
-        `• Duration: *${newData.contract_duration}*`,
-        `• Benefits: *${newData.benefits_included}*`,
-        `• City: *${newData.city}*`,
-        '',
-        'Our recruitment team will contact you within 24 hours. Thank you! 🤝',
-        '',
-        '— Falisha Manpower Team',
-      ].join('\n'),
-    );
-    await ix(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      'What would you like to do next?',
-      [
-        { id: 'menu_employer', title: 'Add Another Role' },
-        { id: 'menu_partner',  title: 'Become a Partner' },
-        { id: 'talk_human',    title: 'Talk to Human' },
-      ],
-    );
-    await setExpectedInteractive(phoneNumber, ['menu_employer', 'menu_partner', 'talk_human']);
-    await resetBotState(phoneNumber);
-    return;
   }
 }
 
@@ -746,164 +811,167 @@ async function saveEmployerLead(
   phoneNumber: string,
   conversationId: string | null,
   data: Record<string, any>,
-): Promise<void> {
+): Promise<string | null> {
   try {
     const db = supabaseAdminClient();
-    await db.from('employer_leads').insert({
-      phone_number:      phoneNumber,
-      conversation_id:   conversationId,
-      country:           data.country ?? null,
-      professions:       data.professions ?? null,
-      quantity:          data.quantity ?? null,
-      salary_range:      data.salary_range ?? null,
-      contract_duration: data.contract_duration ?? null,
-      benefits_included: data.benefits_included ?? null,
-      city:              data.city ?? null,
-      status:            'new',
-    });
+    const { data: inserted } = await db.from('employer_leads').insert({
+      phone_number: phoneNumber,
+      conversation_id: conversationId,
+      company_name: data.company_name ?? null,
+      email: data.email ?? null,
+      country: data.country ?? null,
+      quantity: data.employees_required ?? null,
+      professions: data.job_profession ?? null,
+      salary_range: data.salary ?? null,
+      duty_hours: data.duty_hours ?? null,
+      comments: data.comments ?? null,
+      payload: data,
+      status: 'new',
+    }).select('id').single();
     logger.info('Employer lead saved', { phoneNumber });
+    return (inserted as any)?.id ?? null;
   } catch (err: any) {
     logger.warn('Failed to save employer lead (non-fatal)', { phoneNumber, error: err?.message });
+    return null;
   }
 }
 
-// ─── Flow C: Partner Onboarding ───────────────────────────────────────────────
+async function finalizeEmployerFlow(
+  state: BotState,
+  phoneNumberId: string,
+  accessToken: string,
+  data: Record<string, any>,
+): Promise<void> {
+  const employerLeadId = await saveEmployerLead(state.phoneNumber, state.conversationId, data);
+  await saveFormSubmission({
+    phoneNumber: state.phoneNumber,
+    conversationId: state.conversationId,
+    flowType: 'employer',
+    entityType: 'employer_lead',
+    entityId: employerLeadId,
+    submissionData: data,
+  }).catch((err) => logger.warn('Failed to store WhatsApp employer submission (non-fatal)', { error: err?.message }));
 
-const PARTNER_TYPE_ROWS: WaListSection['rows'] = [
-  { id: 'pt_subagent',    title: '🔗 Sub-agent',          description: 'Refer candidates / clients' },
-  { id: 'pt_company',     title: '🏢 Company / Employer',  description: 'Direct hiring company' },
-  { id: 'pt_overseas',    title: '✈️ Overseas Recruiter',  description: 'Based outside Pakistan' },
-  { id: 'pt_other',       title: '🔹 Other',              description: 'Other partnership type' },
-];
+  await tx(
+    phoneNumberId,
+    accessToken,
+    state.phoneNumber,
+    state.conversationId,
+    [
+      'Thank you! Your employer request has been submitted.',
+      '',
+      `Company: ${data.company_name}`,
+      `Contact: ${data.contact_number}`,
+      `Email: ${data.email}`,
+      `Country: ${data.country}`,
+      `Employees Required: ${data.employees_required}`,
+      `Profession: ${data.job_profession}`,
+      `Salary: ${data.salary}`,
+      `Duty Hours: ${data.duty_hours}`,
+      `Comments: ${data.comments || 'None'}`,
+    ].join('\n'),
+  );
+  await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
+  await promptStep(
+    phoneNumberId,
+    accessToken,
+    state.phoneNumber,
+    state.conversationId,
+    'Our team will contact you shortly.',
+    [
+      { id: 'main_menu', title: 'Main Menu' },
+      { id: 'talk_human', title: 'Talk to Human' },
+    ],
+    ['main_menu', 'talk_human'],
+    'Falisha',
+  );
+  await resetBotState(state.phoneNumber);
+}
 
-async function handlePartnerFlow(
+async function handleEmployerFlow(
   state: BotState,
   incoming: BotIncoming,
   phoneNumberId: string,
   accessToken: string,
 ): Promise<void> {
-  const { phoneNumber, conversationId: convId, step, data } = state;
-  const id   = incoming.interactiveId;
-  const raw  = incoming.rawText.trim();
+  const { phoneNumber, step, data } = state;
+  const raw = normalizeFreeText(incoming.rawText || '');
 
-  if (!step || step === 'phone_confirm') {
-    if (!step) {
-      await setBotState(phoneNumber, 'partner_onboarding', 'phone_confirm', {});
-      await ix(
-        phoneNumberId, accessToken, phoneNumber, convId,
-        '🤝 Welcome! To register as a Falisha Manpower partner, please confirm your contact number.',
+  if (!step) {
+    await setBotState(phoneNumber, 'employer_intake', 'company_name', {});
+    await promptEmployerStep({ ...state, step: 'company_name', data: {} }, phoneNumberId, accessToken);
+    return;
+  }
+
+  const nextStepMap: Record<string, { field: string; next: string | null; validator?: (value: string) => boolean }> = {
+    company_name: { field: 'company_name', next: 'contact_number' },
+    contact_number: { field: 'contact_number', next: 'email' },
+    email: { field: 'email', next: 'country', validator: looksLikeEmail },
+    country: { field: 'country', next: 'employees_required' },
+    employees_required: { field: 'employees_required', next: 'job_profession' },
+    job_profession: { field: 'job_profession', next: 'salary' },
+    salary: { field: 'salary', next: 'duty_hours' },
+    duty_hours: { field: 'duty_hours', next: 'comments' },
+  };
+
+  if (step in nextStepMap) {
+    const stepConfig = nextStepMap[step];
+    if (!raw || (stepConfig.validator && !stepConfig.validator(raw))) {
+      await promptEmployerStep(state, phoneNumberId, accessToken);
+      return;
+    }
+    const nextData = { ...data, [stepConfig.field]: raw };
+    await patchBotData(phoneNumber, nextData);
+    if (stepConfig.next) {
+      await setBotState(phoneNumber, 'employer_intake', stepConfig.next, nextData);
+      await promptEmployerStep({ ...state, step: stepConfig.next, data: nextData }, phoneNumberId, accessToken);
+    }
+    return;
+  }
+
+  if (step === 'comments') {
+    const nextData = { ...data, comments: isSkipValue(incoming.text, incoming.interactiveId) ? null : raw };
+    await patchBotData(phoneNumber, nextData);
+    await finalizeEmployerFlow(state, phoneNumberId, accessToken, nextData);
+  }
+}
+
+// ─── Flow C: Partner Onboarding ───────────────────────────────────────────────
+
+async function promptPartnerStep(state: BotState, phoneNumberId: string, accessToken: string): Promise<void> {
+  const { phoneNumber, conversationId: convId, step } = state;
+
+  switch (step) {
+    case 'name':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 1/6 - Name?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Become a Partner');
+      return;
+    case 'contact':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 2/6 - Contact Number?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Become a Partner');
+      return;
+    case 'email':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 3/6 - Email?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Become a Partner');
+      return;
+    case 'district':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 4/6 - District?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Become a Partner');
+      return;
+    case 'cnic':
+      await promptStep(phoneNumberId, accessToken, phoneNumber, convId, 'Step 5/6 - CNIC?', [{ id: 'main_menu', title: 'Main Menu' }], ['main_menu'], 'Become a Partner');
+      return;
+    case 'cnic_upload':
+      await promptStep(
+        phoneNumberId,
+        accessToken,
+        phoneNumber,
+        convId,
+        'Step 6/6 - Please upload your CNIC picture now.',
         [
-          { id: 'pc_use_this',   title: 'Use this number ✅' },
-          { id: 'pc_enter_diff', title: 'Enter different number' },
+          { id: 'main_menu', title: 'Main Menu' },
+          { id: 'talk_human', title: 'Talk to Human' },
         ],
-        `Register as Partner`,
-      );
-      await setExpectedInteractive(phoneNumber, ['pc_use_this', 'pc_enter_diff']);
-      return;
-    }
-    if (id === 'pc_use_this') {
-      await setBotState(phoneNumber, 'partner_onboarding', 'company_name', { ...data, contact_phone: phoneNumber });
-      await tx(phoneNumberId, accessToken, phoneNumber, convId, '✅ Number confirmed.\n\nPlease enter your *Company / Agency name* (or your personal name if individual):');
-      return;
-    }
-    if (id === 'pc_enter_diff') {
-      await setBotState(phoneNumber, 'partner_onboarding', 'phone_input', data);
-      await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please type your preferred contact number (with country code, e.g. +923001234567):');
-      return;
-    }
-    await ix(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      'Please confirm your contact number:',
-      [
-        { id: 'pc_use_this',   title: 'Use this number ✅' },
-        { id: 'pc_enter_diff', title: 'Enter different number' },
-      ],
-    );
-    return;
-  }
-
-  if (step === 'phone_input') {
-    if (raw.length === 0) { await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please type your contact number.'); return; }
-    await setBotState(phoneNumber, 'partner_onboarding', 'company_name', { ...data, contact_phone: raw });
-    await tx(phoneNumberId, accessToken, phoneNumber, convId, '✅ Number saved.\n\nPlease enter your *Company / Agency name*:');
-    return;
-  }
-
-  if (step === 'company_name') {
-    if (raw.length === 0) { await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please enter your company or agency name.'); return; }
-    await setBotState(phoneNumber, 'partner_onboarding', 'city_country', { ...data, company_name: raw });
-    await tx(phoneNumberId, accessToken, phoneNumber, convId, '📍 Please enter your *City & Country*:\n\n_Example:_ Lahore, Pakistan');
-    return;
-  }
-
-  if (step === 'city_country') {
-    if (raw.length === 0) { await tx(phoneNumberId, accessToken, phoneNumber, convId, 'Please enter your city and country.'); return; }
-    await setBotState(phoneNumber, 'partner_onboarding', 'partner_type', { ...data, city_country: raw });
-    await lx(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      '🤝 What type of partner are you?',
-      'Select Type',
-      [{ rows: PARTNER_TYPE_ROWS }],
-    );
-    await setExpectedInteractive(phoneNumber, PARTNER_TYPE_ROWS.map((r) => r.id));
-    return;
-  }
-
-  if (step === 'partner_type') {
-    const ptMap: Record<string, string> = {
-      pt_subagent: 'Sub-agent', pt_company: 'Company', pt_overseas: 'Overseas Recruiter', pt_other: 'Other',
-    };
-    const ptText = (ptMap[id] ?? raw) || 'Other';
-    await setBotState(phoneNumber, 'partner_onboarding', 'email', { ...data, partner_type: ptText });
-    await ix(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      '📧 (Optional) Please share your *email address*, or tap Skip:',
-      [{ id: 'email_skip', title: '⏭ Skip' }],
-    );
-    await setExpectedInteractive(phoneNumber, ['email_skip']);
-    return;
-  }
-
-  if (step === 'email') {
-    const email = id === 'email_skip' ? null : (raw.includes('@') ? raw : null);
-    if (!email && id !== 'email_skip' && raw.length > 0) {
-      await ix(
-        phoneNumberId, accessToken, phoneNumber, convId,
-        'That doesn\'t look like a valid email. Please try again or tap Skip:',
-        [{ id: 'email_skip', title: '⏭ Skip' }],
+        ['main_menu', 'talk_human'],
+        'Become a Partner',
       );
       return;
-    }
-    const newData: Record<string, any> = { ...data, email };
-    await setBotState(phoneNumber, 'partner_onboarding', 'confirmed', newData);
-    await savePartnerApplication(phoneNumber, convId, newData);
-    await tx(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      [
-        '✅ *Partner Application Submitted!*',
-        '',
-        `• Company: *${newData.company_name}*`,
-        `• Location: *${newData.city_country}*`,
-        `• Type: *${newData.partner_type}*`,
-        `• Contact: *${newData.contact_phone}*`,
-        ...(newData.email ? [`• Email: *${newData.email}*`] : []),
-        '',
-        'Our admin team will review your application and get back to you within 48 hours.',
-        '',
-        '— Falisha Manpower Team',
-      ].join('\n'),
-    );
-    await ix(
-      phoneNumberId, accessToken, phoneNumber, convId,
-      'What would you like to do next?',
-      [
-        { id: 'main_menu',   title: 'Main Menu' },
-        { id: 'talk_human',  title: 'Talk to Human' },
-      ],
-    );
-    await setExpectedInteractive(phoneNumber, ['main_menu', 'talk_human']);
-    await resetBotState(phoneNumber);
-    return;
   }
 }
 
@@ -911,21 +979,157 @@ async function savePartnerApplication(
   phoneNumber: string,
   conversationId: string | null,
   data: Record<string, any>,
-): Promise<void> {
+): Promise<string | null> {
   try {
     const db = supabaseAdminClient();
-    await db.from('partner_applications').insert({
-      phone_number:    phoneNumber,
+    const { data: inserted } = await db.from('partner_applications').insert({
+      phone_number: phoneNumber,
       conversation_id: conversationId,
-      company_name:    data.company_name ?? null,
-      city_country:    data.city_country ?? null,
-      partner_type:    data.partner_type ?? null,
-      email:           data.email ?? null,
-      status:          'pending',
-    });
+      company_name: data.name ?? null,
+      applicant_name: data.name ?? null,
+      city_country: data.district ?? null,
+      district: data.district ?? null,
+      partner_type: 'whatsapp_partner',
+      email: data.email ?? null,
+      cnic: data.cnic ?? null,
+      payload: data,
+      status: 'pending',
+    }).select('id').single();
     logger.info('Partner application saved', { phoneNumber });
+    return (inserted as any)?.id ?? null;
   } catch (err: any) {
     logger.warn('Failed to save partner application (non-fatal)', { phoneNumber, error: err?.message });
+    return null;
+  }
+}
+
+async function finalizePartnerFlow(
+  state: BotState,
+  phoneNumberId: string,
+  accessToken: string,
+  data: Record<string, any>,
+): Promise<void> {
+  const partnerApplicationId = await savePartnerApplication(state.phoneNumber, state.conversationId, data);
+  const partnerAccount = await ensurePartnerPortalAccount(data, partnerApplicationId);
+  await saveFormSubmission({
+    phoneNumber: state.phoneNumber,
+    conversationId: state.conversationId,
+    flowType: 'partner',
+    entityType: 'partner_application',
+    entityId: partnerApplicationId,
+    submissionData: data,
+  }).catch((err) => logger.warn('Failed to store WhatsApp partner submission (non-fatal)', { error: err?.message }));
+
+  await tx(
+    phoneNumberId,
+    accessToken,
+    state.phoneNumber,
+    state.conversationId,
+    [
+      'Thank you! Your partner application has been submitted.',
+      '',
+      `Name: ${data.name}`,
+      `Contact: ${data.contact}`,
+      `Email: ${data.email}`,
+      `District: ${data.district}`,
+      `CNIC: ${data.cnic}`,
+      `CNIC Upload: ${data.cnic_picture_received ? 'Received' : 'Pending'}`,
+      '',
+      `Partner Dashboard: ${partnerAccount.dashboardUrl}`,
+      ...(partnerAccount.password
+        ? [
+            `Login Email: ${data.email}`,
+            `Temporary Password: ${partnerAccount.password}`,
+          ]
+        : [
+            `Login Email: ${data.email}`,
+            'An existing partner account was found, so your previous login remains active.',
+          ]),
+    ].join('\n'),
+  );
+  await tx(
+    phoneNumberId,
+    accessToken,
+    state.phoneNumber,
+    state.conversationId,
+    [
+      'Your partner/agent account is ready.',
+      `Dashboard: ${partnerAccount.dashboardUrl}`,
+      `Email: ${data.email}`,
+      ...(partnerAccount.password ? [`Temporary Password: ${partnerAccount.password}`] : ['Use your existing password to log in.']),
+      '',
+      'After login you can access the partner dashboard and submit candidates.',
+    ].join('\n'),
+  );
+  await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
+  await promptStep(
+    phoneNumberId,
+    accessToken,
+    state.phoneNumber,
+    state.conversationId,
+    'Our admin team will review your application.',
+    [
+      { id: 'main_menu', title: 'Main Menu' },
+      { id: 'talk_human', title: 'Talk to Human' },
+    ],
+    ['main_menu', 'talk_human'],
+    'Falisha',
+  );
+  await resetBotState(state.phoneNumber);
+}
+
+async function handlePartnerFlow(
+  state: BotState,
+  incoming: BotIncoming,
+  phoneNumberId: string,
+  accessToken: string,
+): Promise<void> {
+  const { phoneNumber, step, data } = state;
+  const raw = normalizeFreeText(incoming.rawText || '');
+
+  if (!step) {
+    await setBotState(phoneNumber, 'partner_onboarding', 'name', {});
+    await promptPartnerStep({ ...state, step: 'name', data: {} }, phoneNumberId, accessToken);
+    return;
+  }
+
+  const nextStepMap: Record<string, { field: string; next: string | null; validator?: (value: string) => boolean }> = {
+    name: { field: 'name', next: 'contact' },
+    contact: { field: 'contact', next: 'email' },
+    email: { field: 'email', next: 'district', validator: looksLikeEmail },
+    district: { field: 'district', next: 'cnic' },
+    cnic: { field: 'cnic', next: 'cnic_upload' },
+  };
+
+  if (step in nextStepMap) {
+    const stepConfig = nextStepMap[step];
+    if (!raw || (stepConfig.validator && !stepConfig.validator(raw))) {
+      await promptPartnerStep(state, phoneNumberId, accessToken);
+      return;
+    }
+    const nextData = { ...data, [stepConfig.field]: raw };
+    await patchBotData(phoneNumber, nextData);
+    if (stepConfig.next) {
+      await setBotState(phoneNumber, 'partner_onboarding', stepConfig.next, nextData);
+      await promptPartnerStep({ ...state, step: stepConfig.next, data: nextData }, phoneNumberId, accessToken);
+    }
+    return;
+  }
+
+  if (step === 'cnic_upload') {
+    if (!incoming.hasMedia) {
+      await tx(phoneNumberId, accessToken, phoneNumber, state.conversationId, 'Please upload your CNIC picture to continue.');
+      await promptPartnerStep(state, phoneNumberId, accessToken);
+      return;
+    }
+    const nextData = {
+      ...data,
+      cnic_picture_received: true,
+      cnic_upload_message_id: incoming.inboxMessageId,
+      cnic_file_name: incoming.fileName || null,
+    };
+    await patchBotData(phoneNumber, nextData);
+    await finalizePartnerFlow(state, phoneNumberId, accessToken, nextData);
   }
 }
 
@@ -980,9 +1184,11 @@ async function handleSocialFlow(
   const links: string[] = [
     '📣 *Follow Falisha Manpower for daily job updates:*',
     '',
-    ...(INSTAGRAM_URL   ? [`📸 Instagram:\n${INSTAGRAM_URL}`]   : []),
-    ...(FACEBOOK_URL    ? [`👍 Facebook:\n${FACEBOOK_URL}`]    : []),
-    ...(YOUTUBE_URL     ? [`▶️ YouTube:\n${YOUTUBE_URL}`]       : []),
+    `💼 LinkedIn:\n${LINKEDIN_URL}`,
+    `👍 Facebook:\n${FACEBOOK_URL}`,
+    `📸 Instagram:\n${INSTAGRAM_URL}`,
+    `🎵 TikTok:\n${TIKTOK_URL}`,
+    `▶️ YouTube:\n${YOUTUBE_URL}`,
     ...(WA_CHANNEL_URL  ? [`💬 WhatsApp Channel:\n${WA_CHANNEL_URL}`] : []),
     '',
     'Follow to get the latest jobs every day! ✅',
@@ -1064,15 +1270,14 @@ export async function handleBotMessageFrom(params: {
 
     // ── No active flow — check if this is a trigger ──────────────────────────
     if (!state.flow) {
-      // Greeting or menu tap triggers main menu
-      if (isGreeting(text) || id.startsWith('menu_')) {
+      if (id.startsWith('menu_')) {
+        await routeMenuSelection(id, state, incoming, phoneNumberId, accessToken, from);
+        return true;
+      }
+
+      // Greeting triggers main menu
+      if (isGreeting(text)) {
         await showMainMenu(phoneNumberId, accessToken, from, state.conversationId, state);
-        if (id.startsWith('menu_')) {
-          // Fall through immediately to route the selected menu item
-          // (processed in the block below after a fresh state read isn't needed
-          //  since we know the id — handle inline)
-          await routeMenuSelection(id, state, incoming, phoneNumberId, accessToken, from);
-        }
         return true;
       }
       // Not a known trigger — let AI handle it

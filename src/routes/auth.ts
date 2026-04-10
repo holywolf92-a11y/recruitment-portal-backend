@@ -46,6 +46,14 @@ function isMissingColumnError(error: any, columnName: string) {
   return message.includes(columnName.toLowerCase()) && message.includes('column');
 }
 
+function mapCandidateIdentityFields<T extends Record<string, any>>(candidate: T) {
+  return {
+    ...candidate,
+    cnic: candidate.cnic_normalized || candidate.cnic || null,
+    passport: candidate.passport_normalized || candidate.passport || null,
+  };
+}
+
 router.get('/me', authenticate, async (req: AuthRequest, res) => {
   const user = req.user;
   if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -259,11 +267,7 @@ router.get('/partner/candidates', authenticate, async (req: AuthRequest, res) =>
       throw legacyError;
     }
 
-    const uniqueCandidates = Array.from(new Map([...(taggedData || []), ...(legacyData || [])].map((candidate: any) => [candidate.id, {
-      ...candidate,
-      cnic: candidate.cnic_normalized || null,
-      passport: candidate.passport_normalized || null,
-    }])).values());
+    const uniqueCandidates = Array.from(new Map([...(taggedData || []), ...(legacyData || [])].map((candidate: any) => [candidate.id, mapCandidateIdentityFields(candidate)])).values());
 
     return res.json({ candidates: uniqueCandidates.slice(0, 20) });
   } catch (error: any) {
@@ -324,7 +328,7 @@ router.post('/partner/candidates', authenticate, async (req: AuthRequest, res) =
     );
 
     return res.status(result.created ? 201 : 200).json({
-      candidate: result.candidate,
+      candidate: mapCandidateIdentityFields(result.candidate),
       created: result.created,
       matchedBy: result.matchedBy,
       updatedFields: result.updatedFields,

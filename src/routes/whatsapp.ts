@@ -16,6 +16,7 @@ import {
   recordInboundMessage,
   recordOutboundMessage,
   updateMessageStatus,
+  listMessages,
 } from '../services/whatsappInboxService';
 import { whatsappMediaQueue } from '../config/queue';
 import { handleBotMessageFrom, BotIncoming } from '../services/whatsappBotService';
@@ -384,6 +385,38 @@ router.post(
     // Only when conversation is in AI mode and the bot did not handle the message.
     if (!botHandledMessage && conversationForReply?.reply_mode === 'ai' && shouldReplyWithAI(messageData)) {
       try {
+        let messageHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+        if (conversationForReply?.id) {
+          try {
+            const history = await listMessages(conversationForReply.id, { limit: 10 });
+            const recent = history.messages
+              .filter((message) => message.message_type === 'text' && !!message.body)
+              .filter((message) => {
+                const body = String(message.body || '').trim();
+                return body && !body.startsWith('[buttons]') && !body.startsWith('[list]') && !body.startsWith('[template:');
+              })
+              .slice(-8)
+              .map((message) => ({
+                role: message.direction === 'inbound' ? 'user' as const : 'assistant' as const,
+                content: String(message.body || '').trim(),
+              }));
+
+            const currentText = String(messageData.text || '').trim();
+            if (recent.length > 0) {
+              const last = recent[recent.length - 1];
+              if (last.role === 'user' && last.content === currentText) {
+                recent.pop();
+              }
+            }
+            messageHistory = recent;
+          } catch (historyErr) {
+            logger.warn('Failed to load WhatsApp history for AI context (non-fatal)', {
+              err: historyErr instanceof Error ? historyErr.message : String(historyErr),
+              conversationId: conversationForReply.id,
+            });
+          }
+        }
+
         // ── Resolve full person record from Supabase ─────────────────────────
         const botState = await getBotState(effectiveFrom || '').catch(() => null);
         const personCtx = await resolvePersonContext(effectiveFrom || '').catch(() => ({
@@ -402,6 +435,7 @@ router.post(
           text: messageData.text || '',
           personCtx,
           botFlow: botState?.flow ?? null,
+          messageHistory,
         });
 
         // Send the AI-generated reply

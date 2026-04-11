@@ -1,8 +1,17 @@
 import { createLogger } from '../utils/errorHandling';
 import { supabaseAdminClient } from '../config/database';
 import { normalizePhoneE164 } from './candidateService';
+import { resolveFrontendUrl } from '../utils/publicUrl';
 
 const logger = createLogger('WhatsAppAIService');
+const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
+const JOBS_URL = process.env.WHATSAPP_BOT_JOBS_URL || `${FRONTEND_URL}/jobs`;
+const LINKEDIN_URL = process.env.WHATSAPP_BOT_LINKEDIN_URL || 'https://www.linkedin.com/company/falishaenterprises';
+const FACEBOOK_URL = process.env.WHATSAPP_BOT_FACEBOOK_URL || 'https://www.facebook.com/falishaenterprises.pk/';
+const INSTAGRAM_URL = process.env.WHATSAPP_BOT_INSTAGRAM_URL || 'https://www.instagram.com/falisha.manpower';
+const TIKTOK_URL = process.env.WHATSAPP_BOT_TIKTOK_URL || 'https://www.tiktok.com/@falishamanpower';
+const YOUTUBE_URL = process.env.WHATSAPP_BOT_YOUTUBE_URL || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
+const WA_CHANNEL_URL = process.env.WHATSAPP_BOT_CHANNEL_URL || '';
 
 export type AIUserRole = 'candidate' | 'employer' | 'partner' | null;
 
@@ -35,6 +44,140 @@ export interface PersonContext {
   partnerStatus?: string | null;
   cityCountry?: string | null;
   district?: string | null;
+}
+
+function normalizeText(value: string): string {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildSocialLinksReply(): string {
+  return [
+    '🌐 *Stay connected with Falisha Manpower:*',
+    '',
+    `💼 LinkedIn: ${LINKEDIN_URL}`,
+    `📘 Facebook: ${FACEBOOK_URL}`,
+    `📸 Instagram: ${INSTAGRAM_URL}`,
+    `🎵 TikTok: ${TIKTOK_URL}`,
+    `▶️ YouTube: ${YOUTUBE_URL}`,
+    ...(WA_CHANNEL_URL ? [`💬 WhatsApp Channel: ${WA_CHANNEL_URL}`] : []),
+    '',
+    '_Follow us for job updates, success stories, and more!_',
+  ].join('\n');
+}
+
+function buildPortalUrl(role: AIUserRole): string {
+  if (role === 'employer') return `${FRONTEND_URL}/employer/dashboard`;
+  if (role === 'partner') return `${FRONTEND_URL}/partner/dashboard`;
+  return `${FRONTEND_URL}/apply/candidate`;
+}
+
+function buildDeterministicReply(context: WhatsAppConversationContext, personCtx: PersonContext): string | null {
+  const text = normalizeText(context.text);
+  if (!text) return null;
+
+  const asksForSocialLinks =
+    /social|social media|channel/.test(text) ||
+    /linkedin|facebook|instagram|insta|youtube|tiktok|tik tok/.test(text) ||
+    ((/link|links/.test(text)) && /send|share|give|follow/.test(text));
+  if (asksForSocialLinks) {
+    return buildSocialLinksReply();
+  }
+
+  const asksForJobs = /jobs|vacancies|positions|openings/.test(text);
+  if (asksForJobs) {
+    return [
+      '💼 *Browse current Falisha jobs here:*',
+      JOBS_URL,
+      '',
+      `If you want to apply online, use: ${FRONTEND_URL}/apply/candidate`,
+    ].join('\n');
+  }
+
+  const asksForLogin = /login|log in|signin|sign in|password|username|dashboard|portal/.test(text);
+  if (asksForLogin) {
+    const portalUrl = buildPortalUrl(personCtx.role);
+    if (personCtx.role === 'employer') {
+      return [
+        '🔐 *Employer portal access*',
+        `Dashboard: ${portalUrl}`,
+        'If you do not remember your password, reply with your registered email and our team will reset it for you.',
+      ].join('\n');
+    }
+    if (personCtx.role === 'partner') {
+      return [
+        '🔐 *Partner portal access*',
+        `Dashboard: ${portalUrl}`,
+        'If you do not remember your password, reply with your registered email and our team will reset it for you.',
+      ].join('\n');
+    }
+    return [
+      '🔗 *Candidate application / profile link*',
+      portalUrl,
+      'If you already applied and need help finding your profile link, send your full name and email.',
+    ].join('\n');
+  }
+
+  const asksForStatus = /status|update|progress|application|requirement|hiring|follow up|followup/.test(text);
+  if (asksForStatus) {
+    if (personCtx.role === 'candidate' && (personCtx.status || personCtx.position || personCtx.candidateCode)) {
+      return [
+        `📄 Your application status is *${personCtx.status || 'Applied'}*${personCtx.position ? ` for *${personCtx.position}*` : ''}.`,
+        personCtx.candidateCode ? `Reference: ${personCtx.candidateCode}` : '',
+        personCtx.status && personCtx.status.toLowerCase() === 'shortlisted'
+          ? 'A consultant will contact you with the next step.'
+          : 'If you want, I can also guide you on the next required documents or next step.',
+      ].filter(Boolean).join('\n');
+    }
+
+    if (personCtx.role === 'employer' && (personCtx.leadStatus || personCtx.companyName || personCtx.professions)) {
+      return [
+        `🏢 Your hiring request${personCtx.companyName ? ` for *${personCtx.companyName}*` : ''} is currently *${personCtx.leadStatus || 'New'}*.`,
+        personCtx.professions ? `Requested roles: ${personCtx.professions}` : '',
+        'Our recruitment process is sourcing → screening → interviews → visa → deployment.',
+      ].filter(Boolean).join('\n');
+    }
+
+    if (personCtx.role === 'partner' && personCtx.partnerStatus) {
+      return [
+        `🤝 Your partner application status is *${personCtx.partnerStatus}*.`,
+        'If approved, you can submit candidates through the partner dashboard.',
+        `Dashboard: ${buildPortalUrl('partner')}`,
+      ].join('\n');
+    }
+  }
+
+  const asksForDocuments = /document|documents|cv|resume|passport|cnic|visa/.test(text);
+  if (asksForDocuments) {
+    if (personCtx.role === 'candidate') {
+      const missingDocs: string[] = [];
+      if (personCtx.cvReceived === false) missingDocs.push('CV');
+      if (personCtx.passportReceived === false) missingDocs.push('Passport');
+      if (missingDocs.length > 0) {
+        return `📌 We still need these documents from you: ${missingDocs.join(', ')}. Please send them here on WhatsApp or complete your profile online.`;
+      }
+    }
+  }
+
+  return null;
+}
+
+function buildFallbackReply(personCtx: PersonContext): string {
+  if (personCtx.role === 'candidate') {
+    return 'I can help with your application status, required documents, profile link, or current jobs. Tell me which one you need.';
+  }
+  if (personCtx.role === 'employer') {
+    return 'I can help with your hiring request status, employer dashboard, recruitment process, or social links. Tell me what you need.';
+  }
+  if (personCtx.role === 'partner') {
+    return 'I can help with your partner application status, dashboard access, candidate submission process, or social links. Tell me what you need.';
+  }
+  return [
+    'Welcome to Falisha Manpower.',
+    `Job Seeker: ${FRONTEND_URL}/apply/candidate`,
+    `Employer: ${FRONTEND_URL}/apply/employer`,
+    `Partner: ${FRONTEND_URL}/apply/partner`,
+    'You can also ask for jobs, portal links, or social media links.',
+  ].join('\n');
 }
 
 /**
@@ -159,6 +302,33 @@ export async function resolvePersonContext(phone: string): Promise<PersonContext
 function buildSystemPrompt(ctx: PersonContext, botFlow?: string | null): string {
   const firstName = ctx.name ? ctx.name.split(' ')[0] : null;
   const nameRef = firstName ? `Their name is ${ctx.name}.` : '';
+  const globalPolicy = `
+# Identity
+You are Falisha Manpower's WhatsApp customer support assistant.
+
+# Response policy
+- Answer the user's exact question first.
+- Keep replies concise, practical, and WhatsApp-friendly.
+- Prefer 1-3 short paragraphs or short bullet-style lines.
+- If the user asks for a link, return the exact link directly.
+- If the user asks for status, use only the supplied account context.
+- If account data is missing, ask one specific clarifying question instead of giving a vague fallback.
+- Never invent prices, timelines, approvals, placements, or legal claims.
+- Never say "our team will get back to you shortly" unless the issue truly requires human review.
+- If human escalation is necessary, explain why in one sentence.
+
+# Escalate only for
+- Legal or compliance matters
+- Pricing negotiation or custom commercial terms
+- Manual account recovery that cannot be solved with a link or guidance
+- A question that cannot be answered from the available account context
+
+# Style
+- Sound like an experienced support agent at an international recruitment company.
+- Be calm, direct, and useful.
+- Do not over-apologize.
+- Do not use filler.
+`;
 
   // ── Candidate prompt ────────────────────────────────────────────────────────
   if (ctx.role === 'candidate') {
@@ -173,7 +343,9 @@ function buildSystemPrompt(ctx: PersonContext, botFlow?: string | null): string 
     if (ctx.passportReceived != null) profile.push(`Passport received: ${ctx.passportReceived ? 'Yes' : 'No'}`);
     if (ctx.skills)             profile.push(`Skills: ${ctx.skills}`);
 
-    return `You are a professional recruitment assistant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
+    return `${globalPolicy}
+
+  You are a professional recruitment assistant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
 ${nameRef}
 You are speaking with a JOB SEEKER. Use their profile data below to give personalised, accurate answers.
 
@@ -191,7 +363,7 @@ Your responsibilities:
 Rules:
 - Never charge money — this service is free for job seekers
 - Don't guarantee a placement or invent statuses not shown above
-- If they ask something outside this data, say "our team will check and update you shortly"`;
+- If profile data is insufficient, ask one focused follow-up question or offer the correct portal link`;
   }
 
   // ── Employer prompt ─────────────────────────────────────────────────────────
@@ -204,7 +376,9 @@ Rules:
     if (ctx.country)      profile.push(`Country: ${ctx.country}`);
     if (ctx.city)         profile.push(`City: ${ctx.city}`);
 
-    return `You are a senior recruitment consultant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
+    return `${globalPolicy}
+
+  You are a senior recruitment consultant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
 ${nameRef}
 You are speaking with an EMPLOYER. Use their account data below to give personalised answers.
 
@@ -221,7 +395,7 @@ Your responsibilities:
 Rules:
 - Never quote exact prices — say "our team will provide a formal quotation"
 - Don't invent statuses or timelines beyond what's in the profile above
-- Escalate complex legal or compliance questions to the human team`;
+- Escalate only complex legal, compliance, or custom commercial questions`;
   }
 
   // ── Partner prompt ──────────────────────────────────────────────────────────
@@ -233,7 +407,9 @@ Rules:
     if (ctx.partnerType)    profile.push(`Partner type: ${ctx.partnerType}`);
     if (ctx.partnerStatus)  profile.push(`Application status: ${ctx.partnerStatus}`);
 
-    return `You are a partnership manager at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
+    return `${globalPolicy}
+
+  You are a partnership manager at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
 ${nameRef}
 You are speaking with a PARTNER AGENT. Use their account data below to give personalised answers.
 
@@ -251,11 +427,13 @@ Your responsibilities:
 Rules:
 - Never share data about other partners
 - Don't promise specific commission amounts — refer to their dashboard
-- Escalate payout disputes to the human team`;
+- Escalate payout disputes or verification issues to the human team only when needed`;
   }
 
   // ── Unknown / first contact ─────────────────────────────────────────────────
-  return `You are a professional recruitment assistant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
+  return `${globalPolicy}
+
+You are a professional recruitment assistant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
 You are speaking with a new contact. We don't have their profile on record yet.
 
 Your responsibilities:
@@ -296,6 +474,11 @@ export async function generateWhatsAppReply(context: WhatsAppConversationContext
       name: context.userName ?? null,
     };
 
+    const deterministicReply = buildDeterministicReply(context, personCtx);
+    if (deterministicReply) {
+      return deterministicReply;
+    }
+
     const systemPrompt = buildSystemPrompt(personCtx, context.botFlow);
 
     const messages = [
@@ -317,7 +500,7 @@ export async function generateWhatsAppReply(context: WhatsAppConversationContext
         model: process.env.WHATSAPP_OPENAI_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-nano',
         messages,
         max_tokens: 150,
-        temperature: 0.7,
+        temperature: 0.25,
       }),
     });
 
@@ -335,7 +518,7 @@ export async function generateWhatsAppReply(context: WhatsAppConversationContext
 
     if (!reply) {
       logger.warn('OpenAI returned empty response');
-      return 'Thank you for contacting Falisha Manpower. A team member will assist you soon.';
+      return buildFallbackReply(personCtx);
     }
 
     logger.info('Generated AI reply', { 
@@ -351,7 +534,7 @@ export async function generateWhatsAppReply(context: WhatsAppConversationContext
       error: error instanceof Error ? error.message : 'Unknown error',
       from: context.from 
     });
-    return 'Thank you for your message. Our recruitment team will get back to you shortly.';
+    return buildFallbackReply(context.personCtx ?? { role: context.role ?? null, name: context.userName ?? null });
   }
 }
 

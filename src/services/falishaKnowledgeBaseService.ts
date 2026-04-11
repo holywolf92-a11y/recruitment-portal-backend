@@ -1,6 +1,7 @@
 export type KnowledgeAudience = 'all' | 'candidate' | 'employer' | 'partner';
 
 export type KnowledgeIntent =
+  | 'greeting'
   | 'social_links'
   | 'job_listings'
   | 'portal_access'
@@ -86,6 +87,21 @@ const FALISHA_KNOWLEDGE_BASE: KnowledgeBase = {
   sources: KNOWLEDGE_SOURCES,
   articles: [
     {
+      id: 'welcome_menu',
+      title: 'Welcome and menu guidance',
+      audience: ['all'],
+      intents: ['greeting', 'application_links'],
+      tags: ['welcome', 'hello', 'aoa', 'menu', 'start', 'help', 'new user'],
+      facts: [
+        'New contacts should be guided to choose whether they are a Job Seeker, Employer, or Recruitment Partner.',
+        'Job seeker application link: https://falishajobs.up.railway.app/apply/candidate',
+        'Employer application link: https://falishajobs.up.railway.app/apply/employer',
+        'Partner application link: https://falishajobs.up.railway.app/apply/partner',
+        'Users can also ask for jobs, portal links, or social media links.',
+      ],
+      sourceIds: ['public_urls', 'whatsapp_ai'],
+    },
+    {
       id: 'company_contact',
       title: 'Falisha public contact details',
       audience: ['all'],
@@ -127,6 +143,19 @@ const FALISHA_KNOWLEDGE_BASE: KnowledgeBase = {
         'Jobs listing page: https://falishajobs.up.railway.app/jobs',
       ],
       sourceIds: ['public_urls', 'public_portal', 'whatsapp_bot_jobs'],
+    },
+    {
+      id: 'job_inquiry_guidance',
+      title: 'General job inquiry guidance',
+      audience: ['all'],
+      intents: ['job_listings'],
+      tags: ['job', 'jobs', 'vacancy', 'vacancies', 'ad', 'advert', 'work permit', 'dubai', 'turkey'],
+      facts: [
+        'Current job openings are published on https://falishajobs.up.railway.app/jobs.',
+        'Job seekers should apply through https://falishajobs.up.railway.app/apply/candidate.',
+        'If a user asks about a generic ad or work-permit opportunity without a specific job code, guide them to the jobs page and candidate application link.',
+      ],
+      sourceIds: ['public_urls', 'whatsapp_bot_jobs', 'whatsapp_ai'],
     },
     {
       id: 'portal_dashboards',
@@ -290,6 +319,7 @@ export function assessFalishaKnowledgeSupport(params: {
   const articles = retrieveFalishaKnowledge(params);
   const intentId = String(params.intentId || '').trim();
   const supportedIntentIds = new Set<KnowledgeIntent>([
+    'greeting',
     'social_links',
     'job_listings',
     'portal_access',

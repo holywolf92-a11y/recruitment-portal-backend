@@ -265,7 +265,7 @@
     "personCtx": { "role": null, "name": null },
     "expectedIntent": "greeting",
     "expectedAction": "ai",
-    "expectedSupportLevel": "unsupported"
+    "expectedSupportLevel": "grounded"
   },
   {
     "id": "unknown_apply_01",

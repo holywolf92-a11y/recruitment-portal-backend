@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "dev:worker": "ts-node-dev --respawn --transpile-only src/worker.ts",
-    "build": "npx tsc -p tsconfig.json",
+    "build:compile": "npx tsc -p tsconfig.json",
+    "build": "npm run build:compile && npm run eval:whatsapp-grounding:dist",
     "start:api": "node dist/server.js",
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
@@ -24,7 +25,9 @@
     "smoke:cv": "node scripts/smoke-cv-parsing.js",
     "smoke:local-queue": "node scripts/smoke-local-queue.js",
     "smoke:whatsapp-bot": "node scripts/smoke-whatsapp-bot-flow-guards.js",
-    "eval:whatsapp-grounding": "npm run build && node dist/scripts/runWhatsAppGroundingEval.js",
+    "eval:whatsapp-grounding:dist": "node dist/scripts/runWhatsAppGroundingEval.js",
+    "eval:whatsapp-grounding": "npm run build:compile && npm run eval:whatsapp-grounding:dist",
+    "report:whatsapp-baseline": "npm run build:compile && node dist/scripts/runWhatsAppBaselineReport.js",
     "test:split-upload": "node scripts/testSplitUpload.js",
     "check-endpoints": "node scripts/checkEndpoints.js",
     "check-endpoints:list": "node scripts/checkEndpoints.js --list"

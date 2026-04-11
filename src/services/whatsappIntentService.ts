@@ -60,7 +60,7 @@ export const WHATSAPP_INTENT_TAXONOMY: IntentDefinition[] = [
     label: 'Greeting',
     description: 'Greeting, hello, start, help, menu requests.',
     examples: ['hi', 'hello', 'menu', 'start'],
-    patterns: [/^(hi|hey|hello|salam|assalam|menu|start|help|home)\b/i],
+    patterns: [/^(hi|hey|hello|salam|assalam|aoa|aslam|menu|start|help|home|new user)\b/i, /menu again|send me the menu|i.?m a new user/i, /اسلام علیکم|السلام علیکم/i],
   },
   {
     id: 'social_links',
@@ -78,7 +78,7 @@ export const WHATSAPP_INTENT_TAXONOMY: IntentDefinition[] = [
     label: 'Jobs',
     description: 'Requests for job openings, vacancies, and open positions.',
     examples: ['show jobs', 'current vacancies', 'open positions'],
-    patterns: [/\bjobs?\b|vacancies|openings|positions/i],
+    patterns: [/\bjobs?\b|vacancies|openings|positions/i, /work permit|job in|vacancy in/i, /saw this ad|want to know about it/i],
   },
   {
     id: 'portal_access',

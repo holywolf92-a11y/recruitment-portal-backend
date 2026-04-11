@@ -77,6 +77,23 @@ function isTalkHumanRequest(text: string, id: string): boolean {
   return id === 'talk_human' || text === 'human' || text === 'agent' || text === 'talk to human' || text === 'support';
 }
 
+function isSocialLinksRequest(text: string, id: string): boolean {
+  if (id === 'menu_social') {
+    return true;
+  }
+
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    /social|social media|channel/.test(normalized) ||
+    /linkedin|facebook|instagram|insta|tiktok|tik tok|youtube/.test(normalized) ||
+    (/link|links/.test(normalized) && /follow|send|share|give/.test(normalized))
+  );
+}
+
 async function tx(phoneNumberId: string, accessToken: string, to: string, convId: string | null, body: string): Promise<void> {
   await sendText(phoneNumberId, accessToken, to, body);
   if (convId) {
@@ -331,14 +348,16 @@ async function promptStep(
 
 function buildSocialLinksMessage(): string {
   return [
-    'Follow Falisha on social media:',
+    '🌐 *Stay connected with Falisha Manpower:*',
     '',
-    `LinkedIn: ${LINKEDIN_URL}`,
-    `Facebook: ${FACEBOOK_URL}`,
-    `Instagram: ${INSTAGRAM_URL}`,
-    `TikTok: ${TIKTOK_URL}`,
-    `YouTube: ${YOUTUBE_URL}`,
+    `💼 LinkedIn: ${LINKEDIN_URL}`,
+    `📘 Facebook: ${FACEBOOK_URL}`,
+    `📸 Instagram: ${INSTAGRAM_URL}`,
+    `🎵 TikTok: ${TIKTOK_URL}`,
+    `▶️ YouTube: ${YOUTUBE_URL}`,
     ...(WA_CHANNEL_URL ? [`WhatsApp Channel: ${WA_CHANNEL_URL}`] : []),
+    '',
+    '_Follow us for job updates, success stories, and more!_',
   ].join('\n');
 }
 
@@ -1387,6 +1406,11 @@ export async function handleBotMessageFrom(params: {
 
     if (isTalkHumanRequest(text, id)) {
       await switchToHuman(phoneNumberId, accessToken, from, state.conversationId, from);
+      return true;
+    }
+
+    if (isSocialLinksRequest(text, id)) {
+      await handleSocialFlow({ ...state, flow: 'social', step: null, data: {} }, incoming, phoneNumberId, accessToken);
       return true;
     }
 

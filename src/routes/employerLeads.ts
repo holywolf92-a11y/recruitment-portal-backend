@@ -179,4 +179,52 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * PUT /employer-leads/:id
+ * Admin: update status and/or notes on a requirement.
+ * The employer portal reads status via GET /auth/portal-requirements, so this update
+ * is immediately visible to the employer when they next load their dashboard.
+ */
+router.put('/:id', async (req: Request, res: Response) => {
+  try {
+    const db = supabaseAdminClient();
+    const { id } = req.params;
+
+    const ALLOWED_STATUSES = ['New', 'Active', 'Contacted', 'In Progress', 'Fulfilled', 'Closed'];
+
+    const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+
+    if (req.body.status !== undefined) {
+      if (!ALLOWED_STATUSES.includes(req.body.status)) {
+        return res.status(400).json({ error: `Invalid status. Allowed: ${ALLOWED_STATUSES.join(', ')}` });
+      }
+      updates.status = req.body.status;
+    }
+    if (req.body.notes !== undefined) updates.notes = req.body.notes;
+    if (req.body.company_name !== undefined) updates.company_name = req.body.company_name;
+    if (req.body.contact_name !== undefined) updates.contact_name = req.body.contact_name;
+    if (req.body.professions !== undefined) updates.professions = req.body.professions;
+    if (req.body.quantity !== undefined) updates.quantity = req.body.quantity;
+    if (req.body.country !== undefined) updates.country = req.body.country;
+    if (req.body.salary_range !== undefined) updates.salary_range = req.body.salary_range;
+
+    const { data, error } = await db
+      .from('employer_leads')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return res.status(404).json({ error: 'Not found' });
+      throw error;
+    }
+
+    return res.json({ lead: data });
+  } catch (error: any) {
+    console.error('Error updating employer lead:', error);
+    return res.status(500).json({ error: 'Failed to update job order' });
+  }
+});
+
 export default router;

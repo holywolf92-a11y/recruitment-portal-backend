@@ -46,11 +46,24 @@ const INTERNAL_NUMBERS = new Set([
   '923465028305',
 ]);
 
+// ── Developer / tester numbers — always get full bot experience ───────────────
+// These numbers are used to test all flows (job seeker, partner, employer).
+// The webhook auto-resets them to AI mode on every message so they never get
+// stuck in 'human' takeover mode accidentally.
+const DEVELOPER_NUMBERS = new Set([
+  '46727676973', // Developer test number — tests job seeker / partner / employer flows
+]);
+
 function isInternalNumber(phone: string): boolean {
   const normalized = phone.replace(/^\+/, '').trim();
   // Also handle if number is stored as 0xxx (convert to 92xxx Pakistan format)
   const withCountry = normalized.startsWith('0') ? '92' + normalized.slice(1) : normalized;
   return INTERNAL_NUMBERS.has(normalized) || INTERNAL_NUMBERS.has(withCountry);
+}
+
+function isDeveloperNumber(phone: string): boolean {
+  const normalized = phone.replace(/^\+/, '').trim();
+  return DEVELOPER_NUMBERS.has(normalized);
 }
 
 const router = Router();
@@ -299,6 +312,23 @@ router.post(
         logger.info('Text-only from internal number — ignored silently', { from: effectiveFrom });
       }
       return res.status(200).json({ status: 'internal_number' });
+    }
+
+    // ── Developer number auto-reset — ensure AI/bot always responds ──────────────
+    // If a dev/tester number somehow got stuck in human takeover mode, reset it
+    // transparently so they can keep testing all bot flows without needing a DB fix.
+    if (effectiveFrom && isDeveloperNumber(effectiveFrom) && conversationForReply?.reply_mode !== 'ai') {
+      try {
+        const db = supabaseAdminClient();
+        await db
+          .from('whatsapp_conversations')
+          .update({ reply_mode: 'ai', taken_over_by: null, taken_over_at: null })
+          .eq('phone_number', effectiveFrom);
+        if (conversationForReply) conversationForReply.reply_mode = 'ai';
+        logger.info('Auto-reset developer number conversation to AI mode', { from: effectiveFrom });
+      } catch (err) {
+        logger.warn('Failed to auto-reset dev number (non-fatal)', { err: err instanceof Error ? err.message : String(err) });
+      }
     }
 
     // ── WhatsApp Bot intercept (text, interactive buttons/lists, and media in active flows) ──

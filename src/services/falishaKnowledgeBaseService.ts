@@ -34,6 +34,15 @@ export interface KnowledgeBase {
   articles: KnowledgeArticle[];
 }
 
+export type KnowledgeSupportLevel = 'grounded' | 'partial' | 'unsupported';
+
+export interface KnowledgeSupportAssessment {
+  supportLevel: KnowledgeSupportLevel;
+  articles: KnowledgeArticle[];
+  matchedIntentArticles: KnowledgeArticle[];
+  reason: string;
+}
+
 const KNOWLEDGE_SOURCES: KnowledgeSourceRef[] = [
   {
     id: 'public_urls',
@@ -136,7 +145,7 @@ const FALISHA_KNOWLEDGE_BASE: KnowledgeBase = {
     {
       id: 'candidate_documents',
       title: 'Candidate onboarding documents',
-      audience: ['candidate'],
+      audience: ['all'],
       intents: ['document_help'],
       tags: ['documents', 'passport', 'cnic', 'license', 'certificate', 'medical', 'visa'],
       facts: [
@@ -173,9 +182,22 @@ const FALISHA_KNOWLEDGE_BASE: KnowledgeBase = {
       sourceIds: ['whatsapp_ai'],
     },
     {
+      id: 'partner_application_status',
+      title: 'Partner application status guidance',
+      audience: ['partner'],
+      intents: ['application_status'],
+      tags: ['partner', 'status', 'approval', 'dashboard', 'application'],
+      facts: [
+        'Partner application status must be confirmed from the partner account record when available.',
+        'If a partner is approved, they should be guided to the partner dashboard for candidate submission.',
+        'If a partner status cannot be verified from the current phone number, ask for company name and registered email.',
+      ],
+      sourceIds: ['whatsapp_ai'],
+    },
+    {
       id: 'pricing_policy',
       title: 'Pricing and quotation policy',
-      audience: ['employer', 'partner'],
+      audience: ['all'],
       intents: ['pricing_quote'],
       tags: ['price', 'pricing', 'quotation', 'charges', 'commercial'],
       facts: [
@@ -212,19 +234,23 @@ export function retrieveFalishaKnowledge(params: {
 
   const scored = FALISHA_KNOWLEDGE_BASE.articles
     .map((article) => {
-      let score = 0;
-
-      if (article.audience.includes('all') || article.audience.includes(role)) {
-        score += 2;
+      const audienceEligible = article.audience.includes('all') || article.audience.includes(role);
+      if (!audienceEligible) {
+        return { article, score: 0 };
       }
+
+      let score = 0;
+      let hasDirectSignal = false;
 
       if (intentId && article.intents.includes(intentId as KnowledgeIntent)) {
         score += 4;
+        hasDirectSignal = true;
       }
 
       for (const tag of article.tags) {
         if (queryTokens.has(tag.toLowerCase())) {
           score += 2;
+          hasDirectSignal = true;
         }
       }
 
@@ -232,6 +258,17 @@ export function retrieveFalishaKnowledge(params: {
         const factTokens = tokenize(fact);
         const overlap = factTokens.filter((token) => queryTokens.has(token)).length;
         score += Math.min(3, overlap * 0.5);
+        if (overlap > 0) {
+          hasDirectSignal = true;
+        }
+      }
+
+      if (hasDirectSignal) {
+        score += 1;
+      }
+
+      if (!hasDirectSignal) {
+        score = 0;
       }
 
       return { article, score };
@@ -242,6 +279,66 @@ export function retrieveFalishaKnowledge(params: {
     .map((entry) => entry.article);
 
   return scored;
+}
+
+export function assessFalishaKnowledgeSupport(params: {
+  query: string;
+  role?: KnowledgeAudience | null;
+  intentId?: string | null;
+  limit?: number;
+}): KnowledgeSupportAssessment {
+  const articles = retrieveFalishaKnowledge(params);
+  const intentId = String(params.intentId || '').trim();
+  const supportedIntentIds = new Set<KnowledgeIntent>([
+    'social_links',
+    'job_listings',
+    'portal_access',
+    'application_status',
+    'document_help',
+    'recruitment_process',
+    'partner_commission',
+    'pricing_quote',
+    'office_contact',
+    'application_links',
+  ]);
+
+  if (!supportedIntentIds.has(intentId as KnowledgeIntent)) {
+    return {
+      supportLevel: 'unsupported',
+      articles: [],
+      matchedIntentArticles: [],
+      reason: 'This intent is not grounded by the curated Falisha knowledge base.',
+    };
+  }
+
+  const matchedIntentArticles = intentId
+    ? articles.filter((article) => article.intents.includes(intentId as KnowledgeIntent))
+    : [];
+
+  if (matchedIntentArticles.length > 0) {
+    return {
+      supportLevel: 'grounded',
+      articles,
+      matchedIntentArticles,
+      reason: 'Verified knowledge articles matched the current intent.',
+    };
+  }
+
+  if (articles.length > 0) {
+    return {
+      supportLevel: 'partial',
+      articles,
+      matchedIntentArticles,
+      reason: 'Some related knowledge was found, but not enough to fully ground this intent.',
+    };
+  }
+
+  return {
+    supportLevel: 'unsupported',
+    articles: [],
+    matchedIntentArticles: [],
+    reason: 'No verified knowledge article matched this request.',
+  };
 }
 
 export function buildFalishaKnowledgeContext(params: {

@@ -3,7 +3,7 @@ import { supabaseAdminClient } from '../config/database';
 import { normalizePhoneE164 } from './candidateService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
 import { classifyWhatsAppIntent, getEscalationMatrixEntry, getIntentMatrixEntry, resolveIntentAction, type WhatsAppIntentId } from './whatsappIntentService';
-import { buildFalishaKnowledgeContext } from './falishaKnowledgeBaseService';
+import { assessFalishaKnowledgeSupport, buildFalishaKnowledgeContext, type KnowledgeSupportLevel } from './falishaKnowledgeBaseService';
 
 const logger = createLogger('WhatsAppAIService');
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
@@ -14,6 +14,8 @@ const INSTAGRAM_URL = process.env.WHATSAPP_BOT_INSTAGRAM_URL || 'https://www.ins
 const TIKTOK_URL = process.env.WHATSAPP_BOT_TIKTOK_URL || 'https://www.tiktok.com/@falishamanpower';
 const YOUTUBE_URL = process.env.WHATSAPP_BOT_YOUTUBE_URL || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
 const WA_CHANNEL_URL = process.env.WHATSAPP_BOT_CHANNEL_URL || '';
+const SUPPORT_EMAIL = 'support@falishajobs.com';
+const SUPPORT_PHONE = '+923303333335';
 
 export type AIUserRole = 'candidate' | 'employer' | 'partner' | null;
 
@@ -71,6 +73,77 @@ function buildPortalUrl(role: AIUserRole): string {
   if (role === 'employer') return `${FRONTEND_URL}/employer/dashboard`;
   if (role === 'partner') return `${FRONTEND_URL}/partner/dashboard`;
   return `${FRONTEND_URL}/apply/candidate`;
+}
+
+function hasVerifiedProfileContext(intentId: WhatsAppIntentId, personCtx: PersonContext): boolean {
+  switch (intentId) {
+    case 'application_status':
+      if (personCtx.role === 'candidate') {
+        return Boolean(personCtx.status || personCtx.position || personCtx.candidateCode);
+      }
+      if (personCtx.role === 'employer') {
+        return Boolean(personCtx.leadStatus || personCtx.companyName || personCtx.professions);
+      }
+      if (personCtx.role === 'partner') {
+        return Boolean(personCtx.partnerStatus || personCtx.companyName || personCtx.partnerType);
+      }
+      return false;
+    default:
+      return Boolean(personCtx.role);
+  }
+}
+
+function buildProfileContextClarification(intentId: WhatsAppIntentId, personCtx: PersonContext): string {
+  if (intentId === 'application_status') {
+    if (!personCtx.role) {
+      return 'To check your status, tell me whether you are a candidate, employer, or partner, and share your registered email, phone number, or reference code.';
+    }
+
+    if (personCtx.role === 'candidate') {
+      return 'I cannot verify your current application status from this phone number yet. Please send your full name and registered email or candidate reference code.';
+    }
+
+    if (personCtx.role === 'employer') {
+      return 'I cannot verify your hiring request status from this phone number yet. Please send your company name and registered email so I can guide you correctly.';
+    }
+
+    return 'I cannot verify your partner application status from this phone number yet. Please send your company name and registered email so I can guide you correctly.';
+  }
+
+  return 'I need one more verified detail before I can answer that safely. Please share your registered email or reference number.';
+}
+
+function buildUnsupportedFactReply(intentId: WhatsAppIntentId, personCtx: PersonContext, supportLevel: KnowledgeSupportLevel): string {
+  if (intentId === 'office_contact') {
+    return [
+      'I can confirm these verified Falisha contact details:',
+      `Email: ${SUPPORT_EMAIL}`,
+      `Phone: ${SUPPORT_PHONE}`,
+      'I cannot verify an office address or business hours from the current verified data.',
+    ].join('\n');
+  }
+
+  if (intentId === 'pricing_quote') {
+    return 'I cannot verify pricing or commercial terms in chat. Our team will provide the formal quotation directly.';
+  }
+
+  if (personCtx.role === 'candidate') {
+    return `I can only confirm candidate details from your profile or verified Falisha data. I cannot verify that specific point from the current ${supportLevel} support available.`;
+  }
+
+  if (personCtx.role === 'employer') {
+    return `I can only confirm employer details from your account or verified Falisha data. I cannot verify that specific point from the current ${supportLevel} support available.`;
+  }
+
+  if (personCtx.role === 'partner') {
+    return `I can only confirm partner details from your account or verified Falisha data. I cannot verify that specific point from the current ${supportLevel} support available.`;
+  }
+
+  return 'I can only answer from verified Falisha knowledge or your account record. I cannot verify that specific detail from the current data.';
+}
+
+function asksForUnsupportedCompensationDetail(text: string): boolean {
+  return /\bsalary\b|\bpay\b|\bwage\b|\bpackage\b/i.test(text);
 }
 
 function buildDeterministicReply(intentId: WhatsAppIntentId, context: WhatsAppConversationContext, personCtx: PersonContext): string | null {
@@ -148,18 +221,22 @@ function buildDeterministicReply(intentId: WhatsAppIntentId, context: WhatsAppCo
         }
         return '📄 You can send your CV, passport, CNIC, or visa documents here on WhatsApp. If you want, I can also tell you what is still missing from your profile.';
       }
-      return null;
+      return '📄 For candidate onboarding, the standard documents are Passport, CNIC, Driving License, Police Character Certificate, Certificates, Medical Report, and Visa. If you need a case-specific check, send the candidate reference or full name.';
     case 'recruitment_process':
       return 'Our recruitment process is sourcing → screening → interviews → visa processing → deployment. If you want, I can explain the next step for your case.';
     case 'partner_commission':
-      if (personCtx.role === 'partner') {
-        return [
-          '💰 Partner commissions are handled after successful placement confirmation.',
-          `Dashboard: ${buildPortalUrl('partner')}`,
-          'For exact payout details, use your partner dashboard or ask the partnership team.',
-        ].join('\n');
-      }
-      return null;
+      return [
+        '💰 Partner commissions are handled after successful placement confirmation.',
+        `Dashboard: ${buildPortalUrl('partner')}`,
+        'For exact payout details, use your partner dashboard or ask the partnership team.',
+      ].join('\n');
+    case 'office_contact':
+      return [
+        '📞 *Verified Falisha contact details*',
+        `Email: ${SUPPORT_EMAIL}`,
+        `Phone: ${SUPPORT_PHONE}`,
+        'I cannot verify an office address or business hours from the current verified data.',
+      ].join('\n');
     default:
       return null;
   }
@@ -168,6 +245,10 @@ function buildDeterministicReply(intentId: WhatsAppIntentId, context: WhatsAppCo
 function buildEscalationReply(intentId: WhatsAppIntentId, personCtx: PersonContext): string {
   if (intentId === 'human_handoff') {
     return 'I understand. A team member can take over this conversation for you.';
+  }
+
+  if (intentId === 'pricing_quote') {
+    return 'Pricing and commercial quotations should be handled by the human team. Our team will provide the formal quotation directly.';
   }
 
   const entry = getIntentMatrixEntry(intentId);
@@ -186,7 +267,23 @@ export function decideWhatsAppReply(context: WhatsAppConversationContext): Whats
 
   const intent = classifyWhatsAppIntent(context.text);
   const action = resolveIntentAction(intent.id, personCtx.role);
+  const matrixEntry = getIntentMatrixEntry(intent.id);
   const escalation = getEscalationMatrixEntry(intent.id);
+  const knowledgeSupport = assessFalishaKnowledgeSupport({
+    query: context.text,
+    role: personCtx.role || 'all',
+    intentId: intent.id,
+    limit: 3,
+  });
+
+  if (asksForUnsupportedCompensationDetail(context.text) && intent.id !== 'pricing_quote') {
+    return {
+      reply: 'I cannot verify salary or payment details from the current verified data. For exact compensation details, please use the official job posting or speak with the Falisha team directly.',
+      intentId: intent.id,
+      action: 'deterministic',
+      shouldSwitchToHuman: false,
+    };
+  }
 
   if (action === 'deterministic') {
     const deterministicReply = buildDeterministicReply(intent.id, context, personCtx);
@@ -195,6 +292,15 @@ export function decideWhatsAppReply(context: WhatsAppConversationContext): Whats
         reply: deterministicReply,
         intentId: intent.id,
         action,
+        shouldSwitchToHuman: false,
+      };
+    }
+
+    if (matrixEntry.requiresKnownRole || matrixEntry.requiresProfileContext) {
+      return {
+        reply: buildProfileContextClarification(intent.id, personCtx),
+        intentId: intent.id,
+        action: 'deterministic',
         shouldSwitchToHuman: false,
       };
     }
@@ -207,6 +313,25 @@ export function decideWhatsAppReply(context: WhatsAppConversationContext): Whats
       action,
       shouldSwitchToHuman: escalation.autoSwitchToHuman,
       escalationReason: escalation.reason,
+    };
+  }
+
+  if ((matrixEntry.requiresKnownRole || matrixEntry.requiresProfileContext) && !hasVerifiedProfileContext(intent.id, personCtx)) {
+    return {
+      reply: buildProfileContextClarification(intent.id, personCtx),
+      intentId: intent.id,
+      action: 'deterministic',
+      shouldSwitchToHuman: false,
+    };
+  }
+
+  if (intent.id !== 'greeting' && intent.id !== 'unknown' && knowledgeSupport.supportLevel !== 'grounded') {
+    return {
+      reply: buildUnsupportedFactReply(intent.id, personCtx, knowledgeSupport.supportLevel),
+      intentId: intent.id,
+      action: 'deterministic',
+      shouldSwitchToHuman: false,
+      escalationReason: knowledgeSupport.reason,
     };
   }
 
@@ -372,6 +497,8 @@ You are Falisha Manpower's WhatsApp customer support assistant.
 - If the user asks for status, use only the supplied account context.
 - If account data is missing, ask one specific clarifying question instead of giving a vague fallback.
 - Never invent prices, timelines, approvals, placements, or legal claims.
+- If a business fact is not explicitly present in the verified knowledge block or account context, say you cannot verify it.
+- Do not infer office address, office hours, pricing, commission amounts, or status details from general wording.
 - Never say "our team will get back to you shortly" unless the issue truly requires human review.
 - If human escalation is necessary, explain why in one sentence.
 

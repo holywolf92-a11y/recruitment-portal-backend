@@ -1,0 +1,383 @@
+[
+  {
+    "id": "candidate_social_links_01",
+    "text": "send me your social media links",
+    "personCtx": { "role": "candidate", "name": "Ali", "status": "Applied", "candidateCode": "AL12345" },
+    "expectedIntent": "social_links",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["LinkedIn", "Instagram"],
+    "mustNotInclude": ["get back to you shortly"]
+  },
+  {
+    "id": "candidate_jobs_01",
+    "text": "show me current jobs in saudi",
+    "personCtx": { "role": "candidate", "name": "Usman" },
+    "expectedIntent": "job_listings",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["/jobs", "/apply/candidate"]
+  },
+  {
+    "id": "candidate_portal_01",
+    "text": "i forgot my profile link",
+    "personCtx": { "role": "candidate", "name": "Ahmed" },
+    "expectedIntent": "portal_access",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["/apply/candidate"]
+  },
+  {
+    "id": "candidate_status_01",
+    "text": "what is my application status",
+    "personCtx": { "role": "candidate", "name": "Bilal", "status": "Applied", "position": "Driver", "candidateCode": "BL0091" },
+    "expectedIntent": "application_status",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["Applied", "BL0091"]
+  },
+  {
+    "id": "candidate_status_missing_profile_01",
+    "text": "status please",
+    "personCtx": { "role": "candidate", "name": "Noman" },
+    "expectedIntent": "application_status",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["cannot verify your current application status", "registered email"],
+    "mustNotInclude": ["shortlisted", "approved"]
+  },
+  {
+    "id": "candidate_docs_missing_01",
+    "text": "what documents are still missing",
+    "personCtx": { "role": "candidate", "name": "Farhan", "cvReceived": false, "passportReceived": false },
+    "expectedIntent": "document_help",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["CV", "Passport"]
+  },
+  {
+    "id": "candidate_docs_generic_01",
+    "text": "which documents do you need from me",
+    "personCtx": { "role": "candidate", "name": "Zeeshan", "cvReceived": true, "passportReceived": true },
+    "expectedIntent": "document_help",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["CV", "passport", "WhatsApp"]
+  },
+  {
+    "id": "candidate_process_01",
+    "text": "explain your recruitment process",
+    "personCtx": { "role": "candidate", "name": "Hamza" },
+    "expectedIntent": "recruitment_process",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["sourcing", "screening", "deployment"]
+  },
+  {
+    "id": "candidate_apply_link_01",
+    "text": "send candidate application link",
+    "personCtx": { "role": "candidate", "name": "Asad" },
+    "expectedIntent": "application_links",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["/apply/candidate", "/apply/employer", "/apply/partner"]
+  },
+  {
+    "id": "candidate_contact_01",
+    "text": "what is your contact number",
+    "personCtx": { "role": "candidate", "name": "Imran" },
+    "expectedIntent": "office_contact",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["support@falishajobs.com", "+923303333335"]
+  },
+  {
+    "id": "candidate_office_hours_unsupported_01",
+    "text": "what are your office timings",
+    "personCtx": { "role": "candidate", "name": "Saad" },
+    "expectedIntent": "office_contact",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["cannot verify", "business hours"],
+    "mustNotInclude": ["9 am", "10 am", "monday"]
+  },
+  {
+    "id": "candidate_human_01",
+    "text": "i want to talk to a human",
+    "personCtx": { "role": "candidate", "name": "Arslan" },
+    "expectedIntent": "human_handoff",
+    "expectedAction": "escalate",
+    "expectedSupportLevel": "unsupported",
+    "expectedHumanSwitch": true,
+    "mustInclude": ["team member"]
+  },
+  {
+    "id": "employer_status_01",
+    "text": "update me on my requirement",
+    "personCtx": { "role": "employer", "name": "Hassan", "companyName": "Al Noor LLC", "leadStatus": "New", "professions": "Drivers", "quantity": "20" },
+    "expectedIntent": "application_status",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["Al Noor LLC", "Drivers", "New"]
+  },
+  {
+    "id": "employer_status_missing_01",
+    "text": "hiring progress?",
+    "personCtx": { "role": "employer", "name": "Khalid" },
+    "expectedIntent": "application_status",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["cannot verify your hiring request status", "company name"]
+  },
+  {
+    "id": "employer_portal_01",
+    "text": "send employer dashboard link",
+    "personCtx": { "role": "employer", "name": "Rizwan" },
+    "expectedIntent": "portal_access",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["/employer/dashboard"]
+  },
+  {
+    "id": "employer_process_01",
+    "text": "how does your recruitment process work",
+    "personCtx": { "role": "employer", "name": "Qasim" },
+    "expectedIntent": "recruitment_process",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["sourcing", "screening", "visa"]
+  },
+  {
+    "id": "employer_pricing_01",
+    "text": "what are your charges per worker",
+    "personCtx": { "role": "employer", "name": "Naveed" },
+    "expectedIntent": "pricing_quote",
+    "expectedAction": "escalate",
+    "expectedSupportLevel": "grounded",
+    "expectedHumanSwitch": true,
+    "mustInclude": ["formal quotation"]
+  },
+  {
+    "id": "employer_social_01",
+    "text": "share your linkedin and facebook",
+    "personCtx": { "role": "employer", "name": "Waqas" },
+    "expectedIntent": "social_links",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["LinkedIn", "Facebook"]
+  },
+  {
+    "id": "employer_contact_01",
+    "text": "office address and contact details",
+    "personCtx": { "role": "employer", "name": "Baber" },
+    "expectedIntent": "office_contact",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["support@falishajobs.com", "cannot verify an office address"],
+    "mustNotInclude": ["street", "road", "lahore"]
+  },
+  {
+    "id": "employer_docs_01",
+    "text": "what documents do you need from candidates",
+    "personCtx": { "role": "employer", "name": "Tariq" },
+    "expectedIntent": "document_help",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["Passport", "CNIC", "Medical Report"]
+  },
+  {
+    "id": "partner_status_01",
+    "text": "what is my partner application status",
+    "personCtx": { "role": "partner", "name": "Danish", "partnerStatus": "Approved", "companyName": "Global Connect", "partnerType": "Agent" },
+    "expectedIntent": "application_status",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["Approved", "/partner/dashboard"]
+  },
+  {
+    "id": "partner_status_missing_01",
+    "text": "any update on my partner registration",
+    "personCtx": { "role": "partner", "name": "Yasir" },
+    "expectedIntent": "application_status",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["cannot verify your partner application status", "registered email"]
+  },
+  {
+    "id": "partner_commission_01",
+    "text": "how do commissions work",
+    "personCtx": { "role": "partner", "name": "Shoaib", "partnerStatus": "Approved" },
+    "expectedIntent": "partner_commission",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["placement confirmation", "/partner/dashboard"]
+  },
+  {
+    "id": "partner_commission_amount_01",
+    "text": "tell me exact commission amount",
+    "personCtx": { "role": "partner", "name": "Shoaib", "partnerStatus": "Approved" },
+    "expectedIntent": "partner_commission",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["exact payout details", "dashboard"],
+    "mustNotInclude": ["500", "1000", "%"]
+  },
+  {
+    "id": "partner_portal_01",
+    "text": "partner dashboard link please",
+    "personCtx": { "role": "partner", "name": "Haris" },
+    "expectedIntent": "portal_access",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["/partner/dashboard"]
+  },
+  {
+    "id": "partner_pricing_01",
+    "text": "send partner commercial terms",
+    "personCtx": { "role": "partner", "name": "Umer" },
+    "expectedIntent": "pricing_quote",
+    "expectedAction": "escalate",
+    "expectedSupportLevel": "grounded",
+    "expectedHumanSwitch": true,
+    "mustInclude": ["formal quotation"]
+  },
+  {
+    "id": "partner_social_01",
+    "text": "share instagram link",
+    "personCtx": { "role": "partner", "name": "Faheem" },
+    "expectedIntent": "social_links",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["Instagram"]
+  },
+  {
+    "id": "partner_contact_01",
+    "text": "contact number and office location",
+    "personCtx": { "role": "partner", "name": "Rauf" },
+    "expectedIntent": "office_contact",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["+923303333335", "cannot verify an office address"]
+  },
+  {
+    "id": "unknown_greeting_01",
+    "text": "hello",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "greeting",
+    "expectedAction": "ai",
+    "expectedSupportLevel": "unsupported"
+  },
+  {
+    "id": "unknown_apply_01",
+    "text": "i want to apply",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "application_links",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["/apply/candidate", "/apply/employer", "/apply/partner"]
+  },
+  {
+    "id": "unknown_contact_01",
+    "text": "contact details please",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "office_contact",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["support@falishajobs.com", "+923303333335"]
+  },
+  {
+    "id": "unknown_hours_01",
+    "text": "what time does your office open",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "office_contact",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["cannot verify", "business hours"],
+    "mustNotInclude": ["8 am", "9 am"]
+  },
+  {
+    "id": "unknown_pricing_01",
+    "text": "quotation for 50 workers",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "pricing_quote",
+    "expectedAction": "escalate",
+    "expectedSupportLevel": "grounded",
+    "expectedHumanSwitch": true,
+    "mustInclude": ["formal quotation"]
+  },
+  {
+    "id": "unknown_social_01",
+    "text": "youtube channel link",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "social_links",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["YouTube"]
+  },
+  {
+    "id": "unknown_jobs_01",
+    "text": "vacancies available?",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "job_listings",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["/jobs"]
+  },
+  {
+    "id": "unknown_portal_01",
+    "text": "dashboard login",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "portal_access",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["/apply/candidate"]
+  },
+  {
+    "id": "unknown_random_01",
+    "text": "can you help me",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "unknown",
+    "expectedAction": "ai",
+    "expectedSupportLevel": "unsupported"
+  },
+  {
+    "id": "unknown_unsupported_fact_01",
+    "text": "what is your office address in dubai",
+    "personCtx": { "role": null, "name": null },
+    "expectedIntent": "office_contact",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["cannot verify an office address"],
+    "mustNotInclude": ["dubai", "uae"]
+  },
+  {
+    "id": "candidate_unknown_fact_01",
+    "text": "what salary will i get after deployment",
+    "personCtx": { "role": "candidate", "name": "Adeel", "status": "Applied" },
+    "expectedIntent": "recruitment_process",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["cannot verify salary", "official job posting"],
+    "mustNotInclude": ["50000", "100000", "guaranteed"]
+  },
+  {
+    "id": "employer_unknown_fact_01",
+    "text": "how many days exactly to final visa stamping",
+    "personCtx": { "role": "employer", "name": "Shahid" },
+    "expectedIntent": "recruitment_process",
+    "expectedAction": "deterministic",
+    "expectedSupportLevel": "grounded",
+    "mustInclude": ["sourcing", "deployment"],
+    "mustNotInclude": ["7 days", "14 days", "30 days"]
+  },
+  {
+    "id": "partner_handoff_01",
+    "text": "connect me with support agent",
+    "personCtx": { "role": "partner", "name": "Shahbaz" },
+    "expectedIntent": "human_handoff",
+    "expectedAction": "escalate",
+    "expectedSupportLevel": "unsupported",
+    "expectedHumanSwitch": true,
+    "mustInclude": ["team member"]
+  }
+]

@@ -39,3 +39,5 @@ export const documentVerificationQueue = lazyQueue('document-verification');
 export const whatsappMediaQueue = lazyQueue('whatsapp-media');
 // Identity-first WhatsApp flow: verify/extract identity from inbox_attachments BEFORE linking/binding.
 export const whatsappAttachmentVerificationQueue = lazyQueue('whatsapp-attachment-verification');
+// Delayed social-link follow-up messages sent 3 minutes after registration.
+export const whatsappSocialLinksQueue = lazyQueue('whatsapp-social-links');

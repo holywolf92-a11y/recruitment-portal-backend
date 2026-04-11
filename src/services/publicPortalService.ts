@@ -5,6 +5,7 @@ import { uploadCandidateDocument } from './candidateDocumentService';
 import { sendText } from './whatsappInteractiveService';
 import { upsertAppUserProfile } from './userService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
+import { whatsappSocialLinksQueue } from '../config/queue';
 
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
 const LINKEDIN_URL = process.env.WHATSAPP_BOT_LINKEDIN_URL || 'https://www.linkedin.com/company/falishaenterprises';
@@ -79,16 +80,35 @@ function buildSocialLinks() {
 
 function buildSocialLinksMessage(): string {
   const links = buildSocialLinks();
-  return [
-    'Follow Falisha on social media:',
+  const lines = [
+    '🌐 *Stay connected with Falisha Manpower:*',
     '',
-    `LinkedIn: ${links.linkedin}`,
-    `Facebook: ${links.facebook}`,
-    `Instagram: ${links.instagram}`,
-    `TikTok: ${links.tiktok}`,
-    `YouTube: ${links.youtube}`,
-    ...(links.whatsappChannel ? [`WhatsApp Channel: ${links.whatsappChannel}`] : []),
-  ].join('\n');
+    `💼 LinkedIn: ${links.linkedin}`,
+    `📘 Facebook: ${links.facebook}`,
+    `📸 Instagram: ${links.instagram}`,
+    `🎵 TikTok: ${links.tiktok}`,
+    `▶️ YouTube: ${links.youtube}`,
+  ];
+  if (links.whatsappChannel) {
+    lines.push(`💬 WhatsApp Channel: ${links.whatsappChannel}`);
+  }
+  lines.push('');
+  lines.push('_Follow us for job updates, success stories, and more!_');
+  return lines.join('\n');
+}
+
+async function enqueueSocialLinks(phone: string | undefined | null) {
+  if (!phone) return;
+  const DELAY_MS = 3 * 60 * 1000; // 3 minutes
+  try {
+    await whatsappSocialLinksQueue.add(
+      'send-social-links',
+      { phone, message: buildSocialLinksMessage() },
+      { delay: DELAY_MS, attempts: 2, backoff: { type: 'fixed', delay: 30_000 } }
+    );
+  } catch {
+    // Non-critical — don't block the main response
+  }
 }
 
 function toWhatsAppRecipient(phone?: string | null) {
@@ -254,11 +274,15 @@ export async function submitCandidatePublicIntake(input: CandidatePublicIntakeIn
 
   const onboardingLink = await ensureCandidateOnboardingLink(candidate.id);
   const socialLinks = buildSocialLinks();
+
+  // Immediate: confirmation + profile link only
   const whatsappNotified = await sendWhatsAppLines(input.phone, [
-    'Thank you for applying with Falisha Enterprises.',
-    onboardingLink ? `Profile Link: ${onboardingLink}` : '',
-    buildSocialLinksMessage(),
+    `✅ *Thank you, ${input.fullName.split(' ')[0]}!* Your application has been received by *Falisha Manpower*.`,
+    onboardingLink ? `🔗 Complete your profile here:\n${onboardingLink}` : '',
   ]).catch(() => false);
+
+  // Delayed: social links 3 minutes later
+  await enqueueSocialLinks(input.phone);
 
   return {
     candidateId: candidate.id,
@@ -307,13 +331,21 @@ export async function submitEmployerPublicIntake(input: EmployerPublicIntakeInpu
   });
 
   const socialLinks = buildSocialLinks();
-  const whatsappNotified = await sendWhatsAppLines(input.phone, [
-    'Your employer portal is ready.',
-    `Dashboard: ${account.dashboardUrl}`,
-    `Login Email: ${input.email.trim().toLowerCase()}`,
-    account.password ? `Temporary Password: ${account.password}` : 'Use your existing password to log in.',
-    buildSocialLinksMessage(),
-  ]).catch(() => false);
+
+  // Immediate: portal access + credentials
+  const immediateLines = [
+    `✅ *Welcome, ${input.contactName.trim().split(' ')[0]}!* Your Falisha employer portal is ready.`,
+    '',
+    `🔗 *Dashboard:* ${account.dashboardUrl}`,
+    `📧 *Login Email:* ${input.email.trim().toLowerCase()}`,
+    account.password
+      ? `🔑 *Temporary Password:* ${account.password}\n_Please change this after your first login._`
+      : '🔓 Use your existing password to log in.',
+  ];
+  const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
+
+  // Delayed: social links 3 minutes later
+  await enqueueSocialLinks(input.phone);
 
   return {
     leadId: data.id,
@@ -359,13 +391,21 @@ export async function submitPartnerPublicIntake(input: PartnerPublicIntakeInput)
   });
 
   const socialLinks = buildSocialLinks();
-  const whatsappNotified = await sendWhatsAppLines(input.phone, [
-    'Your partner portal is ready.',
-    `Dashboard: ${account.dashboardUrl}`,
-    `Login Email: ${input.email.trim().toLowerCase()}`,
-    account.password ? `Temporary Password: ${account.password}` : 'Use your existing password to log in.',
-    buildSocialLinksMessage(),
-  ]).catch(() => false);
+
+  // Immediate: portal access + credentials
+  const immediateLines = [
+    `✅ *Welcome, ${input.applicantName.trim().split(' ')[0]}!* Your Falisha partner portal is ready.`,
+    '',
+    `🔗 *Dashboard:* ${account.dashboardUrl}`,
+    `📧 *Login Email:* ${input.email.trim().toLowerCase()}`,
+    account.password
+      ? `🔑 *Temporary Password:* ${account.password}\n_Please change this after your first login._`
+      : '🔓 Use your existing password to log in.',
+  ];
+  const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
+
+  // Delayed: social links 3 minutes later
+  await enqueueSocialLinks(input.phone);
 
   return {
     applicationId: data.id,

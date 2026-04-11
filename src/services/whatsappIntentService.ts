@@ -16,6 +16,7 @@ export type WhatsAppIntentId =
   | 'unknown';
 
 export type ResponseAction = 'deterministic' | 'ai' | 'escalate';
+export type EscalationLevel = 'none' | 'soft' | 'required';
 
 export interface IntentDefinition {
   id: WhatsAppIntentId;
@@ -38,6 +39,15 @@ export interface ResponseMatrixEntry {
   requiresKnownRole?: boolean;
   requiresProfileContext?: boolean;
   escalationReason?: string;
+  escalationLevel?: EscalationLevel;
+  autoSwitchToHuman?: boolean;
+}
+
+export interface EscalationMatrixEntry {
+  intentId: WhatsAppIntentId;
+  escalationLevel: EscalationLevel;
+  autoSwitchToHuman: boolean;
+  reason: string;
 }
 
 function normalizeText(value: string): string {
@@ -136,20 +146,27 @@ export const WHATSAPP_INTENT_TAXONOMY: IntentDefinition[] = [
 ];
 
 export const WHATSAPP_RESPONSE_MATRIX: ResponseMatrixEntry[] = [
-  { intentId: 'greeting', defaultAction: 'ai' },
-  { intentId: 'social_links', defaultAction: 'deterministic' },
-  { intentId: 'job_listings', defaultAction: 'deterministic' },
-  { intentId: 'portal_access', defaultAction: 'deterministic' },
-  { intentId: 'application_status', defaultAction: 'deterministic', requiresKnownRole: true, requiresProfileContext: true },
-  { intentId: 'document_help', defaultAction: 'deterministic', roleActions: { employer: 'ai', partner: 'ai' } },
-  { intentId: 'recruitment_process', defaultAction: 'deterministic', roleActions: { candidate: 'ai', partner: 'ai' } },
-  { intentId: 'partner_commission', defaultAction: 'ai', roleActions: { partner: 'deterministic' } },
-  { intentId: 'pricing_quote', defaultAction: 'escalate', escalationReason: 'Pricing and commercial quotations should be handled by the human team.' },
-  { intentId: 'office_contact', defaultAction: 'ai' },
-  { intentId: 'human_handoff', defaultAction: 'escalate', escalationReason: 'The user explicitly asked to talk to a human.' },
-  { intentId: 'application_links', defaultAction: 'deterministic' },
-  { intentId: 'unknown', defaultAction: 'ai' },
+  { intentId: 'greeting', defaultAction: 'ai', escalationLevel: 'none', autoSwitchToHuman: false },
+  { intentId: 'social_links', defaultAction: 'deterministic', escalationLevel: 'none', autoSwitchToHuman: false },
+  { intentId: 'job_listings', defaultAction: 'deterministic', escalationLevel: 'none', autoSwitchToHuman: false },
+  { intentId: 'portal_access', defaultAction: 'deterministic', escalationLevel: 'soft', autoSwitchToHuman: false, escalationReason: 'Manual recovery may need the support team if self-service login help does not solve it.' },
+  { intentId: 'application_status', defaultAction: 'deterministic', requiresKnownRole: true, requiresProfileContext: true, escalationLevel: 'soft', autoSwitchToHuman: false, escalationReason: 'Escalate only if profile context is missing or the status requires manual investigation.' },
+  { intentId: 'document_help', defaultAction: 'deterministic', roleActions: { employer: 'ai', partner: 'ai' }, escalationLevel: 'soft', autoSwitchToHuman: false, escalationReason: 'Escalate document issues only if the user reports a missing or rejected upload that cannot be resolved automatically.' },
+  { intentId: 'recruitment_process', defaultAction: 'deterministic', roleActions: { candidate: 'ai', partner: 'ai' }, escalationLevel: 'none', autoSwitchToHuman: false },
+  { intentId: 'partner_commission', defaultAction: 'ai', roleActions: { partner: 'deterministic' }, escalationLevel: 'soft', autoSwitchToHuman: false, escalationReason: 'Escalate payout disputes or commission exceptions to the partnership team.' },
+  { intentId: 'pricing_quote', defaultAction: 'escalate', escalationReason: 'Pricing and commercial quotations should be handled by the human team.', escalationLevel: 'required', autoSwitchToHuman: true },
+  { intentId: 'office_contact', defaultAction: 'ai', escalationLevel: 'none', autoSwitchToHuman: false },
+  { intentId: 'human_handoff', defaultAction: 'escalate', escalationReason: 'The user explicitly asked to talk to a human.', escalationLevel: 'required', autoSwitchToHuman: true },
+  { intentId: 'application_links', defaultAction: 'deterministic', escalationLevel: 'none', autoSwitchToHuman: false },
+  { intentId: 'unknown', defaultAction: 'ai', escalationLevel: 'soft', autoSwitchToHuman: false, escalationReason: 'Unknown intents may need human review if the assistant still cannot resolve the request.' },
 ];
+
+export const WHATSAPP_ESCALATION_MATRIX: EscalationMatrixEntry[] = WHATSAPP_RESPONSE_MATRIX.map((entry) => ({
+  intentId: entry.intentId,
+  escalationLevel: entry.escalationLevel ?? 'none',
+  autoSwitchToHuman: entry.autoSwitchToHuman ?? false,
+  reason: entry.escalationReason || 'No escalation required.',
+}));
 
 export function classifyWhatsAppIntent(text: string): IntentMatch {
   const normalized = normalizeText(text);
@@ -194,4 +211,13 @@ export function resolveIntentAction(intentId: WhatsAppIntentId, role: WhatsAppRo
     return entry.roleActions[role] as ResponseAction;
   }
   return entry.defaultAction;
+}
+
+export function getEscalationMatrixEntry(intentId: WhatsAppIntentId): EscalationMatrixEntry {
+  return WHATSAPP_ESCALATION_MATRIX.find((entry) => entry.intentId === intentId) || {
+    intentId: 'unknown',
+    escalationLevel: 'none',
+    autoSwitchToHuman: false,
+    reason: 'No escalation required.',
+  };
 }

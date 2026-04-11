@@ -10,7 +10,7 @@ import {
   validateWebhookToken,
   sendMessage
 } from '../services/whatsappService';
-import { generateWhatsAppReply, shouldReplyWithAI, resolvePersonContext } from '../services/whatsappAIService';
+import { decideWhatsAppReply, generateWhatsAppReply, shouldReplyWithAI, resolvePersonContext } from '../services/whatsappAIService';
 import { AppError, ErrorType } from '../utils/errorHandling';
 import {
   recordInboundMessage,
@@ -430,13 +430,43 @@ router.post(
         }
         // ── End resolution ───────────────────────────────────────────────────
 
-        const aiReply = await generateWhatsAppReply({
+        const replyDecision = decideWhatsAppReply({
           from: effectiveFrom || '',
           text: messageData.text || '',
           personCtx,
           botFlow: botState?.flow ?? null,
           messageHistory,
+          conversationId: conversationForReply?.id ?? null,
         });
+
+        let aiReply = replyDecision.reply;
+        if (replyDecision.action === 'ai') {
+          aiReply = await generateWhatsAppReply({
+            from: effectiveFrom || '',
+            text: messageData.text || '',
+            personCtx,
+            botFlow: botState?.flow ?? null,
+            messageHistory,
+            conversationId: conversationForReply?.id ?? null,
+          });
+        }
+
+        if (replyDecision.shouldSwitchToHuman && conversationForReply?.id) {
+          try {
+            const db = supabaseAdminClient();
+            await db
+              .from('whatsapp_conversations')
+              .update({ reply_mode: 'human', taken_over_by: null, taken_over_at: new Date().toISOString() })
+              .eq('id', conversationForReply.id);
+            conversationForReply.reply_mode = 'human';
+          } catch (handoffErr) {
+            logger.warn('Failed to auto-switch WhatsApp conversation to human mode (non-fatal)', {
+              err: handoffErr instanceof Error ? handoffErr.message : String(handoffErr),
+              conversationId: conversationForReply.id,
+              reason: replyDecision.escalationReason,
+            });
+          }
+        }
 
         // Send the AI-generated reply
         if (messageData.from && aiReply) {

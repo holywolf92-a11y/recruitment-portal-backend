@@ -2,7 +2,7 @@ import { createLogger } from '../utils/errorHandling';
 import { supabaseAdminClient } from '../config/database';
 import { normalizePhoneE164 } from './candidateService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
-import { classifyWhatsAppIntent, getIntentMatrixEntry, resolveIntentAction, type WhatsAppIntentId } from './whatsappIntentService';
+import { classifyWhatsAppIntent, getEscalationMatrixEntry, getIntentMatrixEntry, resolveIntentAction, type WhatsAppIntentId } from './whatsappIntentService';
 
 const logger = createLogger('WhatsAppAIService');
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
@@ -175,6 +175,47 @@ function buildEscalationReply(intentId: WhatsAppIntentId, personCtx: PersonConte
   }
 
   return buildFallbackReply(personCtx);
+}
+
+export function decideWhatsAppReply(context: WhatsAppConversationContext): WhatsAppReplyDecision {
+  const personCtx: PersonContext = context.personCtx ?? {
+    role: context.role ?? null,
+    name: context.userName ?? null,
+  };
+
+  const intent = classifyWhatsAppIntent(context.text);
+  const action = resolveIntentAction(intent.id, personCtx.role);
+  const escalation = getEscalationMatrixEntry(intent.id);
+
+  if (action === 'deterministic') {
+    const deterministicReply = buildDeterministicReply(intent.id, context, personCtx);
+    if (deterministicReply) {
+      return {
+        reply: deterministicReply,
+        intentId: intent.id,
+        action,
+        shouldSwitchToHuman: false,
+      };
+    }
+  }
+
+  if (action === 'escalate') {
+    return {
+      reply: buildEscalationReply(intent.id, personCtx),
+      intentId: intent.id,
+      action,
+      shouldSwitchToHuman: escalation.autoSwitchToHuman,
+      escalationReason: escalation.reason,
+    };
+  }
+
+  return {
+    reply: '',
+    intentId: intent.id,
+    action,
+    shouldSwitchToHuman: false,
+    escalationReason: escalation.escalationLevel !== 'none' ? escalation.reason : undefined,
+  };
 }
 
 function buildFallbackReply(personCtx: PersonContext): string {
@@ -467,9 +508,18 @@ export interface WhatsAppConversationContext {
   personCtx?: PersonContext;
   botFlow?: string | null;
   messageHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  conversationId?: string | null;
   // legacy fields kept for callers that have not yet migrated
   role?: AIUserRole;
   userName?: string | null;
+}
+
+export interface WhatsAppReplyDecision {
+  reply: string;
+  intentId: WhatsAppIntentId;
+  action: 'deterministic' | 'ai' | 'escalate';
+  shouldSwitchToHuman: boolean;
+  escalationReason?: string;
 }
 
 /**
@@ -490,18 +540,9 @@ export async function generateWhatsAppReply(context: WhatsAppConversationContext
       name: context.userName ?? null,
     };
 
-    const intent = classifyWhatsAppIntent(context.text);
-    const action = resolveIntentAction(intent.id, personCtx.role);
-
-    if (action === 'deterministic') {
-      const deterministicReply = buildDeterministicReply(intent.id, context, personCtx);
-      if (deterministicReply) {
-        return deterministicReply;
-      }
-    }
-
-    if (action === 'escalate') {
-      return buildEscalationReply(intent.id, personCtx);
+    const decision = decideWhatsAppReply({ ...context, personCtx });
+    if (decision.action !== 'ai' && decision.reply) {
+      return decision.reply;
     }
 
     const systemPrompt = buildSystemPrompt(personCtx, context.botFlow);

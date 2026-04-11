@@ -2,6 +2,7 @@ import { createLogger } from '../utils/errorHandling';
 import { supabaseAdminClient } from '../config/database';
 import { normalizePhoneE164 } from './candidateService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
+import { classifyWhatsAppIntent, getIntentMatrixEntry, resolveIntentAction, type WhatsAppIntentId } from './whatsappIntentService';
 
 const logger = createLogger('WhatsAppAIService');
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
@@ -71,94 +72,109 @@ function buildPortalUrl(role: AIUserRole): string {
   return `${FRONTEND_URL}/apply/candidate`;
 }
 
-function buildDeterministicReply(context: WhatsAppConversationContext, personCtx: PersonContext): string | null {
-  const text = normalizeText(context.text);
-  if (!text) return null;
-
-  const asksForSocialLinks =
-    /social|social media|channel/.test(text) ||
-    /linkedin|facebook|instagram|insta|youtube|tiktok|tik tok/.test(text) ||
-    ((/link|links/.test(text)) && /send|share|give|follow/.test(text));
-  if (asksForSocialLinks) {
-    return buildSocialLinksReply();
-  }
-
-  const asksForJobs = /jobs|vacancies|positions|openings/.test(text);
-  if (asksForJobs) {
-    return [
-      '💼 *Browse current Falisha jobs here:*',
-      JOBS_URL,
-      '',
-      `If you want to apply online, use: ${FRONTEND_URL}/apply/candidate`,
-    ].join('\n');
-  }
-
-  const asksForLogin = /login|log in|signin|sign in|password|username|dashboard|portal/.test(text);
-  if (asksForLogin) {
-    const portalUrl = buildPortalUrl(personCtx.role);
-    if (personCtx.role === 'employer') {
+function buildDeterministicReply(intentId: WhatsAppIntentId, context: WhatsAppConversationContext, personCtx: PersonContext): string | null {
+  switch (intentId) {
+    case 'social_links':
+      return buildSocialLinksReply();
+    case 'job_listings':
       return [
-        '🔐 *Employer portal access*',
-        `Dashboard: ${portalUrl}`,
-        'If you do not remember your password, reply with your registered email and our team will reset it for you.',
+        '💼 *Browse current Falisha jobs here:*',
+        JOBS_URL,
+        '',
+        `If you want to apply online, use: ${FRONTEND_URL}/apply/candidate`,
       ].join('\n');
-    }
-    if (personCtx.role === 'partner') {
-      return [
-        '🔐 *Partner portal access*',
-        `Dashboard: ${portalUrl}`,
-        'If you do not remember your password, reply with your registered email and our team will reset it for you.',
-      ].join('\n');
-    }
-    return [
-      '🔗 *Candidate application / profile link*',
-      portalUrl,
-      'If you already applied and need help finding your profile link, send your full name and email.',
-    ].join('\n');
-  }
-
-  const asksForStatus = /status|update|progress|application|requirement|hiring|follow up|followup/.test(text);
-  if (asksForStatus) {
-    if (personCtx.role === 'candidate' && (personCtx.status || personCtx.position || personCtx.candidateCode)) {
-      return [
-        `📄 Your application status is *${personCtx.status || 'Applied'}*${personCtx.position ? ` for *${personCtx.position}*` : ''}.`,
-        personCtx.candidateCode ? `Reference: ${personCtx.candidateCode}` : '',
-        personCtx.status && personCtx.status.toLowerCase() === 'shortlisted'
-          ? 'A consultant will contact you with the next step.'
-          : 'If you want, I can also guide you on the next required documents or next step.',
-      ].filter(Boolean).join('\n');
-    }
-
-    if (personCtx.role === 'employer' && (personCtx.leadStatus || personCtx.companyName || personCtx.professions)) {
-      return [
-        `🏢 Your hiring request${personCtx.companyName ? ` for *${personCtx.companyName}*` : ''} is currently *${personCtx.leadStatus || 'New'}*.`,
-        personCtx.professions ? `Requested roles: ${personCtx.professions}` : '',
-        'Our recruitment process is sourcing → screening → interviews → visa → deployment.',
-      ].filter(Boolean).join('\n');
-    }
-
-    if (personCtx.role === 'partner' && personCtx.partnerStatus) {
-      return [
-        `🤝 Your partner application status is *${personCtx.partnerStatus}*.`,
-        'If approved, you can submit candidates through the partner dashboard.',
-        `Dashboard: ${buildPortalUrl('partner')}`,
-      ].join('\n');
-    }
-  }
-
-  const asksForDocuments = /document|documents|cv|resume|passport|cnic|visa/.test(text);
-  if (asksForDocuments) {
-    if (personCtx.role === 'candidate') {
-      const missingDocs: string[] = [];
-      if (personCtx.cvReceived === false) missingDocs.push('CV');
-      if (personCtx.passportReceived === false) missingDocs.push('Passport');
-      if (missingDocs.length > 0) {
-        return `📌 We still need these documents from you: ${missingDocs.join(', ')}. Please send them here on WhatsApp or complete your profile online.`;
+    case 'portal_access': {
+      const portalUrl = buildPortalUrl(personCtx.role);
+      if (personCtx.role === 'employer') {
+        return [
+          '🔐 *Employer portal access*',
+          `Dashboard: ${portalUrl}`,
+          'If you do not remember your password, reply with your registered email and our team will reset it for you.',
+        ].join('\n');
       }
+      if (personCtx.role === 'partner') {
+        return [
+          '🔐 *Partner portal access*',
+          `Dashboard: ${portalUrl}`,
+          'If you do not remember your password, reply with your registered email and our team will reset it for you.',
+        ].join('\n');
+      }
+      return [
+        '🔗 *Candidate application / profile link*',
+        portalUrl,
+        'If you already applied and need help finding your profile link, send your full name and email.',
+      ].join('\n');
     }
+    case 'application_links':
+      return [
+        '📌 *Falisha application links*',
+        `Job Seeker: ${FRONTEND_URL}/apply/candidate`,
+        `Employer: ${FRONTEND_URL}/apply/employer`,
+        `Partner: ${FRONTEND_URL}/apply/partner`,
+      ].join('\n');
+    case 'application_status':
+      if (personCtx.role === 'candidate' && (personCtx.status || personCtx.position || personCtx.candidateCode)) {
+        return [
+          `📄 Your application status is *${personCtx.status || 'Applied'}*${personCtx.position ? ` for *${personCtx.position}*` : ''}.`,
+          personCtx.candidateCode ? `Reference: ${personCtx.candidateCode}` : '',
+          personCtx.status && personCtx.status.toLowerCase() === 'shortlisted'
+            ? 'A consultant will contact you with the next step.'
+            : 'If you want, I can also guide you on the next required documents or next step.',
+        ].filter(Boolean).join('\n');
+      }
+      if (personCtx.role === 'employer' && (personCtx.leadStatus || personCtx.companyName || personCtx.professions)) {
+        return [
+          `🏢 Your hiring request${personCtx.companyName ? ` for *${personCtx.companyName}*` : ''} is currently *${personCtx.leadStatus || 'New'}*.`,
+          personCtx.professions ? `Requested roles: ${personCtx.professions}` : '',
+          'Our recruitment process is sourcing → screening → interviews → visa → deployment.',
+        ].filter(Boolean).join('\n');
+      }
+      if (personCtx.role === 'partner' && personCtx.partnerStatus) {
+        return [
+          `🤝 Your partner application status is *${personCtx.partnerStatus}*.`,
+          'If approved, you can submit candidates through the partner dashboard.',
+          `Dashboard: ${buildPortalUrl('partner')}`,
+        ].join('\n');
+      }
+      return null;
+    case 'document_help':
+      if (personCtx.role === 'candidate') {
+        const missingDocs: string[] = [];
+        if (personCtx.cvReceived === false) missingDocs.push('CV');
+        if (personCtx.passportReceived === false) missingDocs.push('Passport');
+        if (missingDocs.length > 0) {
+          return `📌 We still need these documents from you: ${missingDocs.join(', ')}. Please send them here on WhatsApp or complete your profile online.`;
+        }
+        return '📄 You can send your CV, passport, CNIC, or visa documents here on WhatsApp. If you want, I can also tell you what is still missing from your profile.';
+      }
+      return null;
+    case 'recruitment_process':
+      return 'Our recruitment process is sourcing → screening → interviews → visa processing → deployment. If you want, I can explain the next step for your case.';
+    case 'partner_commission':
+      if (personCtx.role === 'partner') {
+        return [
+          '💰 Partner commissions are handled after successful placement confirmation.',
+          `Dashboard: ${buildPortalUrl('partner')}`,
+          'For exact payout details, use your partner dashboard or ask the partnership team.',
+        ].join('\n');
+      }
+      return null;
+    default:
+      return null;
+  }
+}
+
+function buildEscalationReply(intentId: WhatsAppIntentId, personCtx: PersonContext): string {
+  if (intentId === 'human_handoff') {
+    return 'I understand. A team member can take over this conversation for you.';
   }
 
-  return null;
+  const entry = getIntentMatrixEntry(intentId);
+  if (entry.escalationReason) {
+    return `${entry.escalationReason} Please share your name and registered email if you want the team to follow up faster.`;
+  }
+
+  return buildFallbackReply(personCtx);
 }
 
 function buildFallbackReply(personCtx: PersonContext): string {
@@ -474,9 +490,18 @@ export async function generateWhatsAppReply(context: WhatsAppConversationContext
       name: context.userName ?? null,
     };
 
-    const deterministicReply = buildDeterministicReply(context, personCtx);
-    if (deterministicReply) {
-      return deterministicReply;
+    const intent = classifyWhatsAppIntent(context.text);
+    const action = resolveIntentAction(intent.id, personCtx.role);
+
+    if (action === 'deterministic') {
+      const deterministicReply = buildDeterministicReply(intent.id, context, personCtx);
+      if (deterministicReply) {
+        return deterministicReply;
+      }
+    }
+
+    if (action === 'escalate') {
+      return buildEscalationReply(intent.id, personCtx);
     }
 
     const systemPrompt = buildSystemPrompt(personCtx, context.botFlow);

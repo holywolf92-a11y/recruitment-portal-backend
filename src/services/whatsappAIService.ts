@@ -3,6 +3,7 @@ import { supabaseAdminClient } from '../config/database';
 import { normalizePhoneE164 } from './candidateService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
 import { classifyWhatsAppIntent, getEscalationMatrixEntry, getIntentMatrixEntry, resolveIntentAction, type WhatsAppIntentId } from './whatsappIntentService';
+import { buildFalishaKnowledgeContext } from './falishaKnowledgeBaseService';
 
 const logger = createLogger('WhatsAppAIService');
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
@@ -356,7 +357,7 @@ export async function resolvePersonContext(phone: string): Promise<PersonContext
 
 // ─── System prompt builder ────────────────────────────────────────────────────
 
-function buildSystemPrompt(ctx: PersonContext, botFlow?: string | null): string {
+function buildSystemPrompt(ctx: PersonContext, botFlow?: string | null, knowledgeContext?: string): string {
   const firstName = ctx.name ? ctx.name.split(' ')[0] : null;
   const nameRef = firstName ? `Their name is ${ctx.name}.` : '';
   const globalPolicy = `
@@ -387,6 +388,10 @@ You are Falisha Manpower's WhatsApp customer support assistant.
 - Do not use filler.
 `;
 
+  const knowledgeBlock = knowledgeContext
+    ? `\n# Falisha Knowledge Base\nUse the verified facts below when they are relevant. If a fact is not present here or in the user profile context, do not invent it.\n\n${knowledgeContext}\n`
+    : '';
+
   // ── Candidate prompt ────────────────────────────────────────────────────────
   if (ctx.role === 'candidate') {
     const profile: string[] = [];
@@ -400,7 +405,7 @@ You are Falisha Manpower's WhatsApp customer support assistant.
     if (ctx.passportReceived != null) profile.push(`Passport received: ${ctx.passportReceived ? 'Yes' : 'No'}`);
     if (ctx.skills)             profile.push(`Skills: ${ctx.skills}`);
 
-    return `${globalPolicy}
+    return `${globalPolicy}${knowledgeBlock}
 
   You are a professional recruitment assistant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
 ${nameRef}
@@ -433,7 +438,7 @@ Rules:
     if (ctx.country)      profile.push(`Country: ${ctx.country}`);
     if (ctx.city)         profile.push(`City: ${ctx.city}`);
 
-    return `${globalPolicy}
+    return `${globalPolicy}${knowledgeBlock}
 
   You are a senior recruitment consultant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
 ${nameRef}
@@ -464,7 +469,7 @@ Rules:
     if (ctx.partnerType)    profile.push(`Partner type: ${ctx.partnerType}`);
     if (ctx.partnerStatus)  profile.push(`Application status: ${ctx.partnerStatus}`);
 
-    return `${globalPolicy}
+    return `${globalPolicy}${knowledgeBlock}
 
   You are a partnership manager at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
 ${nameRef}
@@ -488,7 +493,7 @@ Rules:
   }
 
   // ── Unknown / first contact ─────────────────────────────────────────────────
-  return `${globalPolicy}
+  return `${globalPolicy}${knowledgeBlock}
 
 You are a professional recruitment assistant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
 You are speaking with a new contact. We don't have their profile on record yet.
@@ -545,7 +550,14 @@ export async function generateWhatsAppReply(context: WhatsAppConversationContext
       return decision.reply;
     }
 
-    const systemPrompt = buildSystemPrompt(personCtx, context.botFlow);
+    const knowledgeContext = buildFalishaKnowledgeContext({
+      query: context.text,
+      role: personCtx.role || 'all',
+      intentId: decision.intentId,
+      limit: 3,
+    });
+
+    const systemPrompt = buildSystemPrompt(personCtx, context.botFlow, knowledgeContext);
 
     const messages = [
       { role: 'system', content: systemPrompt },

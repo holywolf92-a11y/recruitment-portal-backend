@@ -56,7 +56,10 @@ type PartnerPublicIntakeInput = {
 };
 
 function generateTrackingToken(): string {
-  return crypto.randomBytes(8).toString('hex').toUpperCase();
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const prefix = chars[Math.floor(Math.random() * chars.length)] + chars[Math.floor(Math.random() * chars.length)];
+  const numbers = Math.floor(100000 + Math.random() * 900000);
+  return `${prefix}${numbers}`;
 }
 
 function generateTemporaryPassword(): string {

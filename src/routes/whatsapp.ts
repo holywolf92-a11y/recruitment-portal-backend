@@ -53,6 +53,7 @@ const INTERNAL_NUMBERS = new Set([
 // stuck in 'human' takeover mode accidentally.
 const DEVELOPER_NUMBERS = new Set([
   '46727676973', // Developer test number — tests job seeker / partner / employer flows
+  '923303333335', // Owner test number — should always receive AI/bot replies for live testing
 ]);
 
 function isInternalNumber(phone: string): boolean {

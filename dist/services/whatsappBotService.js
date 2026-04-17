@@ -59,6 +59,18 @@ function isMainMenuRequest(text, id) {
 function isTalkHumanRequest(text, id) {
     return id === 'talk_human' || text === 'human' || text === 'agent' || text === 'talk to human' || text === 'support';
 }
+function isSocialLinksRequest(text, id) {
+    if (id === 'menu_social') {
+        return true;
+    }
+    const normalized = text.trim().toLowerCase();
+    if (!normalized) {
+        return false;
+    }
+    return (/social|social media|channel/.test(normalized) ||
+        /linkedin|facebook|instagram|insta|tiktok|tik tok|youtube/.test(normalized) ||
+        (/link|links/.test(normalized) && /follow|send|share|give/.test(normalized)));
+}
 async function tx(phoneNumberId, accessToken, to, convId, body) {
     await (0, whatsappInteractiveService_1.sendText)(phoneNumberId, accessToken, to, body);
     if (convId) {
@@ -251,14 +263,16 @@ async function promptStep(phoneNumberId, accessToken, to, convId, body, buttons,
 }
 function buildSocialLinksMessage() {
     return [
-        'Follow Falisha on social media:',
+        '🌐 *Stay connected with Falisha Manpower:*',
         '',
-        `LinkedIn: ${LINKEDIN_URL}`,
-        `Facebook: ${FACEBOOK_URL}`,
-        `Instagram: ${INSTAGRAM_URL}`,
-        `TikTok: ${TIKTOK_URL}`,
-        `YouTube: ${YOUTUBE_URL}`,
+        `💼 LinkedIn: ${LINKEDIN_URL}`,
+        `📘 Facebook: ${FACEBOOK_URL}`,
+        `📸 Instagram: ${INSTAGRAM_URL}`,
+        `🎵 TikTok: ${TIKTOK_URL}`,
+        `▶️ YouTube: ${YOUTUBE_URL}`,
         ...(WA_CHANNEL_URL ? [`WhatsApp Channel: ${WA_CHANNEL_URL}`] : []),
+        '',
+        '_Follow us for job updates, success stories, and more!_',
     ].join('\n');
 }
 async function sendPortalEntryLink(phoneNumberId, accessToken, to, convId, audience) {
@@ -1002,6 +1016,10 @@ async function handleBotMessageFrom(params) {
         }
         if (isTalkHumanRequest(text, id)) {
             await switchToHuman(phoneNumberId, accessToken, from, state.conversationId, from);
+            return true;
+        }
+        if (isSocialLinksRequest(text, id)) {
+            await handleSocialFlow({ ...state, flow: 'social', step: null, data: {} }, incoming, phoneNumberId, accessToken);
             return true;
         }
         // ── No active flow — check if this is a trigger ──────────────────────────

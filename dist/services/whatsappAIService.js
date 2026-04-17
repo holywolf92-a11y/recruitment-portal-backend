@@ -1,9 +1,585 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.decideWhatsAppReply = decideWhatsAppReply;
+exports.resolvePersonContext = resolvePersonContext;
 exports.generateWhatsAppReply = generateWhatsAppReply;
 exports.shouldReplyWithAI = shouldReplyWithAI;
 const errorHandling_1 = require("../utils/errorHandling");
+const database_1 = require("../config/database");
+const candidateService_1 = require("./candidateService");
+const publicUrl_1 = require("../utils/publicUrl");
+const whatsappIntentService_1 = require("./whatsappIntentService");
+const falishaKnowledgeBaseService_1 = require("./falishaKnowledgeBaseService");
 const logger = (0, errorHandling_1.createLogger)('WhatsAppAIService');
+const FRONTEND_URL = (0, publicUrl_1.resolveFrontendUrl)(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
+const JOBS_URL = process.env.WHATSAPP_BOT_JOBS_URL || `${FRONTEND_URL}/jobs`;
+const LINKEDIN_URL = process.env.WHATSAPP_BOT_LINKEDIN_URL || 'https://www.linkedin.com/company/falishaenterprises';
+const FACEBOOK_URL = process.env.WHATSAPP_BOT_FACEBOOK_URL || 'https://www.facebook.com/falishaenterprises.pk/';
+const INSTAGRAM_URL = process.env.WHATSAPP_BOT_INSTAGRAM_URL || 'https://www.instagram.com/falisha.manpower';
+const TIKTOK_URL = process.env.WHATSAPP_BOT_TIKTOK_URL || 'https://www.tiktok.com/@falishamanpower';
+const YOUTUBE_URL = process.env.WHATSAPP_BOT_YOUTUBE_URL || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
+const WA_CHANNEL_URL = process.env.WHATSAPP_BOT_CHANNEL_URL || '';
+const SUPPORT_EMAIL = 'support@falishajobs.com';
+const SUPPORT_PHONE = '+923303333335';
+function normalizeText(value) {
+    return String(value || '').trim().toLowerCase();
+}
+function buildSocialLinksReply() {
+    return [
+        '🌐 *Stay connected with Falisha Manpower:*',
+        '',
+        `💼 LinkedIn: ${LINKEDIN_URL}`,
+        `📘 Facebook: ${FACEBOOK_URL}`,
+        `📸 Instagram: ${INSTAGRAM_URL}`,
+        `🎵 TikTok: ${TIKTOK_URL}`,
+        `▶️ YouTube: ${YOUTUBE_URL}`,
+        ...(WA_CHANNEL_URL ? [`💬 WhatsApp Channel: ${WA_CHANNEL_URL}`] : []),
+        '',
+        '_Follow us for job updates, success stories, and more!_',
+    ].join('\n');
+}
+function buildPortalUrl(role) {
+    if (role === 'employer')
+        return `${FRONTEND_URL}/employer/dashboard`;
+    if (role === 'partner')
+        return `${FRONTEND_URL}/partner/dashboard`;
+    return `${FRONTEND_URL}/apply/candidate`;
+}
+function hasVerifiedProfileContext(intentId, personCtx) {
+    switch (intentId) {
+        case 'application_status':
+            if (personCtx.role === 'candidate') {
+                return Boolean(personCtx.status || personCtx.position || personCtx.candidateCode);
+            }
+            if (personCtx.role === 'employer') {
+                return Boolean(personCtx.leadStatus || personCtx.companyName || personCtx.professions);
+            }
+            if (personCtx.role === 'partner') {
+                return Boolean(personCtx.partnerStatus || personCtx.companyName || personCtx.partnerType);
+            }
+            return false;
+        default:
+            return Boolean(personCtx.role);
+    }
+}
+function buildProfileContextClarification(intentId, personCtx) {
+    if (intentId === 'application_status') {
+        if (!personCtx.role) {
+            return 'To check your status, tell me whether you are a candidate, employer, or partner, and share your registered email, phone number, or reference code.';
+        }
+        if (personCtx.role === 'candidate') {
+            return 'I cannot verify your current application status from this phone number yet. Please send your full name and registered email or candidate reference code.';
+        }
+        if (personCtx.role === 'employer') {
+            return 'I cannot verify your hiring request status from this phone number yet. Please send your company name and registered email so I can guide you correctly.';
+        }
+        return 'I cannot verify your partner application status from this phone number yet. Please send your company name and registered email so I can guide you correctly.';
+    }
+    return 'I need one more verified detail before I can answer that safely. Please share your registered email or reference number.';
+}
+function buildUnsupportedFactReply(intentId, personCtx, supportLevel) {
+    if (intentId === 'office_contact') {
+        return [
+            'I can confirm these verified Falisha contact details:',
+            `Email: ${SUPPORT_EMAIL}`,
+            `Phone: ${SUPPORT_PHONE}`,
+            'I cannot verify an office address or business hours from the current verified data.',
+        ].join('\n');
+    }
+    if (intentId === 'pricing_quote') {
+        return 'I cannot verify pricing or commercial terms in chat. Our team will provide the formal quotation directly.';
+    }
+    if (personCtx.role === 'candidate') {
+        return `I can only confirm candidate details from your profile or verified Falisha data. I cannot verify that specific point from the current ${supportLevel} support available.`;
+    }
+    if (personCtx.role === 'employer') {
+        return `I can only confirm employer details from your account or verified Falisha data. I cannot verify that specific point from the current ${supportLevel} support available.`;
+    }
+    if (personCtx.role === 'partner') {
+        return `I can only confirm partner details from your account or verified Falisha data. I cannot verify that specific point from the current ${supportLevel} support available.`;
+    }
+    return 'I can only answer from verified Falisha knowledge or your account record. I cannot verify that specific detail from the current data.';
+}
+function asksForUnsupportedCompensationDetail(text) {
+    return /\bsalary\b|\bpay\b|\bwage\b|\bpackage\b/i.test(text);
+}
+function buildDeterministicReply(intentId, context, personCtx) {
+    switch (intentId) {
+        case 'social_links':
+            return buildSocialLinksReply();
+        case 'job_listings':
+            return [
+                '💼 *Browse current Falisha jobs here:*',
+                JOBS_URL,
+                '',
+                `If you want to apply online, use: ${FRONTEND_URL}/apply/candidate`,
+            ].join('\n');
+        case 'portal_access': {
+            const portalUrl = buildPortalUrl(personCtx.role);
+            if (personCtx.role === 'employer') {
+                return [
+                    '🔐 *Employer portal access*',
+                    `Dashboard: ${portalUrl}`,
+                    'If you do not remember your password, reply with your registered email and our team will reset it for you.',
+                ].join('\n');
+            }
+            if (personCtx.role === 'partner') {
+                return [
+                    '🔐 *Partner portal access*',
+                    `Dashboard: ${portalUrl}`,
+                    'If you do not remember your password, reply with your registered email and our team will reset it for you.',
+                ].join('\n');
+            }
+            return [
+                '🔗 *Candidate application / profile link*',
+                portalUrl,
+                'If you already applied and need help finding your profile link, send your full name and email.',
+            ].join('\n');
+        }
+        case 'application_links':
+            return [
+                '📌 *Falisha application links*',
+                `Job Seeker: ${FRONTEND_URL}/apply/candidate`,
+                `Employer: ${FRONTEND_URL}/apply/employer`,
+                `Partner: ${FRONTEND_URL}/apply/partner`,
+            ].join('\n');
+        case 'application_status':
+            if (personCtx.role === 'candidate' && (personCtx.status || personCtx.position || personCtx.candidateCode)) {
+                return [
+                    `📄 Your application status is *${personCtx.status || 'Applied'}*${personCtx.position ? ` for *${personCtx.position}*` : ''}.`,
+                    personCtx.candidateCode ? `Reference: ${personCtx.candidateCode}` : '',
+                    personCtx.status && personCtx.status.toLowerCase() === 'shortlisted'
+                        ? 'A consultant will contact you with the next step.'
+                        : 'If you want, I can also guide you on the next required documents or next step.',
+                ].filter(Boolean).join('\n');
+            }
+            if (personCtx.role === 'employer' && (personCtx.leadStatus || personCtx.companyName || personCtx.professions)) {
+                return [
+                    `🏢 Your hiring request${personCtx.companyName ? ` for *${personCtx.companyName}*` : ''} is currently *${personCtx.leadStatus || 'New'}*.`,
+                    personCtx.professions ? `Requested roles: ${personCtx.professions}` : '',
+                    'Our recruitment process is sourcing → screening → interviews → visa → deployment.',
+                ].filter(Boolean).join('\n');
+            }
+            if (personCtx.role === 'partner' && personCtx.partnerStatus) {
+                return [
+                    `🤝 Your partner application status is *${personCtx.partnerStatus}*.`,
+                    'If approved, you can submit candidates through the partner dashboard.',
+                    `Dashboard: ${buildPortalUrl('partner')}`,
+                ].join('\n');
+            }
+            return null;
+        case 'document_help':
+            if (personCtx.role === 'candidate') {
+                const missingDocs = [];
+                if (personCtx.cvReceived === false)
+                    missingDocs.push('CV');
+                if (personCtx.passportReceived === false)
+                    missingDocs.push('Passport');
+                if (missingDocs.length > 0) {
+                    return `📌 We still need these documents from you: ${missingDocs.join(', ')}. Please send them here on WhatsApp or complete your profile online.`;
+                }
+                return '📄 You can send your CV, passport, CNIC, or visa documents here on WhatsApp. If you want, I can also tell you what is still missing from your profile.';
+            }
+            return '📄 For candidate onboarding, the standard documents are Passport, CNIC, Driving License, Police Character Certificate, Certificates, Medical Report, and Visa. If you need a case-specific check, send the candidate reference or full name.';
+        case 'recruitment_process':
+            return 'Our recruitment process is sourcing → screening → interviews → visa processing → deployment. If you want, I can explain the next step for your case.';
+        case 'partner_commission':
+            return [
+                '💰 Partner commissions are handled after successful placement confirmation.',
+                `Dashboard: ${buildPortalUrl('partner')}`,
+                'For exact payout details, use your partner dashboard or ask the partnership team.',
+            ].join('\n');
+        case 'office_contact':
+            return [
+                '📞 *Verified Falisha contact details*',
+                `Email: ${SUPPORT_EMAIL}`,
+                `Phone: ${SUPPORT_PHONE}`,
+                'I cannot verify an office address or business hours from the current verified data.',
+            ].join('\n');
+        default:
+            return null;
+    }
+}
+function buildEscalationReply(intentId, personCtx) {
+    if (intentId === 'human_handoff') {
+        return 'I understand. A team member can take over this conversation for you.';
+    }
+    if (intentId === 'pricing_quote') {
+        return 'Pricing and commercial quotations should be handled by the human team. Our team will provide the formal quotation directly.';
+    }
+    const entry = (0, whatsappIntentService_1.getIntentMatrixEntry)(intentId);
+    if (entry.escalationReason) {
+        return `${entry.escalationReason} Please share your name and registered email if you want the team to follow up faster.`;
+    }
+    return buildFallbackReply(personCtx);
+}
+function decideWhatsAppReply(context) {
+    const personCtx = context.personCtx ?? {
+        role: context.role ?? null,
+        name: context.userName ?? null,
+    };
+    const intent = (0, whatsappIntentService_1.classifyWhatsAppIntent)(context.text);
+    const action = (0, whatsappIntentService_1.resolveIntentAction)(intent.id, personCtx.role);
+    const matrixEntry = (0, whatsappIntentService_1.getIntentMatrixEntry)(intent.id);
+    const escalation = (0, whatsappIntentService_1.getEscalationMatrixEntry)(intent.id);
+    const knowledgeSupport = (0, falishaKnowledgeBaseService_1.assessFalishaKnowledgeSupport)({
+        query: context.text,
+        role: personCtx.role || 'all',
+        intentId: intent.id,
+        limit: 3,
+    });
+    if (asksForUnsupportedCompensationDetail(context.text) && intent.id !== 'pricing_quote') {
+        return {
+            reply: 'I cannot verify salary or payment details from the current verified data. For exact compensation details, please use the official job posting or speak with the Falisha team directly.',
+            intentId: intent.id,
+            action: 'deterministic',
+            shouldSwitchToHuman: false,
+        };
+    }
+    if (action === 'deterministic') {
+        const deterministicReply = buildDeterministicReply(intent.id, context, personCtx);
+        if (deterministicReply) {
+            return {
+                reply: deterministicReply,
+                intentId: intent.id,
+                action,
+                shouldSwitchToHuman: false,
+            };
+        }
+        if (matrixEntry.requiresKnownRole || matrixEntry.requiresProfileContext) {
+            return {
+                reply: buildProfileContextClarification(intent.id, personCtx),
+                intentId: intent.id,
+                action: 'deterministic',
+                shouldSwitchToHuman: false,
+            };
+        }
+    }
+    if (action === 'escalate') {
+        return {
+            reply: buildEscalationReply(intent.id, personCtx),
+            intentId: intent.id,
+            action,
+            shouldSwitchToHuman: escalation.autoSwitchToHuman,
+            escalationReason: escalation.reason,
+        };
+    }
+    if ((matrixEntry.requiresKnownRole || matrixEntry.requiresProfileContext) && !hasVerifiedProfileContext(intent.id, personCtx)) {
+        return {
+            reply: buildProfileContextClarification(intent.id, personCtx),
+            intentId: intent.id,
+            action: 'deterministic',
+            shouldSwitchToHuman: false,
+        };
+    }
+    if (intent.id !== 'greeting' && intent.id !== 'unknown' && knowledgeSupport.supportLevel !== 'grounded') {
+        return {
+            reply: buildUnsupportedFactReply(intent.id, personCtx, knowledgeSupport.supportLevel),
+            intentId: intent.id,
+            action: 'deterministic',
+            shouldSwitchToHuman: false,
+            escalationReason: knowledgeSupport.reason,
+        };
+    }
+    return {
+        reply: '',
+        intentId: intent.id,
+        action,
+        shouldSwitchToHuman: false,
+        escalationReason: escalation.escalationLevel !== 'none' ? escalation.reason : undefined,
+    };
+}
+function buildFallbackReply(personCtx) {
+    if (personCtx.role === 'candidate') {
+        return 'I can help with your application status, required documents, profile link, or current jobs. Tell me which one you need.';
+    }
+    if (personCtx.role === 'employer') {
+        return 'I can help with your hiring request status, employer dashboard, recruitment process, or social links. Tell me what you need.';
+    }
+    if (personCtx.role === 'partner') {
+        return 'I can help with your partner application status, dashboard access, candidate submission process, or social links. Tell me what you need.';
+    }
+    return [
+        'Welcome to Falisha Manpower.',
+        `Job Seeker: ${FRONTEND_URL}/apply/candidate`,
+        `Employer: ${FRONTEND_URL}/apply/employer`,
+        `Partner: ${FRONTEND_URL}/apply/partner`,
+        'You can also ask for jobs, portal links, or social media links.',
+    ].join('\n');
+}
+/**
+ * Resolve a person's full record from Supabase by phone number.
+ * Priority: users table (role) → candidates → employer_leads → partner_applications
+ */
+async function resolvePersonContext(phone) {
+    const db = (0, database_1.supabaseAdminClient)();
+    // Normalise to E.164 and also get digit-only variant for fuzzy matching
+    const e164 = (0, candidateService_1.normalizePhoneE164)(phone) || phone;
+    const digits = phone.replace(/\D/g, '');
+    // ── 1. Check users table to determine role ─────────────────────────────────
+    let appUserRole = null;
+    let appUserName = null;
+    try {
+        const { data } = await db
+            .from('users')
+            .select('role, name, phone')
+            .or(`phone.eq.${e164},phone.eq.+${digits},phone.eq.${digits}`)
+            .limit(1)
+            .maybeSingle();
+        if (data) {
+            appUserRole = data.role;
+            appUserName = data.name;
+        }
+    }
+    catch { /* non-fatal */ }
+    // ── 2. Candidate ────────────────────────────────────────────────────────────
+    if (!appUserRole || appUserRole === 'candidate') {
+        try {
+            const { data } = await db
+                .from('candidates')
+                .select('name, status, position, nationality, country_of_interest, experience_years, ' +
+                'cv_received, passport_received, cnic_received, visa_received, ' +
+                'skills, education, previous_employment, candidate_code, source')
+                .or(`phone.eq.${e164},phone.ilike.%${digits}%`)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            if (data) {
+                return {
+                    role: 'candidate',
+                    name: appUserName || data.name || null,
+                    status: data.status,
+                    position: data.position,
+                    nationality: data.nationality,
+                    countryOfInterest: data.country_of_interest,
+                    experienceYears: data.experience_years,
+                    cvReceived: data.cv_received,
+                    passportReceived: data.passport_received,
+                    skills: data.skills,
+                    education: data.education,
+                    previousEmployment: data.previous_employment,
+                    candidateCode: data.candidate_code,
+                };
+            }
+        }
+        catch { /* non-fatal */ }
+    }
+    // ── 3. Employer ─────────────────────────────────────────────────────────────
+    if (!appUserRole || appUserRole === 'employer') {
+        try {
+            const { data } = await db
+                .from('employer_leads')
+                .select('contact_name, company_name, professions, quantity, country, city, status')
+                .or(`phone_number.eq.${e164},phone_number.ilike.%${digits}%`)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            if (data) {
+                return {
+                    role: 'employer',
+                    name: appUserName || data.contact_name || null,
+                    companyName: data.company_name,
+                    professions: data.professions,
+                    quantity: data.quantity,
+                    country: data.country,
+                    city: data.city,
+                    leadStatus: data.status,
+                };
+            }
+        }
+        catch { /* non-fatal */ }
+    }
+    // ── 4. Partner ──────────────────────────────────────────────────────────────
+    if (!appUserRole || appUserRole === 'partner') {
+        try {
+            const { data } = await db
+                .from('partner_applications')
+                .select('applicant_name, company_name, city_country, district, partner_type, status')
+                .or(`phone_number.eq.${e164},phone_number.ilike.%${digits}%`)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            if (data) {
+                return {
+                    role: 'partner',
+                    name: appUserName || data.applicant_name || null,
+                    companyName: data.company_name,
+                    cityCountry: data.city_country,
+                    district: data.district,
+                    partnerType: data.partner_type,
+                    partnerStatus: data.status,
+                };
+            }
+        }
+        catch { /* non-fatal */ }
+    }
+    // ── 5. Unknown ──────────────────────────────────────────────────────────────
+    return { role: null, name: appUserName || null };
+}
+// ─── System prompt builder ────────────────────────────────────────────────────
+function buildSystemPrompt(ctx, botFlow, knowledgeContext) {
+    const firstName = ctx.name ? ctx.name.split(' ')[0] : null;
+    const nameRef = firstName ? `Their name is ${ctx.name}.` : '';
+    const globalPolicy = `
+# Identity
+You are Falisha Manpower's WhatsApp customer support assistant.
+
+# Response policy
+- Answer the user's exact question first.
+- Keep replies concise, practical, and WhatsApp-friendly.
+- Prefer 1-3 short paragraphs or short bullet-style lines.
+- If the user asks for a link, return the exact link directly.
+- If the user asks for status, use only the supplied account context.
+- If account data is missing, ask one specific clarifying question instead of giving a vague fallback.
+- Never invent prices, timelines, approvals, placements, or legal claims.
+- If a business fact is not explicitly present in the verified knowledge block or account context, say you cannot verify it.
+- Do not infer office address, office hours, pricing, commission amounts, or status details from general wording.
+- Never say "our team will get back to you shortly" unless the issue truly requires human review.
+- If human escalation is necessary, explain why in one sentence.
+
+# Escalate only for
+- Legal or compliance matters
+- Pricing negotiation or custom commercial terms
+- Manual account recovery that cannot be solved with a link or guidance
+- A question that cannot be answered from the available account context
+
+# Style
+- Sound like an experienced support agent at an international recruitment company.
+- Be calm, direct, and useful.
+- Do not over-apologize.
+- Do not use filler.
+`;
+    const knowledgeBlock = knowledgeContext
+        ? `\n# Falisha Knowledge Base\nUse the verified facts below when they are relevant. If a fact is not present here or in the user profile context, do not invent it.\n\n${knowledgeContext}\n`
+        : '';
+    // ── Candidate prompt ────────────────────────────────────────────────────────
+    if (ctx.role === 'candidate') {
+        const profile = [];
+        if (ctx.candidateCode)
+            profile.push(`Ref #: ${ctx.candidateCode}`);
+        if (ctx.status)
+            profile.push(`Application status: ${ctx.status}`);
+        if (ctx.position)
+            profile.push(`Desired position: ${ctx.position}`);
+        if (ctx.nationality)
+            profile.push(`Nationality: ${ctx.nationality}`);
+        if (ctx.countryOfInterest)
+            profile.push(`Preferred destination: ${ctx.countryOfInterest}`);
+        if (ctx.experienceYears != null)
+            profile.push(`Experience: ${ctx.experienceYears} year(s)`);
+        if (ctx.cvReceived != null)
+            profile.push(`CV received: ${ctx.cvReceived ? 'Yes' : 'No — they still need to submit it'}`);
+        if (ctx.passportReceived != null)
+            profile.push(`Passport received: ${ctx.passportReceived ? 'Yes' : 'No'}`);
+        if (ctx.skills)
+            profile.push(`Skills: ${ctx.skills}`);
+        return `${globalPolicy}${knowledgeBlock}
+
+  You are a professional recruitment assistant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
+${nameRef}
+You are speaking with a JOB SEEKER. Use their profile data below to give personalised, accurate answers.
+
+CANDIDATE PROFILE:
+${profile.length ? profile.map(l => `• ${l}`).join('\n') : '• Profile not yet fully complete.'}
+
+Your responsibilities:
+- Answer questions about their application status, next steps, and required documents
+- If their CV is not received, encourage them to send it
+- If the status is "Applied", tell them a consultant will review within 48 hours
+- If the status is "Shortlisted", congratulate them and say a team member will contact them
+- Guide them to apply online at falishajobs.up.railway.app/apply/candidate if not registered
+- Keep replies warm, encouraging, and concise (2-3 sentences max for WhatsApp)
+
+Rules:
+- Never charge money — this service is free for job seekers
+- Don't guarantee a placement or invent statuses not shown above
+- If profile data is insufficient, ask one focused follow-up question or offer the correct portal link`;
+    }
+    // ── Employer prompt ─────────────────────────────────────────────────────────
+    if (ctx.role === 'employer') {
+        const profile = [];
+        if (ctx.companyName)
+            profile.push(`Company: ${ctx.companyName}`);
+        if (ctx.leadStatus)
+            profile.push(`Lead status: ${ctx.leadStatus}`);
+        if (ctx.professions)
+            profile.push(`Professions requested: ${ctx.professions}`);
+        if (ctx.quantity)
+            profile.push(`Quantity needed: ${ctx.quantity}`);
+        if (ctx.country)
+            profile.push(`Country: ${ctx.country}`);
+        if (ctx.city)
+            profile.push(`City: ${ctx.city}`);
+        return `${globalPolicy}${knowledgeBlock}
+
+  You are a senior recruitment consultant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
+${nameRef}
+You are speaking with an EMPLOYER. Use their account data below to give personalised answers.
+
+EMPLOYER ACCOUNT:
+${profile.length ? profile.map(l => `• ${l}`).join('\n') : '• Account not yet fully set up.'}
+
+Your responsibilities:
+- Reference their specific hiring requirement when relevant (professions, quantity, country)
+- Explain the recruitment process: sourcing → screening → interviews → visa → deployment
+- If their lead status is "new", confirm their requirement is received and the team will follow up
+- Guide them to the Employer Dashboard at falishajobs.up.railway.app/employer/dashboard
+- Keep replies professional, confident, and concise (2-4 sentences max for WhatsApp)
+
+Rules:
+- Never quote exact prices — say "our team will provide a formal quotation"
+- Don't invent statuses or timelines beyond what's in the profile above
+- Escalate only complex legal, compliance, or custom commercial questions`;
+    }
+    // ── Partner prompt ──────────────────────────────────────────────────────────
+    if (ctx.role === 'partner') {
+        const profile = [];
+        if (ctx.companyName)
+            profile.push(`Agency/Company: ${ctx.companyName}`);
+        if (ctx.cityCountry)
+            profile.push(`Location: ${ctx.cityCountry}`);
+        if (ctx.district)
+            profile.push(`District: ${ctx.district}`);
+        if (ctx.partnerType)
+            profile.push(`Partner type: ${ctx.partnerType}`);
+        if (ctx.partnerStatus)
+            profile.push(`Application status: ${ctx.partnerStatus}`);
+        return `${globalPolicy}${knowledgeBlock}
+
+  You are a partnership manager at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
+${nameRef}
+You are speaking with a PARTNER AGENT. Use their account data below to give personalised answers.
+
+PARTNER ACCOUNT:
+${profile.length ? profile.map(l => `• ${l}`).join('\n') : '• Account not yet fully set up.'}
+
+Your responsibilities:
+- Reference their location and agency when relevant
+- If their status is "pending", encourage them and explain the approval process
+- If "approved", guide them to submit candidates via their Partner Dashboard
+- Explain how to earn commissions: refer candidate → placement confirmed → payout processed
+- Link them to falishajobs.up.railway.app/partner/dashboard for full details
+- Keep replies friendly, motivating, and concise (2-4 sentences max for WhatsApp)
+
+Rules:
+- Never share data about other partners
+- Don't promise specific commission amounts — refer to their dashboard
+- Escalate payout disputes or verification issues to the human team only when needed`;
+    }
+    // ── Unknown / first contact ─────────────────────────────────────────────────
+    return `${globalPolicy}${knowledgeBlock}
+
+You are a professional recruitment assistant at Falisha Enterprises, Pakistan's #1 overseas recruitment company.
+You are speaking with a new contact. We don't have their profile on record yet.
+
+Your responsibilities:
+- Welcome them warmly and ask if they are a Job Seeker, an Employer, or a Recruitment Partner
+- Direct them to the right application page based on their answer:
+  • Job Seeker: falishajobs.up.railway.app/apply/candidate
+  • Employer: falishajobs.up.railway.app/apply/employer
+  • Partner Agent: falishajobs.up.railway.app/apply/partner
+- Keep the reply brief and friendly (2-3 sentences max for WhatsApp)`;
+}
 /**
  * Generate an AI-powered reply to WhatsApp messages using OpenAI
  */
@@ -14,21 +590,22 @@ async function generateWhatsAppReply(context) {
         return 'Thank you for your message. Our team will get back to you shortly.';
     }
     try {
-        const systemPrompt = `You are a professional recruitment assistant for Falisha Manpower.
-
-Your role:
-- Help candidates with job applications and CV submissions
-- Answer questions about job opportunities, requirements, and the application process
-- Be polite, professional, and helpful
-- Keep responses concise (2-3 sentences max for WhatsApp)
-- If a candidate wants to apply, guide them to send their CV as a document/image
-- If they ask about job status, assure them that a team member will contact them
-
-Important:
-- Never ask for sensitive information like passwords or credit cards
-- Don't make promises about job placement or guarantees
-- Always maintain a professional, friendly tone
-- If you don't know something, say so and offer to connect them with a team member`;
+        // Prefer richer personCtx; fall back to legacy role/userName
+        const personCtx = context.personCtx ?? {
+            role: context.role ?? null,
+            name: context.userName ?? null,
+        };
+        const decision = decideWhatsAppReply({ ...context, personCtx });
+        if (decision.action !== 'ai' && decision.reply) {
+            return decision.reply;
+        }
+        const knowledgeContext = (0, falishaKnowledgeBaseService_1.buildFalishaKnowledgeContext)({
+            query: context.text,
+            role: personCtx.role || 'all',
+            intentId: decision.intentId,
+            limit: 3,
+        });
+        const systemPrompt = buildSystemPrompt(personCtx, context.botFlow, knowledgeContext);
         const messages = [
             { role: 'system', content: systemPrompt },
             ...(context.messageHistory || []).map(msg => ({
@@ -44,10 +621,10 @@ Important:
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: process.env.WHATSAPP_OPENAI_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini',
+                model: process.env.WHATSAPP_OPENAI_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-nano',
                 messages,
                 max_tokens: 150,
-                temperature: 0.7,
+                temperature: 0.25,
             }),
         });
         if (!response.ok) {
@@ -62,7 +639,7 @@ Important:
         const reply = data.choices?.[0]?.message?.content?.trim();
         if (!reply) {
             logger.warn('OpenAI returned empty response');
-            return 'Thank you for contacting Falisha Manpower. A team member will assist you soon.';
+            return buildFallbackReply(personCtx);
         }
         logger.info('Generated AI reply', {
             from: context.from,
@@ -76,7 +653,7 @@ Important:
             error: error instanceof Error ? error.message : 'Unknown error',
             from: context.from
         });
-        return 'Thank you for your message. Our recruitment team will get back to you shortly.';
+        return buildFallbackReply(context.personCtx ?? { role: context.role ?? null, name: context.userName ?? null });
     }
 }
 /**

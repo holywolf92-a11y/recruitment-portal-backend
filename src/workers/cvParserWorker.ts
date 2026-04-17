@@ -545,8 +545,11 @@ export function startCvParserWorker() {
         .maybeSingle();
 
       const payload: any = (msg as any)?.payload || {};
+      const bridgeBackfill =
+        payload?.bridgeMetadata?.rawFields?.backfill === 'true'
+        || payload?.raw?.bridgeMetadata?.rawFields?.backfill === 'true';
       return {
-        backfill: payload.backfill === true,
+        backfill: payload.backfill === true || bridgeBackfill,
         inbox_account: payload.inbox_account === 2 ? 2 : 1,
       };
     } catch {

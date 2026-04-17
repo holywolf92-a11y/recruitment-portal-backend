@@ -1,8 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.CANDIDATE_STATUS_VALUES = void 0;
 exports.normalizeCNIC = normalizeCNIC;
 exports.normalizePassport = normalizePassport;
 exports.normalizePhoneE164 = normalizePhoneE164;
+exports.parseCandidateStatus = parseCandidateStatus;
+exports.parseCandidatePaymentAmount = parseCandidatePaymentAmount;
 exports.generateCandidateCode = generateCandidateCode;
 exports.checkForDuplicates = checkForDuplicates;
 exports.createCandidate = createCandidate;
@@ -50,6 +53,37 @@ function normalizePhoneE164(phone) {
         return `+${digitsOnly}`;
     }
     return null;
+}
+exports.CANDIDATE_STATUS_VALUES = ['Applied', 'Pending', 'Deployed'];
+function parseCandidateStatus(value, fallback = 'Applied') {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) {
+        return fallback;
+    }
+    switch (normalized) {
+        case 'applied':
+            return 'Applied';
+        case 'pending':
+            return 'Pending';
+        case 'deployed':
+            return 'Deployed';
+        default:
+            throw new Error(`Invalid status: ${value}. Allowed values are ${exports.CANDIDATE_STATUS_VALUES.join(', ')}`);
+    }
+}
+function parseCandidatePaymentAmount(value, fallback = 0) {
+    if (value === undefined || value === null || value === '') {
+        return fallback;
+    }
+    const parsed = typeof value === 'number' ? value : Number(String(value).replace(/,/g, '').trim());
+    if (!Number.isFinite(parsed)) {
+        throw new Error('Payment amount must be a valid number');
+    }
+    const normalized = Math.round(parsed);
+    if (normalized < 0) {
+        throw new Error('Payment amount cannot be negative');
+    }
+    return normalized;
 }
 // Generate candidate code in FL-03-26-1 format.
 // The candidate_code field is the shared reference used across inbox ingestion,
@@ -170,8 +204,12 @@ async function createCandidate(data, userId) {
         candidate_code: candidateCode,
         name: truncCreate(data.name, VARCHAR_LIMITS_CREATE.name),
         father_name: data.father_name,
-        status: data.status,
+        status: parseCandidateStatus(data.status, 'Applied'),
+        payment_amount: parseCandidatePaymentAmount(data.payment_amount, 0),
         source: data.source,
+        partner_id: data.partner_id,
+        partner_name: data.partner_name,
+        is_partner_candidate: data.is_partner_candidate,
         ai_score: data.ai_score,
         auto_extracted: data.auto_extracted,
         needs_review: data.needs_review,
@@ -253,7 +291,8 @@ async function getCandidateById(id, userId) {
 // professional_summary, education, certifications) that are only needed in the detail view.
 // Narrowing the select cuts list response payload by ~60-80% and reduces Railway egress.
 const LIST_FIELDS = [
-    'id', 'candidate_code', 'name', 'status', 'source', 'ai_score',
+    'id', 'candidate_code', 'name', 'status', 'payment_amount', 'source', 'ai_score',
+    'partner_id', 'partner_name', 'is_partner_candidate',
     'position', 'nationality', 'country_of_interest', 'experience_years',
     'phone', 'email', 'date_of_birth', 'gender', 'marital_status', 'address',
     'passport_normalized', 'cnic_normalized', 'passport_expiry',
@@ -274,7 +313,7 @@ async function listCandidates(filters = {}, userId) {
     // Global search: partial, case-insensitive, across name, passport, CNIC, email, phone, position (server-side)
     if (filters.search && filters.search.trim()) {
         const q = filters.search.trim();
-        query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%,position.ilike.%${q}%`);
+        query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%,position.ilike.%${q}%,partner_name.ilike.%${q}%`);
     }
     // Apply status filter
     if (filters.status && filters.status !== 'all' && filters.status !== 'Deleted') {
@@ -339,6 +378,7 @@ async function listCandidates(filters = {}, userId) {
     // Frontend expects 'passport' but database only has 'passport_normalized'
     const mappedCandidates = (data || []).map((candidate) => ({
         ...candidate,
+        cnic: candidate.cnic_normalized || candidate.cnic || null,
         passport: candidate.passport_normalized || candidate.passport || null,
     }));
     return {
@@ -461,7 +501,7 @@ async function getDailyStats(filters, userId) {
         buildBaseQuery().eq('status', 'Applied'),
         buildBaseQuery().eq('status', 'Deployed'),
         buildBaseQuery().eq('status', 'Pending'),
-        buildBaseQuery().eq('status', 'Cancelled'),
+        buildBaseQuery().eq('status', '__unused__'),
         buildBaseQuery().or('cv_received.eq.true,passport_received.eq.true'),
     ]);
     return {
@@ -470,7 +510,7 @@ async function getDailyStats(filters, userId) {
         applied: appliedRes.count ?? 0,
         verified: verifiedRes.count ?? 0,
         pending: pendingRes.count ?? 0,
-        rejected: rejectedRes.count ?? 0,
+        rejected: 0,
         documents_uploaded: docsRes.count ?? 0,
     };
 }
@@ -689,13 +729,10 @@ async function bulkUpdateCandidateStatus(candidateIds, status, userId) {
     if (!Array.isArray(candidateIds) || candidateIds.length === 0) {
         throw new Error('candidateIds must be a non-empty array');
     }
-    const allowed = new Set(['Applied', 'Pending', 'Deployed', 'Cancelled']);
-    if (!allowed.has(status)) {
-        throw new Error(`Invalid status: ${status}`);
-    }
+    const normalizedStatus = parseCandidateStatus(status);
     const { data, error } = await db
         .from('candidates')
-        .update({ status, updated_at: new Date().toISOString() })
+        .update({ status: normalizedStatus, updated_at: new Date().toISOString() })
         .in('id', candidateIds)
         .select('id,status');
     if (error)
@@ -709,6 +746,12 @@ async function updateCandidate(id, data, userId) {
     const db = (0, database_1.supabaseAdminClient)();
     // Normalize identifiers if provided
     const updateData = { ...data };
+    if (data.status !== undefined) {
+        updateData.status = parseCandidateStatus(data.status, 'Applied');
+    }
+    if (data.payment_amount !== undefined) {
+        updateData.payment_amount = parseCandidatePaymentAmount(data.payment_amount, 0);
+    }
     if (data.cnic) {
         updateData.cnic_normalized = normalizeCNIC(data.cnic);
     }
@@ -758,7 +801,8 @@ async function updateCandidate(id, data, userId) {
         'nationality', 'position', 'experience_years', 'country_of_interest',
         'skills', 'languages', 'education', 'certifications', 'internships',
         'previous_employment', 'passport_expiry', 'professional_summary',
-        'status', 'source', 'ai_score', 'auto_extracted', 'needs_review',
+        'status', 'payment_amount', 'source', 'ai_score', 'auto_extracted', 'needs_review',
+        'partner_id', 'partner_name', 'is_partner_candidate',
         'updated_at', 'field_sources', 'extraction_confidence', 'extraction_source',
         'extracted_at', 'passport_received', 'cnic_received', 'degree_received',
         'medical_received', 'visa_received', 'cv_received', 'photo_received',

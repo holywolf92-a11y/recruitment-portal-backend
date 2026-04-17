@@ -13,6 +13,7 @@ const candidateDocumentService_1 = require("./candidateDocumentService");
 const whatsappInteractiveService_1 = require("./whatsappInteractiveService");
 const userService_1 = require("./userService");
 const publicUrl_1 = require("../utils/publicUrl");
+const queue_1 = require("../config/queue");
 const FRONTEND_URL = (0, publicUrl_1.resolveFrontendUrl)(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
 const LINKEDIN_URL = process.env.WHATSAPP_BOT_LINKEDIN_URL || 'https://www.linkedin.com/company/falishaenterprises';
 const FACEBOOK_URL = process.env.WHATSAPP_BOT_FACEBOOK_URL || 'https://www.facebook.com/falishaenterprises.pk/';
@@ -21,7 +22,10 @@ const TIKTOK_URL = process.env.WHATSAPP_BOT_TIKTOK_URL || 'https://www.tiktok.co
 const YOUTUBE_URL = process.env.WHATSAPP_BOT_YOUTUBE_URL || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
 const WA_CHANNEL_URL = process.env.WHATSAPP_BOT_CHANNEL_URL || '';
 function generateTrackingToken() {
-    return crypto_1.default.randomBytes(8).toString('hex').toUpperCase();
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const prefix = chars[Math.floor(Math.random() * chars.length)] + chars[Math.floor(Math.random() * chars.length)];
+    const numbers = Math.floor(100000 + Math.random() * 900000);
+    return `${prefix}${numbers}`;
 }
 function generateTemporaryPassword() {
     return `Falisha!${crypto_1.default.randomBytes(4).toString('hex')}`;
@@ -38,16 +42,32 @@ function buildSocialLinks() {
 }
 function buildSocialLinksMessage() {
     const links = buildSocialLinks();
-    return [
-        'Follow Falisha on social media:',
+    const lines = [
+        '🌐 *Stay connected with Falisha Manpower:*',
         '',
-        `LinkedIn: ${links.linkedin}`,
-        `Facebook: ${links.facebook}`,
-        `Instagram: ${links.instagram}`,
-        `TikTok: ${links.tiktok}`,
-        `YouTube: ${links.youtube}`,
-        ...(links.whatsappChannel ? [`WhatsApp Channel: ${links.whatsappChannel}`] : []),
-    ].join('\n');
+        `💼 LinkedIn: ${links.linkedin}`,
+        `📘 Facebook: ${links.facebook}`,
+        `📸 Instagram: ${links.instagram}`,
+        `🎵 TikTok: ${links.tiktok}`,
+        `▶️ YouTube: ${links.youtube}`,
+    ];
+    if (links.whatsappChannel) {
+        lines.push(`💬 WhatsApp Channel: ${links.whatsappChannel}`);
+    }
+    lines.push('');
+    lines.push('_Follow us for job updates, success stories, and more!_');
+    return lines.join('\n');
+}
+async function enqueueSocialLinks(phone) {
+    if (!phone)
+        return;
+    const DELAY_MS = 3 * 60 * 1000; // 3 minutes
+    try {
+        await queue_1.whatsappSocialLinksQueue.add('send-social-links', { phone, message: buildSocialLinksMessage(), recipientRole: 'candidate' }, { delay: DELAY_MS, attempts: 2, backoff: { type: 'fixed', delay: 30000 } });
+    }
+    catch {
+        // Non-critical — don't block the main response
+    }
 }
 function toWhatsAppRecipient(phone) {
     const normalized = (0, candidateService_1.normalizePhoneE164)(String(phone || '').trim()) || String(phone || '').trim();
@@ -181,11 +201,13 @@ async function submitCandidatePublicIntake(input, cvFile) {
     }
     const onboardingLink = await ensureCandidateOnboardingLink(candidate.id);
     const socialLinks = buildSocialLinks();
+    // Immediate: confirmation + profile link only
     const whatsappNotified = await sendWhatsAppLines(input.phone, [
-        'Thank you for applying with Falisha Enterprises.',
-        onboardingLink ? `Profile Link: ${onboardingLink}` : '',
-        buildSocialLinksMessage(),
+        `✅ *Thank you, ${input.fullName.split(' ')[0]}!* Your application has been received by *Falisha Manpower*.`,
+        onboardingLink ? `🔗 Complete your profile here:\n${onboardingLink}` : '',
     ]).catch(() => false);
+    // Delayed: social links 3 minutes later, but only for completed candidate applications
+    await enqueueSocialLinks(input.phone);
     return {
         candidateId: candidate.id,
         reference: candidate.candidate_code || candidate.id,
@@ -229,13 +251,17 @@ async function submitEmployerPublicIntake(input) {
         employerLeadId: data.id,
     });
     const socialLinks = buildSocialLinks();
-    const whatsappNotified = await sendWhatsAppLines(input.phone, [
-        'Your employer portal is ready.',
-        `Dashboard: ${account.dashboardUrl}`,
-        `Login Email: ${input.email.trim().toLowerCase()}`,
-        account.password ? `Temporary Password: ${account.password}` : 'Use your existing password to log in.',
-        buildSocialLinksMessage(),
-    ]).catch(() => false);
+    // Immediate: portal access + credentials
+    const immediateLines = [
+        `✅ *Welcome, ${input.contactName.trim().split(' ')[0]}!* Your Falisha employer portal is ready.`,
+        '',
+        `🔗 *Dashboard:* ${account.dashboardUrl}`,
+        `📧 *Login Email:* ${input.email.trim().toLowerCase()}`,
+        account.password
+            ? `🔑 *Temporary Password:* ${account.password}\n_Please change this after your first login._`
+            : '🔓 Use your existing password to log in.',
+    ];
+    const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
     return {
         leadId: data.id,
         dashboardUrl: account.dashboardUrl,
@@ -276,13 +302,17 @@ async function submitPartnerPublicIntake(input) {
         partnerApplicationId: data.id,
     });
     const socialLinks = buildSocialLinks();
-    const whatsappNotified = await sendWhatsAppLines(input.phone, [
-        'Your partner portal is ready.',
-        `Dashboard: ${account.dashboardUrl}`,
-        `Login Email: ${input.email.trim().toLowerCase()}`,
-        account.password ? `Temporary Password: ${account.password}` : 'Use your existing password to log in.',
-        buildSocialLinksMessage(),
-    ]).catch(() => false);
+    // Immediate: portal access + credentials
+    const immediateLines = [
+        `✅ *Welcome, ${input.applicantName.trim().split(' ')[0]}!* Your Falisha partner portal is ready.`,
+        '',
+        `🔗 *Dashboard:* ${account.dashboardUrl}`,
+        `📧 *Login Email:* ${input.email.trim().toLowerCase()}`,
+        account.password
+            ? `🔑 *Temporary Password:* ${account.password}\n_Please change this after your first login._`
+            : '🔓 Use your existing password to log in.',
+    ];
+    const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
     return {
         applicationId: data.id,
         dashboardUrl: account.dashboardUrl,

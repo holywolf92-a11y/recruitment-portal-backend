@@ -28,6 +28,7 @@
     "eval:whatsapp-grounding:dist": "node dist/scripts/runWhatsAppGroundingEval.js",
     "eval:whatsapp-grounding": "npm run build:compile && npm run eval:whatsapp-grounding:dist",
     "report:whatsapp-baseline": "npm run build:compile && node dist/scripts/runWhatsAppBaselineReport.js",
+    "backfill:whatsapp-pdf": "npm run build:compile && node dist/scripts/runWhatsAppHistoricalPdfImport.js",
     "test:split-upload": "node scripts/testSplitUpload.js",
     "check-endpoints": "node scripts/checkEndpoints.js",
     "check-endpoints:list": "node scripts/checkEndpoints.js --list"

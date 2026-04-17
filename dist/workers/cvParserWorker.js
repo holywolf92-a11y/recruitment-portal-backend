@@ -509,8 +509,10 @@ function startCvParserWorker() {
                 .eq('id', inboxMessageId)
                 .maybeSingle();
             const payload = msg?.payload || {};
+            const bridgeBackfill = payload?.bridgeMetadata?.rawFields?.backfill === 'true'
+                || payload?.raw?.bridgeMetadata?.rawFields?.backfill === 'true';
             return {
-                backfill: payload.backfill === true,
+                backfill: payload.backfill === true || bridgeBackfill,
                 inbox_account: payload.inbox_account === 2 ? 2 : 1,
             };
         }

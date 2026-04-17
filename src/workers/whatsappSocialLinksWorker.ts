@@ -3,6 +3,7 @@ import { redis } from '../config/redis';
 import { createLogger } from '../utils/errorHandling';
 import { sendText } from '../services/whatsappInteractiveService';
 import { normalizePhoneE164 } from '../services/candidateService';
+import { supabaseAdminClient } from '../config/database';
 
 const logger = createLogger('WhatsAppSocialLinksWorker');
 
@@ -11,12 +12,40 @@ export interface WhatsAppSocialLinksJobData {
   phone: string;
   /** Pre-built message text to send (already formatted with emojis) */
   message: string;
+  /** Intended audience for the queued follow-up. */
+  recipientRole?: 'candidate' | 'employer' | 'partner';
 }
 
 function toRecipient(phone: string): string | null {
   const normalized = normalizePhoneE164(phone.trim()) || phone.trim();
   const digits = normalized.replace(/\D/g, '');
   return digits || null;
+}
+
+async function candidateExistsForPhone(phone: string): Promise<boolean> {
+  const normalized = normalizePhoneE164(phone.trim()) || phone.trim();
+  const digits = normalized.replace(/\D/g, '');
+  if (!digits) {
+    return false;
+  }
+
+  const db = supabaseAdminClient();
+  const { data, error } = await db
+    .from('candidates')
+    .select('id')
+    .or(`phone.eq.${normalized},phone.ilike.%${digits}%`)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    logger.warn('Failed to verify candidate recipient for social-links job', {
+      phone,
+      error: error.message,
+    });
+    return false;
+  }
+
+  return Boolean(data?.id);
 }
 
 export function startWhatsAppSocialLinksWorker() {
@@ -34,6 +63,25 @@ export function startWhatsAppSocialLinksWorker() {
       const recipient = toRecipient(job.data.phone);
       if (!recipient) {
         logger.warn('Skipping social-links message — invalid phone', { jobId: job.id, phone: job.data.phone });
+        return;
+      }
+
+      const intendedRole = job.data.recipientRole;
+      if (intendedRole && intendedRole !== 'candidate') {
+        logger.info('Skipping social-links message — recipient role is not candidate', {
+          jobId: job.id,
+          recipient,
+          recipientRole: intendedRole,
+        });
+        return;
+      }
+
+      const isCandidateRecipient = await candidateExistsForPhone(job.data.phone);
+      if (!isCandidateRecipient) {
+        logger.info('Skipping social-links message — no matching candidate application found', {
+          jobId: job.id,
+          recipient,
+        });
         return;
       }
 

@@ -74,10 +74,13 @@ async function main() {
     if (process.env.WHATSAPP_ACCESS_TOKEN) {
         const { startWhatsAppMediaWorker } = await Promise.resolve().then(() => __importStar(require('./workers/whatsappMediaWorker')));
         const { startWhatsAppCandidateReminderWorker } = await Promise.resolve().then(() => __importStar(require('./workers/whatsappCandidateReminderWorker')));
+        const { startWhatsAppSocialLinksWorker } = await Promise.resolve().then(() => __importStar(require('./workers/whatsappSocialLinksWorker')));
         startWhatsAppMediaWorker();
         startedWorkers.push('whatsapp-media');
         startWhatsAppCandidateReminderWorker();
         startedWorkers.push('whatsapp-candidate-reminders');
+        startWhatsAppSocialLinksWorker();
+        startedWorkers.push('whatsapp-social-links');
     }
     else {
         logger.warn('Skipping WhatsApp media worker (WHATSAPP_ACCESS_TOKEN missing)');

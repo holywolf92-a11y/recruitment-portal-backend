@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.whatsappAttachmentVerificationQueue = exports.whatsappMediaQueue = exports.documentVerificationQueue = exports.cvParsingQueue = void 0;
+exports.whatsappSocialLinksQueue = exports.whatsappAttachmentVerificationQueue = exports.whatsappMediaQueue = exports.documentVerificationQueue = exports.cvParsingQueue = void 0;
 const bullmq_1 = require("bullmq");
 // ---------------------------------------------------------------------------
 // Lazy Queue instances
@@ -37,3 +37,5 @@ exports.documentVerificationQueue = lazyQueue('document-verification');
 exports.whatsappMediaQueue = lazyQueue('whatsapp-media');
 // Identity-first WhatsApp flow: verify/extract identity from inbox_attachments BEFORE linking/binding.
 exports.whatsappAttachmentVerificationQueue = lazyQueue('whatsapp-attachment-verification');
+// Delayed social-link follow-up messages sent 3 minutes after registration.
+exports.whatsappSocialLinksQueue = lazyQueue('whatsapp-social-links');

@@ -27,6 +27,7 @@ type CandidatePublicIntakeInput = {
   skills?: string;
   languages?: string;
   additionalInfo?: string;
+  comments?: string;
 };
 
 type EmployerPublicIntakeInput = {
@@ -97,13 +98,24 @@ function buildSocialLinksMessage(): string {
   return lines.join('\n');
 }
 
+function buildCandidateAdditionalInfo(input: CandidatePublicIntakeInput): string | undefined {
+  const parts = [input.additionalInfo?.trim(), input.comments?.trim()]
+    .filter((value): value is string => Boolean(value));
+
+  if (parts.length === 0) {
+    return undefined;
+  }
+
+  return Array.from(new Set(parts)).join('\n\n');
+}
+
 async function enqueueSocialLinks(phone: string | undefined | null) {
   if (!phone) return;
   const DELAY_MS = 3 * 60 * 1000; // 3 minutes
   try {
     await whatsappSocialLinksQueue.add(
       'send-social-links',
-      { phone, message: buildSocialLinksMessage() },
+      { phone, message: buildSocialLinksMessage(), recipientRole: 'candidate' },
       { delay: DELAY_MS, attempts: 2, backoff: { type: 'fixed', delay: 30_000 } }
     );
   } catch {
@@ -241,6 +253,8 @@ async function ensurePortalAccount(args: {
 }
 
 export async function submitCandidatePublicIntake(input: CandidatePublicIntakeInput, cvFile?: Express.Multer.File | null) {
+  const additionalInfo = buildCandidateAdditionalInfo(input);
+
   const candidatePayload: CreateCandidateData = {
     name: input.fullName.trim(),
     email: input.email.trim().toLowerCase(),
@@ -256,7 +270,7 @@ export async function submitCandidatePublicIntake(input: CandidatePublicIntakeIn
     auto_extracted: false,
     skills: input.skills?.trim() || undefined,
     languages: input.languages?.trim() || undefined,
-    professional_summary: input.additionalInfo?.trim() || undefined,
+    professional_summary: additionalInfo,
     experience_years: input.experience ? Number.parseInt(input.experience, 10) || undefined : undefined,
   };
 
@@ -281,7 +295,7 @@ export async function submitCandidatePublicIntake(input: CandidatePublicIntakeIn
     onboardingLink ? `🔗 Complete your profile here:\n${onboardingLink}` : '',
   ]).catch(() => false);
 
-  // Delayed: social links 3 minutes later
+  // Delayed: social links 3 minutes later, but only for completed candidate applications
   await enqueueSocialLinks(input.phone);
 
   return {
@@ -344,9 +358,6 @@ export async function submitEmployerPublicIntake(input: EmployerPublicIntakeInpu
   ];
   const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
 
-  // Delayed: social links 3 minutes later
-  await enqueueSocialLinks(input.phone);
-
   return {
     leadId: data.id,
     dashboardUrl: account.dashboardUrl,
@@ -403,9 +414,6 @@ export async function submitPartnerPublicIntake(input: PartnerPublicIntakeInput)
       : '🔓 Use your existing password to log in.',
   ];
   const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
-
-  // Delayed: social links 3 minutes later
-  await enqueueSocialLinks(input.phone);
 
   return {
     applicationId: data.id,

@@ -12,6 +12,7 @@ const errorHandling_2 = require("../utils/errorHandling");
 const whatsappInboxService_1 = require("../services/whatsappInboxService");
 const queue_1 = require("../config/queue");
 const whatsappBotService_1 = require("../services/whatsappBotService");
+const whatsappBotStateService_1 = require("../services/whatsappBotStateService");
 /** Extract interactive button/list selection from the raw webhook payload. */
 function extractInteractiveData(body) {
     try {
@@ -37,11 +38,23 @@ const INTERNAL_NUMBERS = new Set([
     '923451897011',
     '923465028305',
 ]);
+// ── Developer / tester numbers — always get full bot experience ───────────────
+// These numbers are used to test all flows (job seeker, partner, employer).
+// The webhook auto-resets them to AI mode on every message so they never get
+// stuck in 'human' takeover mode accidentally.
+const DEVELOPER_NUMBERS = new Set([
+    '46727676973', // Developer test number — tests job seeker / partner / employer flows
+    '923303333335', // Owner test number — should always receive AI/bot replies for live testing
+]);
 function isInternalNumber(phone) {
     const normalized = phone.replace(/^\+/, '').trim();
     // Also handle if number is stored as 0xxx (convert to 92xxx Pakistan format)
     const withCountry = normalized.startsWith('0') ? '92' + normalized.slice(1) : normalized;
     return INTERNAL_NUMBERS.has(normalized) || INTERNAL_NUMBERS.has(withCountry);
+}
+function isDeveloperNumber(phone) {
+    const normalized = phone.replace(/^\+/, '').trim();
+    return DEVELOPER_NUMBERS.has(normalized);
 }
 const router = (0, express_1.Router)();
 const logger = (0, errorHandling_1.createLogger)('WhatsAppRoute');
@@ -267,6 +280,24 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, errorHandling
         }
         return res.status(200).json({ status: 'internal_number' });
     }
+    // ── Developer number auto-reset — ensure AI/bot always responds ──────────────
+    // If a dev/tester number somehow got stuck in human takeover mode, reset it
+    // transparently so they can keep testing all bot flows without needing a DB fix.
+    if (effectiveFrom && isDeveloperNumber(effectiveFrom) && conversationForReply?.reply_mode !== 'ai') {
+        try {
+            const db = (0, database_1.supabaseAdminClient)();
+            await db
+                .from('whatsapp_conversations')
+                .update({ reply_mode: 'ai', taken_over_by: null, taken_over_at: null })
+                .eq('phone_number', effectiveFrom);
+            if (conversationForReply)
+                conversationForReply.reply_mode = 'ai';
+            logger.info('Auto-reset developer number conversation to AI mode', { from: effectiveFrom });
+        }
+        catch (err) {
+            logger.warn('Failed to auto-reset dev number (non-fatal)', { err: err instanceof Error ? err.message : String(err) });
+        }
+    }
     // ── WhatsApp Bot intercept (text, interactive buttons/lists, and media in active flows) ──
     // Called BEFORE the AI reply so the bot can handle any message type.
     // Returns true → skip AI reply entirely.
@@ -319,10 +350,84 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, errorHandling
     // Only when conversation is in AI mode and the bot did not handle the message.
     if (!botHandledMessage && conversationForReply?.reply_mode === 'ai' && (0, whatsappAIService_1.shouldReplyWithAI)(messageData)) {
         try {
-            const aiReply = await (0, whatsappAIService_1.generateWhatsAppReply)({
+            let messageHistory = [];
+            if (conversationForReply?.id) {
+                try {
+                    const history = await (0, whatsappInboxService_1.listMessages)(conversationForReply.id, { limit: 10 });
+                    const recent = history.messages
+                        .filter((message) => message.message_type === 'text' && !!message.body)
+                        .filter((message) => {
+                        const body = String(message.body || '').trim();
+                        return body && !body.startsWith('[buttons]') && !body.startsWith('[list]') && !body.startsWith('[template:');
+                    })
+                        .slice(-8)
+                        .map((message) => ({
+                        role: message.direction === 'inbound' ? 'user' : 'assistant',
+                        content: String(message.body || '').trim(),
+                    }));
+                    const currentText = String(messageData.text || '').trim();
+                    if (recent.length > 0) {
+                        const last = recent[recent.length - 1];
+                        if (last.role === 'user' && last.content === currentText) {
+                            recent.pop();
+                        }
+                    }
+                    messageHistory = recent;
+                }
+                catch (historyErr) {
+                    logger.warn('Failed to load WhatsApp history for AI context (non-fatal)', {
+                        err: historyErr instanceof Error ? historyErr.message : String(historyErr),
+                        conversationId: conversationForReply.id,
+                    });
+                }
+            }
+            // ── Resolve full person record from Supabase ─────────────────────────
+            const botState = await (0, whatsappBotStateService_1.getBotState)(effectiveFrom || '').catch(() => null);
+            const personCtx = await (0, whatsappAIService_1.resolvePersonContext)(effectiveFrom || '').catch(() => ({
+                role: null,
+                name: null,
+            }));
+            // If bot has a name collected mid-flow, prefer it
+            if (botState?.data?.name && !personCtx.name) {
+                personCtx.name = String(botState.data.name);
+            }
+            // ── End resolution ───────────────────────────────────────────────────
+            const replyDecision = (0, whatsappAIService_1.decideWhatsAppReply)({
                 from: effectiveFrom || '',
                 text: messageData.text || '',
+                personCtx,
+                botFlow: botState?.flow ?? null,
+                messageHistory,
+                conversationId: conversationForReply?.id ?? null,
             });
+            let aiReply = replyDecision.reply;
+            if (replyDecision.action === 'ai') {
+                aiReply = await (0, whatsappAIService_1.generateWhatsAppReply)({
+                    from: effectiveFrom || '',
+                    text: messageData.text || '',
+                    personCtx,
+                    botFlow: botState?.flow ?? null,
+                    messageHistory,
+                    conversationId: conversationForReply?.id ?? null,
+                });
+            }
+            if (replyDecision.shouldSwitchToHuman && conversationForReply?.id) {
+                try {
+                    const db = (0, database_1.supabaseAdminClient)();
+                    await db
+                        .from('whatsapp_conversations')
+                        .update({ reply_mode: 'human', taken_over_by: null, taken_over_at: new Date().toISOString() })
+                        .eq('id', conversationForReply.id);
+                    conversationForReply.reply_mode = 'human';
+                }
+                catch (handoffErr) {
+                    logger.warn('Failed to auto-switch WhatsApp conversation to human mode (non-fatal)', {
+                        err: handoffErr instanceof Error ? handoffErr.message : String(handoffErr),
+                        conversationId: conversationForReply.id,
+                        reason: replyDecision.escalationReason,
+                    });
+                }
+            }
             // Send the AI-generated reply
             if (messageData.from && aiReply) {
                 const sendRes = await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, messageData.from, aiReply);

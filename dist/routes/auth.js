@@ -252,6 +252,24 @@ router.patch('/portal-profile', auth_1.authenticate, async (req, res) => {
                     throw employerUpdateError;
                 }
             }
+            else {
+                // No employer_lead yet — create a shell record so Company Profile and requirements work
+                const createPayload = {
+                    user_id: user.id,
+                    email: employerUpdates.email || updatedUser.email || user.email || null,
+                    phone_number: employerUpdates.phone_number || null,
+                    company_name: employerUpdates.company_name || null,
+                    contact_name: employerUpdates.contact_name || updatedUser.name || null,
+                    country: employerUpdates.country || null,
+                    city: employerUpdates.city || null,
+                    status: 'New',
+                };
+                const { error: createError } = await supabase.from('employer_leads').insert(createPayload);
+                if (createError) {
+                    console.error('Failed to create employer_lead shell:', createError.message);
+                    // non-fatal — profile update still succeeded
+                }
+            }
         }
         const refreshedProfile = await (0, userService_1.getPortalProfile)(user.id);
         return res.json({
@@ -263,6 +281,103 @@ router.patch('/portal-profile', auth_1.authenticate, async (req, res) => {
     catch (error) {
         console.error('Error updating portal profile:', error);
         return res.status(500).json({ error: error.message || 'Failed to update portal profile' });
+    }
+});
+// ── Employer: list all requirements ──────────────────────────────────────────
+router.get('/portal-requirements', auth_1.authenticate, async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user)
+            return res.status(401).json({ error: 'Unauthorized' });
+        if (user.role !== 'employer')
+            return res.status(403).json({ error: 'Only employer accounts can access requirements' });
+        const db = (0, database_1.supabaseAdminClient)();
+        const { data: userData } = await db.from('users').select('email').eq('id', user.id).single();
+        const email = userData?.email || '';
+        const query = db
+            .from('employer_leads')
+            .select('*')
+            .order('created_at', { ascending: false });
+        if (email) {
+            query.or(`user_id.eq.${user.id},email.eq.${email}`);
+        }
+        else {
+            query.eq('user_id', user.id);
+        }
+        const { data: requirements, error } = await query;
+        if (error)
+            throw error;
+        return res.json({ requirements: requirements || [] });
+    }
+    catch (error) {
+        console.error('Error listing employer requirements:', error);
+        return res.status(500).json({ error: error.message || 'Failed to list requirements' });
+    }
+});
+// ── Employer: post new requirement ───────────────────────────────────────────
+router.post('/portal-requirements', auth_1.authenticate, async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user)
+            return res.status(401).json({ error: 'Unauthorized' });
+        if (user.role !== 'employer')
+            return res.status(403).json({ error: 'Only employer accounts can post requirements' });
+        const db = (0, database_1.supabaseAdminClient)();
+        const { data: userData } = await db.from('users').select('email, name, phone').eq('id', user.id).single();
+        // Look up employer_lead by user_id first, then fall back to email match
+        let lead = null;
+        const { data: leadByUserId } = await db
+            .from('employer_leads')
+            .select('company_name, contact_name, email, phone_number')
+            .eq('user_id', user.id)
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        if (leadByUserId) {
+            lead = leadByUserId;
+        }
+        else if (userData?.email) {
+            const { data: leadByEmail } = await db
+                .from('employer_leads')
+                .select('company_name, contact_name, email, phone_number')
+                .eq('email', userData.email)
+                .order('updated_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+            lead = leadByEmail || null;
+        }
+        const { professions, quantity, country, city, salary_range, duty_hours, contract_duration, benefits_included, comments } = req.body;
+        if (!professions || !String(professions).trim()) {
+            return res.status(400).json({ error: 'Role / professions required is required' });
+        }
+        const { data: requirement, error } = await db
+            .from('employer_leads')
+            .insert({
+            company_name: lead?.company_name || null,
+            contact_name: lead?.contact_name || userData?.name || null,
+            email: lead?.email || userData?.email || null,
+            phone_number: lead?.phone_number || userData?.phone || null,
+            user_id: user.id,
+            country: country ? String(country).trim() : null,
+            city: city ? String(city).trim() : null,
+            professions: String(professions).trim(),
+            quantity: quantity ? String(quantity).trim() : null,
+            salary_range: salary_range ? String(salary_range).trim() : null,
+            duty_hours: duty_hours ? String(duty_hours).trim() : null,
+            contract_duration: contract_duration ? String(contract_duration).trim() : null,
+            benefits_included: benefits_included ? String(benefits_included).trim() : null,
+            comments: comments ? String(comments).trim() : null,
+            status: 'New',
+        })
+            .select()
+            .single();
+        if (error)
+            throw error;
+        return res.status(201).json({ requirement });
+    }
+    catch (error) {
+        console.error('Error creating employer requirement:', error);
+        return res.status(500).json({ error: error.message || 'Failed to create requirement' });
     }
 });
 router.post('/candidate-profile/bootstrap', auth_1.authenticate, async (req, res) => {

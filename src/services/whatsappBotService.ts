@@ -17,6 +17,7 @@
 import { supabaseAdminClient } from '../config/database';
 import { createLogger } from '../utils/errorHandling';
 import { createCandidate, normalizePhoneE164, updateCandidate } from './candidateService';
+import { whatsappSocialLinksQueue } from '../config/queue';
 import { DocumentLinkService } from './documentLinkService';
 import { getBotState, setBotState, patchBotData, resetBotState, BotState } from './whatsappBotStateService';
 import { sendText, sendButtons, sendList, WaButton, WaListSection } from './whatsappInteractiveService';
@@ -393,7 +394,11 @@ async function sendPortalEntryLink(
     convId,
     [details.title, '', details.intro, portalUrl, '', 'You can type menu anytime to return here.'].join('\n'),
   );
-  await tx(phoneNumberId, accessToken, to, convId, buildSocialLinksMessage());
+  // For candidates: social links are sent automatically after they submit the application form.
+  // For employer/partner: send social links immediately.
+  if (audience !== 'candidate') {
+    await tx(phoneNumberId, accessToken, to, convId, buildSocialLinksMessage());
+  }
   await promptStep(
     phoneNumberId,
     accessToken,
@@ -811,13 +816,29 @@ async function finalizeCandidateFlow(
       ].join('\n'),
     );
   }
-  await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
+  // Schedule social links 15 minutes after WhatsApp intake submission
+  try {
+    await whatsappSocialLinksQueue.add(
+      'send-social-links',
+      { phone: state.phoneNumber, message: buildSocialLinksMessage(), recipientRole: 'candidate' },
+      { delay: 15 * 60 * 1000, attempts: 2, backoff: { type: 'fixed', delay: 30_000 } },
+    );
+  } catch { /* non-critical */ }
   await promptStep(
     phoneNumberId,
     accessToken,
     state.phoneNumber,
     state.conversationId,
     'You are all set.',
+    [
+      { id: 'main_menu', title: 'Main Menu' },
+      { id: 'talk_human', title: 'Talk to Human' },
+    ],
+    ['main_menu', 'talk_human'],
+    'Falisha',
+  );
+  await resetBotState(state.phoneNumber);
+}
     [
       { id: 'main_menu', title: 'Main Menu' },
       { id: 'talk_human', title: 'Talk to Human' },

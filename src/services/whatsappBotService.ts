@@ -394,10 +394,15 @@ async function sendPortalEntryLink(
     convId,
     [details.title, '', details.intro, portalUrl, '', 'You can type menu anytime to return here.'].join('\n'),
   );
-  // For candidates: social links are sent automatically after they submit the application form.
-  // For employer/partner: send social links immediately.
-  if (audience !== 'candidate') {
-    await tx(phoneNumberId, accessToken, to, convId, buildSocialLinksMessage());
+  // Social links: candidates get them after form submission, partners after 15 min delay, employers never.
+  if (audience === 'partner') {
+    try {
+      await whatsappSocialLinksQueue.add(
+        'send-social-links',
+        { phone: to, message: buildSocialLinksMessage(), recipientRole: 'partner' },
+        { delay: 15 * 60 * 1000, attempts: 2, backoff: { type: 'fixed', delay: 30_000 } },
+      );
+    } catch { /* non-critical */ }
   }
   await promptStep(
     phoneNumberId,
@@ -1033,13 +1038,8 @@ async function finalizeEmployerFlow(
       `Comments: ${data.comments || 'None'}`,
     ].join('\n'),
   );
-  await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
-  await promptStep(
-    phoneNumberId,
-    accessToken,
-    state.phoneNumber,
-    state.conversationId,
-    'Our team will contact you shortly.',
+  // No social links for employers
+  await promptStep(,
     [
       { id: 'main_menu', title: 'Main Menu' },
       { id: 'talk_human', title: 'Talk to Human' },
@@ -1223,7 +1223,14 @@ async function finalizePartnerFlow(
       'After login you can access the partner dashboard and submit candidates.',
     ].join('\n'),
   );
-  await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
+  // Schedule social links 15 minutes after partner submission
+  try {
+    await whatsappSocialLinksQueue.add(
+      'send-social-links',
+      { phone: state.phoneNumber, message: buildSocialLinksMessage(), recipientRole: 'partner' },
+      { delay: 15 * 60 * 1000, attempts: 2, backoff: { type: 'fixed', delay: 30_000 } },
+    );
+  } catch { /* non-critical */ }
   await promptStep(
     phoneNumberId,
     accessToken,

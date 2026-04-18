@@ -67,8 +67,8 @@ export function startWhatsAppSocialLinksWorker() {
       }
 
       const intendedRole = job.data.recipientRole;
-      if (intendedRole && intendedRole !== 'candidate') {
-        logger.info('Skipping social-links message — recipient role is not candidate', {
+      if (intendedRole && intendedRole !== 'candidate' && intendedRole !== 'partner') {
+        logger.info('Skipping social-links message — recipient role is employer', {
           jobId: job.id,
           recipient,
           recipientRole: intendedRole,
@@ -76,13 +76,18 @@ export function startWhatsAppSocialLinksWorker() {
         return;
       }
 
-      const isCandidateRecipient = await candidateExistsForPhone(job.data.phone);
-      if (!isCandidateRecipient) {
-        logger.info('Skipping social-links message — no matching candidate application found', {
-          jobId: job.id,
-          recipient,
-        });
-        return;
+      // For candidates, verify a matching application exists before sending.
+      // For partners, trust the queue entry directly.
+      if (!intendedRole || intendedRole === 'candidate') {
+        const isCandidateRecipient = await candidateExistsForPhone(job.data.phone);
+        if (!isCandidateRecipient) {
+          logger.info('Skipping social-links message — no matching candidate application found', {
+            jobId: job.id,
+            recipient,
+          });
+          return;
+        }
+      }
       }
 
       logger.info('Sending delayed social-links message', { jobId: job.id, recipient });

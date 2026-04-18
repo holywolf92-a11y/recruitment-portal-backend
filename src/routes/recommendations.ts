@@ -4,33 +4,71 @@ import { supabaseAdminClient } from '../config/database';
 const router = Router();
 
 // ─── Match Score ──────────────────────────────────────────────────────────────
-// Base 55, position match +35, country match +20, skills match +10 each (max 3).
+// Scoring (max 100):
+//   Profession specialty match:  all specialty words match → +50, any → +25, none → +0
+//   Country match:               +20
+//   Skills match:                +10 per matching skill, max 3 → +30
+//
+// "Specialty words" = profession words that are NOT generic title words.
+// This prevents "engineer" alone matching every engineering profession.
 // Admin can override any score after recommendation.
 
-function computeMatchScore(candidate: Record<string, any>, job: Record<string, any>): number {
-  let score = 55;
+const GENERIC_TITLE_WORDS = new Set([
+  'engineer', 'manager', 'officer', 'supervisor', 'technician', 'specialist',
+  'assistant', 'coordinator', 'executive', 'director', 'analyst', 'consultant',
+  'worker', 'staff', 'operator', 'inspector', 'helper', 'admin', 'administrator',
+  'head', 'lead', 'senior', 'junior', 'general', 'chief', 'associate', 'deputy',
+  'foreman', 'incharge', 'charge', 'controller', 'planner', 'estimator',
+]);
 
-  const jobText = ((job.professions || '') + ' ' + (job.comments || '')).toLowerCase();
+function extractSpecialtyWords(text: string): string[] {
+  const words = text
+    .toLowerCase()
+    .split(/[\s,;/()&+]+/)
+    .map((w: string) => w.replace(/[^a-z]/g, ''))
+    .filter((w: string) => w.length > 2 && !GENERIC_TITLE_WORDS.has(w));
+  return [...new Set(words)];
+}
+
+function computeMatchScore(candidate: Record<string, any>, job: Record<string, any>): number {
+  let score = 0;
+
+  const jobProfession = (job.professions || '').toLowerCase();
+  const jobText = (jobProfession + ' ' + (job.comments || '')).toLowerCase();
   const candidatePosition = (candidate.position || '').toLowerCase();
   const candidateSkills = (candidate.skills || '').toLowerCase();
   const candidateCountry = (candidate.country_of_interest || '').toLowerCase();
   const jobCountry = (job.country || '').toLowerCase();
 
-  // Position match: +35
-  const jobWords = jobText.split(/[\s,;/]+/).filter((w: string) => w.length > 3);
-  const positionWords = candidatePosition.split(/[\s,;/]+/).filter((w: string) => w.length > 3);
-  const positionMatch =
-    positionWords.some((w: string) => jobText.includes(w)) ||
-    jobWords.some((w: string) => candidatePosition.includes(w));
-  if (positionMatch) score += 35;
+  // ── Profession match (0 / 25 / 50) ────────────────────────────────────────
+  // Extract specialty words from the job's required profession.
+  let specialtyWords = extractSpecialtyWords(jobProfession);
+  // If profession is purely generic (e.g. "Manager"), fall back to all words.
+  if (specialtyWords.length === 0) {
+    specialtyWords = jobProfession
+      .split(/[\s,;/]+/)
+      .map((w: string) => w.trim())
+      .filter((w: string) => w.length > 2);
+  }
 
-  // Country match: +20
+  if (specialtyWords.length > 0) {
+    const allMatch = specialtyWords.every((w: string) => candidatePosition.includes(w));
+    const anyMatch = specialtyWords.some((w: string) => candidatePosition.includes(w));
+    if (allMatch) {
+      score += 50;   // Exact profession match — e.g. "chemical" in "chemical engineer"
+    } else if (anyMatch) {
+      score += 25;   // Partial match — at least one specialty word overlaps
+    }
+    // Zero if no specialty word found in candidate position
+  }
+
+  // ── Country match (+20) ────────────────────────────────────────────────────
   if (jobCountry && candidateCountry && jobCountry === candidateCountry) score += 20;
 
-  // Skills match: +10 per skill, max 3
+  // ── Skills match (+10 per skill, max 3 = +30) ──────────────────────────────
   const skillList = candidateSkills
     .split(/[,;]+/)
-    .map((s: string) => s.trim())
+    .map((s: string) => s.trim().toLowerCase())
     .filter((s: string) => s.length > 3);
   let skillMatches = 0;
   for (const skill of skillList) {
@@ -60,11 +98,15 @@ router.get('/pool-count/:jobId', async (req: Request, res: Response) => {
 
     if (!job) return res.json({ count: 15 });
 
-    const professions = (job.professions || '').toLowerCase();
-    const keywords = professions
-      .split(/[\s,;/]+/)
-      .filter((w: string) => w.length > 2)
-      .slice(0, 2);
+    // Use specialty words only — avoids counting all 'engineers' for a specific discipline
+    let keywords = extractSpecialtyWords(job.professions || '').slice(0, 2);
+    if (keywords.length === 0) {
+      keywords = (job.professions || '')
+        .toLowerCase()
+        .split(/[\s,;/]+/)
+        .filter((w: string) => w.length > 2)
+        .slice(0, 2);
+    }
 
     if (keywords.length === 0) return res.json({ count: 15 });
 
@@ -101,23 +143,29 @@ router.get('/job/:jobId/candidates', async (req: Request, res: Response) => {
 
     if (jobErr || !job) return res.status(404).json({ error: 'Job not found' });
 
-    const professions = (job.professions || '').toLowerCase();
-    const keywords = professions
+    // Prefer specialty words for filtering; fall back to all profession words only if none.
+    // This ensures 'chemical engineer' jobs don't pull in all engineers.
+    let keywords = extractSpecialtyWords(job.professions || '').slice(0, 3);
+    const fullProfessionKeywords = (job.professions || '')
+      .toLowerCase()
       .split(/[\s,;/]+/)
       .filter((w: string) => w.length > 2)
       .slice(0, 3);
+    if (keywords.length === 0) keywords = fullProfessionKeywords;
 
     let query = db
       .from('candidates')
       .select('id, name, position, skills, experience_years, country_of_interest, profile_photo_url, candidate_code, professional_summary')
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(150);
 
     if (search) {
       query = query.or(
         `position.ilike.%${search}%,skills.ilike.%${search}%,name.ilike.%${search}%`
       );
     } else if (keywords.length > 0) {
+      // Primary: match specialty words in position (strict)
+      // Also include skills matches so admins can find cross-discipline candidates if needed
       const orParts = keywords.flatMap((kw: string) => [
         `position.ilike.%${kw}%`,
         `skills.ilike.%${kw}%`,

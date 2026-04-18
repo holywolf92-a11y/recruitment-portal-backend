@@ -544,7 +544,7 @@ async function switchToHuman(
 
   await tx(
     phoneNumberId, accessToken, to, convId,
-    '👤 Got it! We have connected you to our team. A representative will reply shortly.\n\nThank you for your patience.',
+    'Dear Valued Customer,\n\nFor any information or assistance, please feel free to contact us:\n\n📞 0300-5547806\n📞 0300-5787762\n📞 051-4927145-6\n📧 Support@falishajobs.com\n\n📍 Office No. 10, 11 & 12, 1st Floor, Umer Farooq Plaza, Murree Road, Chandni Chowk, Rawalpindi, Pakistan\nNear Mezan Bank\nLocation link\nhttps://maps.app.goo.gl/bA7XTJzFKaRb9BgB8?g_st=ig\n\nWe are always here to assist you.\n\nBest regards,\nFalisha Jobs Team',
   );
 }
 

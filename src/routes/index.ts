@@ -27,6 +27,7 @@ import gmailAdminRoutes from './gmailAdmin';
 import reviewRoutes from './reviewRoutes';
 import onboardingRoutes from './onboarding';
 import publicPortalRoutes from './publicPortal';
+import recommendationsRoutes from './recommendations';
 import { getWorkerStatus } from '../controllers/workerStatusController';
 
 const router = Router();
@@ -59,6 +60,7 @@ router.use('/gmail-admin', gmailAdminRoutes);
 router.use('/review', reviewRoutes);
 router.use('/onboarding', onboardingRoutes);
 router.use('/public-portal', publicPortalRoutes);
+router.use('/recommendations', recommendationsRoutes);
 router.get('/worker-status', getWorkerStatus);
 
 export default router;

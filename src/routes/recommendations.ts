@@ -3,83 +3,145 @@ import { supabaseAdminClient } from '../config/database';
 
 const router = Router();
 
-// ─── Match Score ──────────────────────────────────────────────────────────────
-// Scoring (max 100):
-//   Profession specialty match:  all specialty words match → +50, any → +25, none → +0
-//   Country match:               +20
-//   Skills match:                +10 per matching skill, max 3 → +30
+// ─── Industry-Standard ATS Match Scoring ─────────────────────────────────────
 //
-// "Specialty words" = profession words that are NOT generic title words.
-// This prevents "engineer" alone matching every engineering profession.
-// Admin can override any score after recommendation.
+// Based on Jobscan recruiter survey data (99.7% recruiter response rate):
+//   76.4% filter by Skills        → skills carry most weight
+//   55.3% filter by Job Title     → exact title is critical
+//   44.3% filter by Experience    → years matter
+//   43.4% filter by Location      → country/destination
+//
+// Score breakdown (max 100):
+//   Job Title match:   0–30 pts   (exact/specialty/partial/none)
+//   Skills match:      0–35 pts   (7 pts per skill match, up to 5 skills)
+//   Experience match:  0–20 pts   (meets requirement = 20, unknown = 10, below = 5)
+//   Location match:    0–15 pts   (exact country = 15)
+//
+// Admin can always override a candidate's score after recommendation.
 
+// ── Title-level generic words ─────────────────────────────────────────────────
+// Words that appear in many profession titles and carry NO discriminating value.
+// "engineer" alone cannot distinguish chemical from civil from electrical.
 const GENERIC_TITLE_WORDS = new Set([
   'engineer', 'manager', 'officer', 'supervisor', 'technician', 'specialist',
   'assistant', 'coordinator', 'executive', 'director', 'analyst', 'consultant',
   'worker', 'staff', 'operator', 'inspector', 'helper', 'admin', 'administrator',
   'head', 'lead', 'senior', 'junior', 'general', 'chief', 'associate', 'deputy',
-  'foreman', 'incharge', 'charge', 'controller', 'planner', 'estimator',
+  'foreman', 'incharge', 'incharg', 'charge', 'controller', 'planner', 'estimator',
+  'the', 'and', 'for', 'with', 'of', 'in', 'at', 'to',
 ]);
 
-function extractSpecialtyWords(text: string): string[] {
-  const words = text
-    .toLowerCase()
-    .split(/[\s,;/()&+]+/)
-    .map((w: string) => w.replace(/[^a-z]/g, ''))
-    .filter((w: string) => w.length > 2 && !GENERIC_TITLE_WORDS.has(w));
-  return [...new Set(words)];
+// Normalize a title string: lowercase, strip punctuation, dedupe words
+function normalizeTitle(text: string): string[] {
+  return [...new Set(
+    text.toLowerCase()
+      .split(/[\s,;/()&+\-]+/)
+      .map((w: string) => w.replace(/[^a-z0-9]/g, ''))
+      .filter((w: string) => w.length > 1)
+  )];
 }
 
-function computeMatchScore(candidate: Record<string, any>, job: Record<string, any>): number {
-  let score = 0;
+// Extract only the words that actually distinguish a profession (non-generic)
+function specialtyWords(text: string): string[] {
+  return normalizeTitle(text).filter((w: string) => !GENERIC_TITLE_WORDS.has(w));
+}
 
-  const jobProfession = (job.professions || '').toLowerCase();
-  const jobText = (jobProfession + ' ' + (job.comments || '')).toLowerCase();
-  const candidatePosition = (candidate.position || '').toLowerCase();
-  const candidateSkills = (candidate.skills || '').toLowerCase();
-  const candidateCountry = (candidate.country_of_interest || '').toLowerCase();
-  const jobCountry = (job.country || '').toLowerCase();
+// ── 1. Job Title Match (max 30 pts) ──────────────────────────────────────────
+// Compares the required profession against candidate's current position.
+// Uses specialty-word extraction to prevent false positives like:
+//   "Chemical Engineer" ≠ "Civil Engineer" (only "engineer" is common → 0 pts)
+function titleMatchScore(jobProfession: string, candidatePosition: string): number {
+  const jobNorm = normalizeTitle(jobProfession);
+  const candNorm = normalizeTitle(candidatePosition);
 
-  // ── Profession match (0 / 25 / 50) ────────────────────────────────────────
-  // Extract specialty words from the job's required profession.
-  let specialtyWords = extractSpecialtyWords(jobProfession);
-  // If profession is purely generic (e.g. "Manager"), fall back to all words.
-  if (specialtyWords.length === 0) {
-    specialtyWords = jobProfession
-      .split(/[\s,;/]+/)
-      .map((w: string) => w.trim())
-      .filter((w: string) => w.length > 2);
+  // Exact full normalized title match
+  if (jobNorm.length > 0 && jobNorm.every((w: string) => candNorm.includes(w))
+      && candNorm.every((w: string) => jobNorm.includes(w))) return 30;
+
+  // All job title words present in candidate title (e.g. "Senior Chemical Engineer" contains all of "Chemical Engineer")
+  if (jobNorm.length > 0 && jobNorm.every((w: string) => candNorm.includes(w))) return 27;
+
+  // Specialty words — the discriminating part of the title
+  const jobSpecialty = specialtyWords(jobProfession);
+
+  if (jobSpecialty.length === 0) {
+    // Purely generic title like "Manager" — fall back to any normalized word match
+    const anyGenericMatch = normalizeTitle(jobProfession).some((w: string) => candNorm.includes(w));
+    return anyGenericMatch ? 15 : 0;
   }
 
-  if (specialtyWords.length > 0) {
-    const allMatch = specialtyWords.every((w: string) => candidatePosition.includes(w));
-    const anyMatch = specialtyWords.some((w: string) => candidatePosition.includes(w));
-    if (allMatch) {
-      score += 50;   // Exact profession match — e.g. "chemical" in "chemical engineer"
-    } else if (anyMatch) {
-      score += 25;   // Partial match — at least one specialty word overlaps
-    }
-    // Zero if no specialty word found in candidate position
-  }
+  const matchedSpecialty = jobSpecialty.filter((w: string) => candidatePosition.toLowerCase().includes(w));
+  const matchRatio = matchedSpecialty.length / jobSpecialty.length;
 
-  // ── Country match (+20) ────────────────────────────────────────────────────
-  if (jobCountry && candidateCountry && jobCountry === candidateCountry) score += 20;
+  if (matchRatio >= 1.0) return 25; // All specialty words match (e.g. "chemical" in "chemical process engineer")
+  if (matchRatio >= 0.5) return 15; // Half+ specialty words match (multi-word specialty, partial)
+  if (matchRatio >  0.0) return 8;  // At least one specialty word (weak signal)
+  return 0;                          // No specialty word match at all
+}
 
-  // ── Skills match (+10 per skill, max 3 = +30) ──────────────────────────────
-  const skillList = candidateSkills
+// ── 2. Skills Match (max 35 pts) ─────────────────────────────────────────────
+// Checks how many candidate skills appear in the job description.
+// Up to 5 skills × 7 pts = 35 pts.
+function skillsMatchScore(candidateSkills: string, jobText: string): number {
+  const skills = candidateSkills
+    .toLowerCase()
     .split(/[,;]+/)
-    .map((s: string) => s.trim().toLowerCase())
+    .map((s: string) => s.trim())
     .filter((s: string) => s.length > 3);
-  let skillMatches = 0;
-  for (const skill of skillList) {
+
+  let matched = 0;
+  for (const skill of skills) {
     if (jobText.includes(skill)) {
-      skillMatches++;
-      if (skillMatches >= 3) break;
+      matched++;
+      if (matched >= 5) break;
     }
   }
-  score += skillMatches * 10;
+  return matched * 7;
+}
 
-  return Math.min(score, 100);
+// ── 3. Experience Match (max 20 pts) ─────────────────────────────────────────
+// Tries to parse a minimum years requirement from job comments/description.
+// Pattern: "3+ years", "minimum 5 years", "3-5 years", "3 years experience"
+function experienceMatchScore(candidateYears: number | null | undefined, jobComments: string): number {
+  const text = (jobComments || '').toLowerCase();
+  const match = text.match(/(\d+)\s*[\-+]?\s*(?:\d+\s*)?years?/);
+  const requiredYears = match ? parseInt(match[1], 10) : null;
+
+  if (requiredYears === null) {
+    // No explicit requirement stated → neutral 10 pts (benefit of the doubt)
+    return 10;
+  }
+  if (candidateYears == null) {
+    // Requirement exists but we don't know candidate years → partial 8 pts
+    return 8;
+  }
+  if (candidateYears >= requiredYears) return 20;       // Meets or exceeds
+  if (candidateYears >= requiredYears * 0.75) return 14; // Within 25% of requirement
+  if (candidateYears >= requiredYears * 0.5)  return 8;  // Within 50% of requirement
+  return 3;                                               // Significantly below
+}
+
+// ── 4. Location Match (max 15 pts) ────────────────────────────────────────────
+function locationMatchScore(candidateCountry: string, jobCountry: string): number {
+  if (!jobCountry || !candidateCountry) return 0;
+  return candidateCountry.trim().toLowerCase() === jobCountry.trim().toLowerCase() ? 15 : 0;
+}
+
+// ── Main scoring function ─────────────────────────────────────────────────────
+function computeMatchScore(candidate: Record<string, any>, job: Record<string, any>): number {
+  const jobProfession   = (job.professions || '');
+  const jobText         = ((job.professions || '') + ' ' + (job.comments || '')).toLowerCase();
+  const candidatePos    = (candidate.position || '');
+  const candidateSkills = (candidate.skills || '');
+  const candidateCtry   = (candidate.country_of_interest || '');
+  const jobCtry         = (job.country || '');
+
+  const title    = titleMatchScore(jobProfession, candidatePos);
+  const skills   = skillsMatchScore(candidateSkills, jobText);
+  const exp      = experienceMatchScore(candidate.experience_years, job.comments || '');
+  const location = locationMatchScore(candidateCtry, jobCtry);
+
+  return Math.min(title + skills + exp + location, 100);
 }
 
 // ─── GET /recommendations/pool-count/:jobId ───────────────────────────────────
@@ -98,14 +160,13 @@ router.get('/pool-count/:jobId', async (req: Request, res: Response) => {
 
     if (!job) return res.json({ count: 15 });
 
-    // Use specialty words only — avoids counting all 'engineers' for a specific discipline
-    let keywords = extractSpecialtyWords(job.professions || '').slice(0, 2);
+    // Use specialty (discriminating) words only — avoids counting all engineers for a specific discipline
+    let keywords = specialtyWords(job.professions || '').slice(0, 2);
     if (keywords.length === 0) {
-      keywords = (job.professions || '')
-        .toLowerCase()
-        .split(/[\s,;/]+/)
-        .filter((w: string) => w.length > 2)
-        .slice(0, 2);
+      keywords = normalizeTitle(job.professions || '').filter((w: string) => !GENERIC_TITLE_WORDS.has(w)).slice(0, 2);
+    }
+    if (keywords.length === 0) {
+      keywords = normalizeTitle(job.professions || '').slice(0, 2);
     }
 
     if (keywords.length === 0) return res.json({ count: 15 });
@@ -143,15 +204,15 @@ router.get('/job/:jobId/candidates', async (req: Request, res: Response) => {
 
     if (jobErr || !job) return res.status(404).json({ error: 'Job not found' });
 
-    // Prefer specialty words for filtering; fall back to all profession words only if none.
-    // This ensures 'chemical engineer' jobs don't pull in all engineers.
-    let keywords = extractSpecialtyWords(job.professions || '').slice(0, 3);
-    const fullProfessionKeywords = (job.professions || '')
-      .toLowerCase()
-      .split(/[\s,;/]+/)
-      .filter((w: string) => w.length > 2)
-      .slice(0, 3);
-    if (keywords.length === 0) keywords = fullProfessionKeywords;
+    // Use specialty words for primary filter — avoids pulling in wrong discipline
+    let keywords = specialtyWords(job.professions || '').slice(0, 3);
+    if (keywords.length === 0) {
+      keywords = normalizeTitle(job.professions || '')
+        .filter((w: string) => !GENERIC_TITLE_WORDS.has(w)).slice(0, 3);
+    }
+    if (keywords.length === 0) {
+      keywords = normalizeTitle(job.professions || '').slice(0, 3);
+    }
 
     let query = db
       .from('candidates')
@@ -164,8 +225,7 @@ router.get('/job/:jobId/candidates', async (req: Request, res: Response) => {
         `position.ilike.%${search}%,skills.ilike.%${search}%,name.ilike.%${search}%`
       );
     } else if (keywords.length > 0) {
-      // Primary: match specialty words in position (strict)
-      // Also include skills matches so admins can find cross-discipline candidates if needed
+      // Match specialty words in position OR skills
       const orParts = keywords.flatMap((kw: string) => [
         `position.ilike.%${kw}%`,
         `skills.ilike.%${kw}%`,

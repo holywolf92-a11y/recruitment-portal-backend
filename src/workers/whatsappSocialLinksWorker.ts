@@ -88,7 +88,6 @@ export function startWhatsAppSocialLinksWorker() {
           return;
         }
       }
-      }
 
       logger.info('Sending delayed social-links message', { jobId: job.id, recipient });
       await sendText(phoneNumberId, accessToken, recipient, job.data.message);

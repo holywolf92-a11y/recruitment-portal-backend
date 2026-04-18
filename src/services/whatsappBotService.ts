@@ -844,15 +844,6 @@ async function finalizeCandidateFlow(
   );
   await resetBotState(state.phoneNumber);
 }
-    [
-      { id: 'main_menu', title: 'Main Menu' },
-      { id: 'talk_human', title: 'Talk to Human' },
-    ],
-    ['main_menu', 'talk_human'],
-    'Falisha',
-  );
-  await resetBotState(state.phoneNumber);
-}
 
 async function handleCandidateFlow(
   state: BotState,
@@ -1039,7 +1030,12 @@ async function finalizeEmployerFlow(
     ].join('\n'),
   );
   // No social links for employers
-  await promptStep(,
+  await promptStep(
+    phoneNumberId,
+    accessToken,
+    state.phoneNumber,
+    state.conversationId,
+    'Our team will contact you shortly.',
     [
       { id: 'main_menu', title: 'Main Menu' },
       { id: 'talk_human', title: 'Talk to Human' },

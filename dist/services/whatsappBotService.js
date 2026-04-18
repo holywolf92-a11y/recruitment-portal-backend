@@ -23,6 +23,7 @@ exports.handleBotMessageFrom = handleBotMessageFrom;
 const database_1 = require("../config/database");
 const errorHandling_1 = require("../utils/errorHandling");
 const candidateService_1 = require("./candidateService");
+const queue_1 = require("../config/queue");
 const documentLinkService_1 = require("./documentLinkService");
 const whatsappBotStateService_1 = require("./whatsappBotStateService");
 const whatsappInteractiveService_1 = require("./whatsappInteractiveService");
@@ -293,7 +294,13 @@ async function sendPortalEntryLink(phoneNumberId, accessToken, to, convId, audie
     const details = labels[audience];
     const portalUrl = `${FRONTEND_URL}/apply/${audience}`;
     await tx(phoneNumberId, accessToken, to, convId, [details.title, '', details.intro, portalUrl, '', 'You can type menu anytime to return here.'].join('\n'));
-    await tx(phoneNumberId, accessToken, to, convId, buildSocialLinksMessage());
+    // Social links: candidates get them after form submission, partners after 15 min delay, employers never.
+    if (audience === 'partner') {
+        try {
+            await queue_1.whatsappSocialLinksQueue.add('send-social-links', { phone: to, message: buildSocialLinksMessage(), recipientRole: 'partner' }, { delay: 15 * 60 * 1000, attempts: 2, backoff: { type: 'fixed', delay: 30000 } });
+        }
+        catch { /* non-critical */ }
+    }
     await promptStep(phoneNumberId, accessToken, to, convId, 'Choose another option or return to the main menu.', [
         { id: 'main_menu', title: 'Main Menu' },
         { id: 'talk_human', title: 'Talk to Human' },
@@ -399,7 +406,7 @@ async function switchToHuman(phoneNumberId, accessToken, to, convId, phoneNumber
         }
         catch { /* non-fatal */ }
     }
-    await tx(phoneNumberId, accessToken, to, convId, '👤 Got it! We have connected you to our team. A representative will reply shortly.\n\nThank you for your patience.');
+    await tx(phoneNumberId, accessToken, to, convId, 'Dear Valued Customer,\n\nFor any information or assistance, please feel free to contact us:\n\n📞 0300-5547806\n📞 0300-5787762\n📞 051-4927145-6\n📧 Support@falishajobs.com\n\n📍 Office No. 10, 11 & 12, 1st Floor, Umer Farooq Plaza, Murree Road, Chandni Chowk, Rawalpindi, Pakistan\nNear Mezan Bank\nLocation link\nhttps://maps.app.goo.gl/bA7XTJzFKaRb9BgB8?g_st=ig\n\nWe are always here to assist you.\n\nBest regards,\nFalisha Jobs Team');
 }
 // ─── Flow A: Candidate Intake ─────────────────────────────────────────────────
 async function promptCandidateStep(state, phoneNumberId, accessToken) {
@@ -597,7 +604,11 @@ async function finalizeCandidateFlow(state, phoneNumberId, accessToken, data) {
             'Open this link to complete or edit your profile.',
         ].join('\n'));
     }
-    await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
+    // Schedule social links 15 minutes after WhatsApp intake submission
+    try {
+        await queue_1.whatsappSocialLinksQueue.add('send-social-links', { phone: state.phoneNumber, message: buildSocialLinksMessage(), recipientRole: 'candidate' }, { delay: 15 * 60 * 1000, attempts: 2, backoff: { type: 'fixed', delay: 30000 } });
+    }
+    catch { /* non-critical */ }
     await promptStep(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, 'You are all set.', [
         { id: 'main_menu', title: 'Main Menu' },
         { id: 'talk_human', title: 'Talk to Human' },
@@ -743,7 +754,7 @@ async function finalizeEmployerFlow(state, phoneNumberId, accessToken, data) {
         `Duty Hours: ${data.duty_hours}`,
         `Comments: ${data.comments || 'None'}`,
     ].join('\n'));
-    await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
+    // No social links for employers
     await promptStep(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, 'Our team will contact you shortly.', [
         { id: 'main_menu', title: 'Main Menu' },
         { id: 'talk_human', title: 'Talk to Human' },
@@ -879,7 +890,11 @@ async function finalizePartnerFlow(state, phoneNumberId, accessToken, data) {
         '',
         'After login you can access the partner dashboard and submit candidates.',
     ].join('\n'));
-    await tx(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, buildSocialLinksMessage());
+    // Schedule social links 15 minutes after partner submission
+    try {
+        await queue_1.whatsappSocialLinksQueue.add('send-social-links', { phone: state.phoneNumber, message: buildSocialLinksMessage(), recipientRole: 'partner' }, { delay: 15 * 60 * 1000, attempts: 2, backoff: { type: 'fixed', delay: 30000 } });
+    }
+    catch { /* non-critical */ }
     await promptStep(phoneNumberId, accessToken, state.phoneNumber, state.conversationId, 'Our admin team will review your application.', [
         { id: 'main_menu', title: 'Main Menu' },
         { id: 'talk_human', title: 'Talk to Human' },

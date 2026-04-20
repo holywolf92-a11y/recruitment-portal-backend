@@ -13,6 +13,7 @@ import {
   recordOutboundMessage,
   recordTemplateMessage,
   getConversation,
+  getMessageMediaUrl,
 } from '../services/whatsappInboxService';
 import { sendMessage, sendTemplateMessage } from '../services/whatsappService';
 
@@ -44,6 +45,14 @@ router.get(
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : undefined;
     const result = await listMessages(req.params.id, { limit });
+    res.json(result);
+  })
+);
+
+router.get(
+  '/messages/:messageId/media-url',
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const result = await getMessageMediaUrl(req.params.messageId);
     res.json(result);
   })
 );

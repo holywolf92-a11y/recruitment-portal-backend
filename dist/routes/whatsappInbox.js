@@ -24,6 +24,10 @@ router.get('/conversations/:id/messages', (0, errorHandling_1.asyncHandler)(asyn
     const result = await (0, whatsappInboxService_1.listMessages)(req.params.id, { limit });
     res.json(result);
 }));
+router.get('/messages/:messageId/media-url', (0, errorHandling_1.asyncHandler)(async (req, res) => {
+    const result = await (0, whatsappInboxService_1.getMessageMediaUrl)(req.params.messageId);
+    res.json(result);
+}));
 router.post('/conversations/:id/mark-read', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const updated = await (0, whatsappInboxService_1.markConversationRead)(req.params.id);
     res.json(updated);

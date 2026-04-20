@@ -507,3 +507,29 @@ export async function ensureHumanModeForSending(conversationId: string, userId: 
   // If admin sends while AI mode is active: switch to human mode automatically
   return takeOverConversation(conversationId, userId);
 }
+
+export async function getMessageMediaUrl(messageId: string): Promise<{ url: string | null; fileName: string | null }> {
+  const db = supabaseAdminClient();
+  const { data: msg } = await db
+    .from('whatsapp_messages')
+    .select('media_id,file_name')
+    .eq('id', messageId)
+    .single();
+
+  if (!msg?.media_id) return { url: null, fileName: msg?.file_name ?? null };
+
+  const { data: att } = await db
+    .from('inbox_attachments')
+    .select('storage_bucket,storage_path,file_name')
+    .eq('whatsapp_media_id', msg.media_id)
+    .limit(1)
+    .maybeSingle();
+
+  if (!att?.storage_path) return { url: null, fileName: msg.file_name };
+
+  const { data: signed } = await db.storage
+    .from(att.storage_bucket ?? 'documents')
+    .createSignedUrl(att.storage_path, 3600);
+
+  return { url: signed?.signedUrl ?? null, fileName: att.file_name ?? msg.file_name };
+}

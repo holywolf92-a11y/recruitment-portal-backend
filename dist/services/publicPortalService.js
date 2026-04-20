@@ -58,6 +58,14 @@ function buildSocialLinksMessage() {
     lines.push('_Follow us for job updates, success stories, and more!_');
     return lines.join('\n');
 }
+function buildCandidateAdditionalInfo(input) {
+    const parts = [input.additionalInfo?.trim(), input.comments?.trim()]
+        .filter((value) => Boolean(value));
+    if (parts.length === 0) {
+        return undefined;
+    }
+    return Array.from(new Set(parts)).join('\n\n');
+}
 async function enqueueSocialLinks(phone) {
     if (!phone)
         return;
@@ -170,6 +178,7 @@ async function ensurePortalAccount(args) {
     };
 }
 async function submitCandidatePublicIntake(input, cvFile) {
+    const additionalInfo = buildCandidateAdditionalInfo(input);
     const candidatePayload = {
         name: input.fullName.trim(),
         email: input.email.trim().toLowerCase(),
@@ -185,7 +194,7 @@ async function submitCandidatePublicIntake(input, cvFile) {
         auto_extracted: false,
         skills: input.skills?.trim() || undefined,
         languages: input.languages?.trim() || undefined,
-        professional_summary: input.additionalInfo?.trim() || undefined,
+        professional_summary: additionalInfo,
         experience_years: input.experience ? Number.parseInt(input.experience, 10) || undefined : undefined,
     };
     const candidate = await (0, candidateService_1.createCandidate)(candidatePayload);

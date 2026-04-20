@@ -541,6 +541,10 @@ function startCvParserWorker() {
     }
     async function maybeSendCvReceivedWhatsAppNotification(params) {
         try {
+            if (process.env.DISABLE_CV_WHATSAPP_NOTIFY === 'true') {
+                console.log(`[CVParser] CV WhatsApp notification disabled via DISABLE_CV_WHATSAPP_NOTIFY (candidateId=${params.candidateId}). Skipping.`);
+                return;
+            }
             const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
             const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
             if (!accessToken || !phoneNumberId)

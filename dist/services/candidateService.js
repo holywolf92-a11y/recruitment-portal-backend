@@ -296,7 +296,7 @@ const LIST_FIELDS = [
     'position', 'nationality', 'country_of_interest', 'experience_years',
     'phone', 'email', 'date_of_birth', 'gender', 'marital_status', 'address',
     'passport_normalized', 'cnic_normalized', 'passport_expiry',
-    'languages',
+    'languages', 'skills',
     'passport_received', 'cnic_received', 'degree_received', 'medical_received',
     'visa_received', 'cv_received', 'photo_received', 'certificate_received',
     'driving_license_received',
@@ -310,10 +310,10 @@ async function listCandidates(filters = {}, userId) {
     if (!filters.status || filters.status !== 'Deleted') {
         query = query.neq('status', 'Deleted');
     }
-    // Global search: partial, case-insensitive, across name, passport, CNIC, email, phone, position (server-side)
+    // Global search: partial, case-insensitive, across name, passport, CNIC, email, phone, position, skills (server-side)
     if (filters.search && filters.search.trim()) {
         const q = filters.search.trim();
-        query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%,position.ilike.%${q}%,partner_name.ilike.%${q}%`);
+        query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%,position.ilike.%${q}%,partner_name.ilike.%${q}%,skills.ilike.%${q}%`);
     }
     // Apply status filter
     if (filters.status && filters.status !== 'all' && filters.status !== 'Deleted') {

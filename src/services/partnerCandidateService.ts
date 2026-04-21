@@ -220,7 +220,13 @@ export async function upsertPartnerCandidate(input: PartnerCandidateInput, partn
     };
   };
 
-  maybeFill('name', sanitizeText(input.name));
+  // Always use the partner-provided candidate name (overwrite existing)
+  const sanitizedName = sanitizeText(input.name);
+  if (sanitizedName) {
+    updateData['name'] = sanitizedName;
+    updatedFields.push('name');
+    fieldSources['name'] = { field: 'name', source: 'partner_portal', updated_at: now, updated_by: partner.partnerId };
+  }
   maybeFill('father_name', sanitizeText(input.father_name));
   maybeFill('email', match.normalizedEmail);
   maybeFill('phone', match.normalizedPhone);

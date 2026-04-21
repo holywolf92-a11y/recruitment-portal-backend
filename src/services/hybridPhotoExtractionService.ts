@@ -19,6 +19,7 @@ const logger = createLogger('HybridPhotoExtraction');
 const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
 const STORAGE_BUCKET = 'documents';
+const DISABLE_AI_PHOTO_EXTRACTION = process.env.DISABLE_AI_PHOTO_EXTRACTION === 'true';
 
 /**
  * Attempt to extract profile photo using Python parser's face-recognition method
@@ -232,7 +233,12 @@ export async function extractProfilePhotoHybrid(
     };
   }
 
-  // Method 2: Backend AI (fallback)
+  // Method 2: Backend AI (fallback) — skip if disabled to avoid OpenAI vision cost
+  if (DISABLE_AI_PHOTO_EXTRACTION) {
+    logger.info('Backend AI photo extraction disabled (DISABLE_AI_PHOTO_EXTRACTION=true)', { candidateId });
+    return { success: false, method: 'none', reason: 'AI extraction disabled' };
+  }
+
   logger.info('Python parser failed, trying Backend AI', { candidateId });
   const aiPhoto = await extractPhotoBackendAI(candidateId, pdfBuffer);
   if (aiPhoto) {

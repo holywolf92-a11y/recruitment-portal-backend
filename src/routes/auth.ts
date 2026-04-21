@@ -756,6 +756,64 @@ router.get('/users', authenticate, async (req: AuthRequest, res) => {
   }
 });
 
+// GET /auth/partners — returns all partner users with candidate counts in one query
+router.get('/partners', authenticate, async (req: AuthRequest, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admins only' });
+    }
+
+    const db = supabaseAdminClient();
+
+    // 1. Get all partner users
+    const { data: partnerUsers, error: usersError } = await db
+      .from('users')
+      .select('id, email, name, role, phone, status, created_at')
+      .eq('role', 'partner')
+      .order('created_at', { ascending: false });
+
+    if (usersError) throw usersError;
+
+    const partners = partnerUsers || [];
+
+    // 2. Get candidate counts for all partner IDs in a single query
+    const partnerIds = partners.map((p: any) => p.id);
+    let countMap: Record<string, number> = {};
+
+    if (partnerIds.length > 0) {
+      const { data: countRows, error: countError } = await db
+        .from('candidates')
+        .select('partner_id')
+        .in('partner_id', partnerIds)
+        .neq('status', 'Deleted');
+
+      if (!countError && countRows) {
+        countRows.forEach((row: any) => {
+          if (row.partner_id) {
+            countMap[row.partner_id] = (countMap[row.partner_id] || 0) + 1;
+          }
+        });
+      }
+    }
+
+    const result = partners.map((p: any) => ({
+      id: p.id,
+      email: p.email,
+      name: p.name,
+      role: 'partner',
+      phone: p.phone,
+      status: p.status,
+      created_at: p.created_at,
+      candidateCount: countMap[p.id] || 0,
+    }));
+
+    return res.json({ partners: result });
+  } catch (error: any) {
+    console.error('Error fetching partners:', error);
+    return res.status(500).json({ error: error.message || 'Failed to fetch partners' });
+  }
+});
+
 router.patch('/users/:userId', authenticate, async (req: AuthRequest, res) => {
   try {
     if (req.user?.role !== 'admin') {

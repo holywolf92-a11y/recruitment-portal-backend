@@ -45,6 +45,8 @@ const userService_1 = require("../services/userService");
 const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
 const database_1 = require("../config/database");
 const partnerCandidateService_1 = require("../services/partnerCandidateService");
+const emailService_1 = require("../services/emailService");
+const whatsappService_1 = require("../services/whatsappService");
 const bulkUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 const router = (0, express_1.Router)();
 const VALID_STATUSES = ['Active', 'Inactive', 'Suspended'];
@@ -79,6 +81,60 @@ function mapCandidateIdentityFields(candidate) {
         cnic: candidate.cnic_normalized || candidate.cnic || null,
         passport: candidate.passport_normalized || candidate.passport || null,
     };
+}
+/** Normalize a phone number to WhatsApp format: digits only, no leading '+'. */
+function toWhatsAppPhone(phone) {
+    return phone.replace(/\D/g, '');
+}
+/**
+ * Send welcome credentials to a newly created (or password-reset) user via
+ * email and, if a phone number is present, via WhatsApp.
+ */
+async function dispatchWelcomeCredentials(user, password) {
+    const portalUrl = process.env.FRONTEND_URL || 'https://falishajobs.up.railway.app';
+    const displayName = user.name || user.email;
+    const roleLabel = user.role.charAt(0).toUpperCase() + user.role.slice(1);
+    const emailHtml = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+      <h2 style="color:#1d4ed8">Welcome to Falisha Jobs Portal</h2>
+      <p>Hi <strong>${displayName}</strong>,</p>
+      <p>Your <strong>${roleLabel}</strong> account has been created. Here are your login credentials:</p>
+      <table style="border-collapse:collapse;width:100%;margin:16px 0">
+        <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold;width:120px">Login URL</td><td style="padding:8px"><a href="${portalUrl}">${portalUrl}</a></td></tr>
+        <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Email</td><td style="padding:8px">${user.email}</td></tr>
+        <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Password</td><td style="padding:8px"><strong>${password}</strong></td></tr>
+      </table>
+      <p style="color:#6b7280;font-size:13px">Please log in and change your password after your first sign-in.</p>
+      <p>Regards,<br/>Falisha Jobs Team</p>
+    </div>
+  `;
+    try {
+        await emailService_1.emailService.sendEmail({
+            to: user.email,
+            subject: 'Your Falisha Jobs Portal Login Credentials',
+            html: emailHtml,
+            text: `Welcome to Falisha Jobs Portal!\n\nLogin URL: ${portalUrl}\nEmail: ${user.email}\nPassword: ${password}\n\nPlease change your password after first sign-in.`,
+        });
+        console.log(`[Auth] ✅ Credentials email sent to ${user.email}`);
+    }
+    catch (err) {
+        console.error(`[Auth] ⚠️ Failed to send credentials email to ${user.email}:`, err?.message);
+    }
+    if (user.phone) {
+        const waPhone = toWhatsAppPhone(user.phone);
+        const waText = `Welcome to Falisha Jobs Portal! 🎉\n\nHi ${displayName}, your ${roleLabel} account is ready.\n\n🔗 Login: ${portalUrl}\n📧 Email: ${user.email}\n🔑 Password: ${password}\n\nPlease change your password after first login.`;
+        const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+        const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+        if (phoneNumberId && accessToken && waPhone) {
+            try {
+                await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, waPhone, waText);
+                console.log(`[Auth] ✅ Credentials WhatsApp sent to ${waPhone}`);
+            }
+            catch (err) {
+                console.error(`[Auth] ⚠️ Failed to send credentials WhatsApp to ${waPhone}:`, err?.message);
+            }
+        }
+    }
 }
 router.get('/me', auth_1.authenticate, async (req, res) => {
     const user = req.user;
@@ -460,9 +516,6 @@ router.post('/partner/candidates', auth_1.authenticate, async (req, res) => {
         if (!name) {
             return res.status(400).json({ error: 'Candidate name is required' });
         }
-        if (!String(payload.cnic || payload.passport || '').trim()) {
-            return res.status(400).json({ error: 'CNIC / Passport is required' });
-        }
         if (!phone) {
             return res.status(400).json({ error: 'Phone is required' });
         }
@@ -471,6 +524,7 @@ router.post('/partner/candidates', auth_1.authenticate, async (req, res) => {
         const partnerCompany = portalProfile.partnerApplication?.company_name || null;
         const result = await (0, partnerCandidateService_1.upsertPartnerCandidate)({
             name,
+            father_name: typeof payload.father_name === 'string' ? payload.father_name.trim() || undefined : undefined,
             email: email && !(0, progressiveDataCompletionService_1.isGovernmentEmail)(email) ? email : undefined,
             phone: phone || undefined,
             cnic: String(payload.cnic || '').trim() || undefined,
@@ -792,6 +846,16 @@ router.post('/users', auth_1.authenticate, async (req, res) => {
                 return res.status(400).json({ error: linkError.message || 'Failed to link candidate account' });
             }
         }
+        // Fire-and-forget credential notification for external-facing roles only
+        // (admin and worker accounts are internal staff — no auto-send)
+        if (['candidate', 'partner', 'employer'].includes(normalizedRole)) {
+            dispatchWelcomeCredentials({
+                name: createName,
+                email: createEmail,
+                phone: createPhone,
+                role: normalizedRole,
+            }, password).catch((err) => console.error('[Auth] dispatchWelcomeCredentials failed:', err?.message));
+        }
         return res.status(201).json({
             message: 'User created successfully',
             user: userRecord,
@@ -800,6 +864,47 @@ router.post('/users', auth_1.authenticate, async (req, res) => {
     catch (error) {
         console.error('Error creating user:', error);
         return res.status(500).json({ error: error.message || 'Failed to create user' });
+    }
+});
+// ── Resend / reset credentials for an existing user ──────────────────────────
+router.post('/users/:userId/send-credentials', auth_1.authenticate, async (req, res) => {
+    try {
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json({ error: 'Only admins can send credentials' });
+        }
+        const { userId } = req.params;
+        const existingUser = await (0, userService_1.getUserById)(userId);
+        if (!existingUser) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        if (!['candidate', 'partner', 'employer'].includes(existingUser.role)) {
+            return res.status(400).json({ error: 'Credentials can only be sent for candidate, partner, and employer accounts' });
+        }
+        const tempPassword = 'Falisha@' + Math.random().toString(36).slice(2, 8).toUpperCase();
+        const supabase = (0, database_1.supabaseAdminClient)();
+        const { error: resetError } = await supabase.auth.admin.updateUserById(userId, {
+            password: tempPassword,
+        });
+        if (resetError) {
+            return res.status(400).json({ error: resetError.message || 'Failed to reset password' });
+        }
+        await dispatchWelcomeCredentials({
+            name: existingUser.name,
+            email: existingUser.email,
+            phone: existingUser.phone,
+            role: existingUser.role,
+        }, tempPassword);
+        return res.json({
+            message: 'Credentials sent successfully',
+            sentTo: {
+                email: existingUser.email,
+                whatsapp: existingUser.phone ? toWhatsAppPhone(existingUser.phone) : null,
+            },
+        });
+    }
+    catch (error) {
+        console.error('Error sending credentials:', error);
+        return res.status(500).json({ error: error.message || 'Failed to send credentials' });
     }
 });
 router.delete('/users/:userId', auth_1.authenticate, async (req, res) => {

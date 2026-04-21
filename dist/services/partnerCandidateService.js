@@ -108,6 +108,7 @@ async function upsertPartnerCandidate(input, partner) {
     if (!match.candidate) {
         const candidate = await (0, candidateService_1.createCandidate)({
             name: input.name.trim(),
+            father_name: sanitizeText(input.father_name) || undefined,
             email: match.normalizedEmail || undefined,
             phone: match.normalizedPhone || undefined,
             cnic: match.normalizedCnic || undefined,
@@ -157,6 +158,7 @@ async function upsertPartnerCandidate(input, partner) {
         };
     };
     maybeFill('name', sanitizeText(input.name));
+    maybeFill('father_name', sanitizeText(input.father_name));
     maybeFill('email', match.normalizedEmail);
     maybeFill('phone', match.normalizedPhone);
     maybeFill('address', sanitizeText(input.address));

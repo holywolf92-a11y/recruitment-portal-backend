@@ -544,10 +544,6 @@ router.post('/partner/candidates', authenticate, async (req: AuthRequest, res) =
       return res.status(400).json({ error: 'Candidate name is required' });
     }
 
-    if (!String(payload.cnic || payload.passport || '').trim()) {
-      return res.status(400).json({ error: 'CNIC / Passport is required' });
-    }
-
     if (!phone) {
       return res.status(400).json({ error: 'Phone is required' });
     }
@@ -559,6 +555,7 @@ router.post('/partner/candidates', authenticate, async (req: AuthRequest, res) =
     const result = await upsertPartnerCandidate(
       {
         name,
+        father_name: typeof (payload as any).father_name === 'string' ? (payload as any).father_name.trim() || undefined : undefined,
         email: email && !isGovernmentEmail(email) ? email : undefined,
         phone: phone || undefined,
         cnic: String(payload.cnic || '').trim() || undefined,

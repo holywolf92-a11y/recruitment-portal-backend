@@ -27,6 +27,7 @@ type CandidateRow = {
 
 export interface PartnerCandidateInput {
   name: string;
+  father_name?: string;
   cnic?: string;
   passport?: string;
   email?: string;
@@ -164,6 +165,7 @@ export async function upsertPartnerCandidate(input: PartnerCandidateInput, partn
     const candidate = await createCandidate(
       {
         name: input.name.trim(),
+        father_name: sanitizeText(input.father_name) || undefined,
         email: match.normalizedEmail || undefined,
         phone: match.normalizedPhone || undefined,
         cnic: match.normalizedCnic || undefined,
@@ -219,6 +221,7 @@ export async function upsertPartnerCandidate(input: PartnerCandidateInput, partn
   };
 
   maybeFill('name', sanitizeText(input.name));
+  maybeFill('father_name', sanitizeText(input.father_name));
   maybeFill('email', match.normalizedEmail);
   maybeFill('phone', match.normalizedPhone);
   maybeFill('address', sanitizeText(input.address));

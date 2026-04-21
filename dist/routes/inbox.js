@@ -41,10 +41,22 @@ router.get('/stats', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const { count: linked } = await linkedQ;
     const extractedTotal = (extracted ?? 0) + (linked ?? 0);
     const pending = (total ?? 0) - extractedTotal;
+    // needs_review = parsing succeeded but no candidate could be created/linked
+    let needsReviewQ = db
+        .from('inbox_attachments')
+        .select('id', { count: 'exact', head: true })
+        .or('attachment_type.eq.cv,attachment_type.is.null')
+        .is('candidate_id', null)
+        .is('linked_candidate_id', null)
+        .in('parsing_status', ['needs_review', 'extracted']);
+    if (since)
+        needsReviewQ = needsReviewQ.gte('created_at', since);
+    const { count: needsReview } = await needsReviewQ;
     res.json({
         total: total ?? 0,
         extracted: extractedTotal,
         pending,
+        needs_review: needsReview ?? 0,
     });
 }));
 // GET /cv-inbox/items — efficient single-page fetch (replaces N+1 calls from UI)
@@ -58,7 +70,7 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     // Query 1: inbox_attachments + joined message info
     let query = db
         .from('inbox_attachments')
-        .select(`id, file_name, mime_type, attachment_type,
+        .select(`id, file_name, mime_type, attachment_type, parsing_status,
          candidate_id, linked_candidate_id, inbox_message_id, created_at,
          inbox_messages(source, received_at, status, payload)`, { count: 'exact' })
         .or('attachment_type.eq.cv,attachment_type.is.null')
@@ -97,11 +109,20 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
         if (resolvedCandidateId) {
             status = 'extracted';
         }
+        else if (r.parsing_status === 'needs_review') {
+            // Explicitly flagged by the worker — no candidate signals or creation failed
+            status = 'needs_review';
+        }
+        else if (r.parsing_status === 'extracted') {
+            // Parsing ran and finished but no candidate was ever linked — stuck, needs human
+            status = 'needs_review';
+        }
         else if (!job) {
             status = 'queued';
         }
         else if (job.status === 'extracted') {
-            status = 'extracted';
+            // Job finished but attachment has no candidate — also needs review
+            status = 'needs_review';
         }
         else if (job.status === 'failed') {
             status = 'error';

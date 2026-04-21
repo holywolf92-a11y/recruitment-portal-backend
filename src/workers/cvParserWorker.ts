@@ -1124,8 +1124,9 @@ export function startCvParserWorker() {
         const { findExistingCandidate, enrichCandidateData, updateMissingFields } = await import('../services/progressiveDataCompletionService');
 
         if (!hasRealCandidateSignals(parsedCandidate, identityFields)) {
-          console.log(`[CVParser] ⏭  Parsed attachment ${attachmentId} does not contain real candidate signals. Skipping candidate creation.`);
-          await setJobAndAttachmentStatus('extracted', {
+          console.log(`[CVParser] ⚠️  Parsed attachment ${attachmentId} — no candidate signals found (no name/phone/email/experience). Marking as needs_review.`);
+          // Keep the job as 'extracted' (parsing succeeded) but flag the attachment for human review.
+          await parsingJobs.setStatus(jobId, 'extracted', {
             finished_at: new Date().toISOString(),
             schema_version: parsed.schema_version ?? 'v1',
             result_json: { ...parsed, identity_fields: identityFields },
@@ -1133,6 +1134,7 @@ export function startCvParserWorker() {
             error_code: null,
             error_message: null,
           });
+          await db.from('inbox_attachments').update({ parsing_status: 'needs_review' }).eq('id', attachmentId);
           return { skipped: true, reason: 'insufficient_candidate_signals' };
         }
         
@@ -1433,6 +1435,14 @@ export function startCvParserWorker() {
         }
         
         const newCandidate = candidate;
+
+        // If all candidate creation / matching attempts failed, flag for human review.
+        // This prevents the attachment from silently staying 'extracted' with no candidate.
+        if (!newCandidate?.id) {
+          console.warn(`[CVParser] ⚠️  No candidate created or found for attachment ${attachmentId} after all attempts. Marking as needs_review.`);
+          await db.from('inbox_attachments').update({ parsing_status: 'needs_review' }).eq('id', attachmentId);
+          return { skipped: true, reason: 'candidate_creation_failed' };
+        }
 
         // ============================================================================
         // Ensure ORIGINAL CV is visible as a candidate document for non-PDF uploads.

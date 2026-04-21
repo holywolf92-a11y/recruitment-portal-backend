@@ -516,4 +516,256 @@ router.get('/checklist/:candidateId', async (req: Request, res: Response) => {
   }
 });
 
+// ─── Jaro-Winkler similarity (pure TypeScript, no dependencies) ────────────────
+function jaroSimilarity(s1: string, s2: string): number {
+  if (s1 === s2) return 1;
+  const len1 = s1.length;
+  const len2 = s2.length;
+  if (len1 === 0 || len2 === 0) return 0;
+  const matchWindow = Math.max(0, Math.floor(Math.max(len1, len2) / 2) - 1);
+  const s1Matches = new Array(len1).fill(false);
+  const s2Matches = new Array(len2).fill(false);
+  let matches = 0;
+  for (let i = 0; i < len1; i++) {
+    const start = Math.max(0, i - matchWindow);
+    const end = Math.min(i + matchWindow + 1, len2);
+    for (let j = start; j < end; j++) {
+      if (s2Matches[j] || s1[i] !== s2[j]) continue;
+      s1Matches[i] = true;
+      s2Matches[j] = true;
+      matches++;
+      break;
+    }
+  }
+  if (matches === 0) return 0;
+  let transpositions = 0;
+  let k = 0;
+  for (let i = 0; i < len1; i++) {
+    if (!s1Matches[i]) continue;
+    while (!s2Matches[k]) k++;
+    if (s1[i] !== s2[k]) transpositions++;
+    k++;
+  }
+  return (matches / len1 + matches / len2 + (matches - transpositions / 2) / matches) / 3;
+}
+
+function jaroWinkler(s1: string, s2: string): number {
+  const jaro = jaroSimilarity(s1, s2);
+  let prefix = 0;
+  const limit = Math.min(4, Math.min(s1.length, s2.length));
+  for (let i = 0; i < limit; i++) {
+    if (s1[i] === s2[i]) prefix++;
+    else break;
+  }
+  return jaro + prefix * 0.1 * (1 - jaro);
+}
+
+function normalizeNameForMatch(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const DOC_KEYWORDS = ['passport', 'cnic', 'visa', 'degree', 'certificate', 'diploma', 'medical', 'copy',
+  'photo', 'cv', 'resume', 'scan', 'img', 'image', 'document', 'attested', 'rig', 'electrician',
+  'floorman', 'roustabout', 'driller', 'engineer', 'nursing', 'driver', 'license'];
+
+function extractNameFromFilename(filename: string): string | null {
+  const base = filename.replace(/\.[^.]+$/, '').replace(/[-_.]+/g, ' ').trim();
+  const lower = base.toLowerCase();
+  if (DOC_KEYWORDS.some(kw => lower.includes(kw))) return null;
+  // Skip if too many digits
+  const digitRatio = (base.match(/\d/g) || []).length / base.length;
+  if (digitRatio > 0.15) return null;
+  if (base.length < 4 || base.length > 60) return null;
+  return base;
+}
+
+function parseFromHeader(header: string): { name: string | null; email: string | null } {
+  if (!header) return { name: null, email: null };
+  const emailMatch = header.match(/<([^>]+)>/);
+  const nameMatch = header.match(/^"?([^"<\n\r]+?)"?\s*(?:<|$)/);
+  return {
+    email: emailMatch ? emailMatch[1].toLowerCase().trim() : null,
+    name: nameMatch ? nameMatch[1].trim() : null,
+  };
+}
+
+/**
+ * POST /api/documents/unmatched/auto-link
+ * Automatically link unmatched documents to candidates using fuzzy matching.
+ * Signals: sender email (exact, 97%), sender name / extracted_name / filename (Jaro-Winkler).
+ * Body: { dryRun?: boolean (default true), minConfidence?: number 0-1 (default 0.92), limit?: number (default 500) }
+ */
+router.post('/unmatched/auto-link', async (req: Request, res: Response) => {
+  try {
+    const dryRun: boolean = req.body?.dryRun !== false;
+    const minConfidence: number = Math.max(0.85, Math.min(1.0, Number(req.body?.minConfidence) || 0.92));
+    const processLimit: number = Math.min(2000, Math.max(1, parseInt(String(req.body?.limit || 500), 10)));
+
+    const db = supabaseAdminClient();
+
+    // ── Load all candidates (name + email for matching) ────────────────────
+    const { data: candidates, error: candError } = await db
+      .from('candidates')
+      .select('id, name, email')
+      .limit(5000);
+
+    if (candError) throw candError;
+    if (!candidates || candidates.length === 0) {
+      return res.json({ dryRun, total: 0, matched: 0, linked: 0, minConfidence: Math.round(minConfidence * 100), results: [] });
+    }
+
+    // Build maps
+    const emailToCandidateId = new Map<string, string>();
+    const candidateNameIndex: Array<{ id: string; normalized: string; original: string }> = [];
+    for (const c of candidates as any[]) {
+      if (c.email) emailToCandidateId.set(c.email.toLowerCase().trim(), c.id);
+      if (c.name) {
+        candidateNameIndex.push({ id: c.id, normalized: normalizeNameForMatch(c.name), original: c.name });
+      }
+    }
+
+    // ── Load unmatched documents ───────────────────────────────────────────
+    const { data: docs, error: docsError } = await db
+      .from('unmatched_documents')
+      .select('id, file_name, extracted_phone, extracted_name, extracted_email, storage_bucket, storage_path, document_type, source, received_at')
+      .limit(processLimit);
+
+    if (docsError) throw docsError;
+
+    const results: Array<{
+      docId: string;
+      fileName: string;
+      candidateId: string;
+      candidateName: string;
+      confidence: number;
+      signal: string;
+    }> = [];
+    let linkedCount = 0;
+    let errorCount = 0;
+
+    for (const doc of (docs as any[] || [])) {
+      const fromParsed = parseFromHeader(doc.extracted_phone || '');
+
+      let bestCandidateId: string | null = null;
+      let bestConfidence = 0;
+      let bestSignal = '';
+      let bestCandidateName = '';
+
+      // ── Signal 1: email exact match (97%) ────────────────────────────────
+      const emailsToTry: string[] = [];
+      if (fromParsed.email) emailsToTry.push(fromParsed.email);
+      if (doc.extracted_email) emailsToTry.push(String(doc.extracted_email).toLowerCase().trim());
+
+      for (const em of emailsToTry) {
+        if (emailToCandidateId.has(em) && 0.97 > bestConfidence) {
+          const cId = emailToCandidateId.get(em)!;
+          bestCandidateId = cId;
+          bestConfidence = 0.97;
+          bestSignal = 'email';
+          bestCandidateName = (candidates as any[]).find(c => c.id === cId)?.name || '';
+        }
+      }
+
+      // ── Signal 2: name fuzzy match (Jaro-Winkler) ───────────────────────
+      if (bestConfidence < minConfidence) {
+        const namesToTry: string[] = [];
+        if (fromParsed.name) namesToTry.push(fromParsed.name);
+        if (doc.extracted_name) namesToTry.push(String(doc.extracted_name));
+        const filenameName = extractNameFromFilename(doc.file_name || '');
+        if (filenameName) namesToTry.push(filenameName);
+
+        for (const rawName of namesToTry) {
+          const normalized = normalizeNameForMatch(rawName);
+          if (normalized.length < 3) continue;
+          for (const cand of candidateNameIndex) {
+            if (cand.normalized.length < 3) continue;
+            const score = jaroWinkler(normalized, cand.normalized);
+            if (score > bestConfidence) {
+              bestConfidence = score;
+              bestCandidateId = cand.id;
+              bestSignal = 'name';
+              bestCandidateName = cand.original;
+            }
+          }
+        }
+      }
+
+      if (bestConfidence >= minConfidence && bestCandidateId) {
+        results.push({
+          docId: doc.id,
+          fileName: doc.file_name,
+          candidateId: bestCandidateId,
+          candidateName: bestCandidateName,
+          confidence: Math.round(bestConfidence * 100),
+          signal: bestSignal,
+        });
+
+        if (!dryRun) {
+          try {
+            // Re-use the same link logic as POST /unmatched/:documentId/link
+            const storageBucket = normalizeStorageBucket(doc.storage_bucket);
+            const normalizedDocumentType = normalizeCandidateDocumentType(doc.document_type);
+            const normalizedSource = normalizeCandidateDocumentSource(doc.source);
+            const newPath = `candidates/${bestCandidateId}/documents/${normalizedDocumentType}/${doc.file_name}`;
+
+            let resolvedStoragePath = doc.storage_path as string;
+            try {
+              const bucket = db.storage.from(storageBucket) as any;
+              if (typeof bucket.move === 'function') {
+                const { error: moveError } = await bucket.move(doc.storage_path, newPath);
+                if (!moveError) resolvedStoragePath = newPath;
+              }
+            } catch (_) { /* keep original path */ }
+
+            const { error: linkError } = await db.from('candidate_documents').insert({
+              candidate_id: bestCandidateId,
+              document_type: normalizedDocumentType,
+              storage_bucket: storageBucket,
+              file_name: doc.file_name,
+              storage_path: resolvedStoragePath,
+              source: normalizedSource,
+              ...(doc.received_at ? { received_at: doc.received_at } : {}),
+            });
+
+            if (linkError) throw linkError;
+
+            await db.from('unmatched_documents').delete().eq('id', doc.id);
+
+            linkedCount++;
+          } catch (linkErr: any) {
+            logger.error(`Auto-link failed for doc ${doc.id}`, { message: linkErr?.message });
+            errorCount++;
+          }
+        }
+      }
+    }
+
+    logger.info('Auto-link run complete', {
+      dryRun,
+      total: docs?.length || 0,
+      matched: results.length,
+      linked: linkedCount,
+      errors: errorCount,
+      minConfidence,
+    });
+
+    return res.json({
+      dryRun,
+      total: docs?.length || 0,
+      matched: results.length,
+      linked: linkedCount,
+      errors: errorCount,
+      minConfidence: Math.round(minConfidence * 100),
+      results,
+    });
+  } catch (err: any) {
+    logger.error('Auto-link endpoint error', { message: err?.message, stack: err?.stack });
+    return res.status(500).json({ error: 'Auto-link failed: ' + (err?.message || 'Unknown error') });
+  }
+});
+
 export default router;

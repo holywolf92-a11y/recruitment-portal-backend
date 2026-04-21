@@ -927,13 +927,16 @@ router.post('/users', authenticate, async (req: AuthRequest, res) => {
       }
     }
 
-    // Fire-and-forget credential notification (non-blocking)
-    dispatchWelcomeCredentials({
-      name: createName,
-      email: createEmail,
-      phone: createPhone,
-      role: normalizedRole,
-    }, password).catch((err: any) => console.error('[Auth] dispatchWelcomeCredentials failed:', err?.message));
+    // Fire-and-forget credential notification for external-facing roles only
+    // (admin and worker accounts are internal staff — no auto-send)
+    if (['candidate', 'partner', 'employer'].includes(normalizedRole)) {
+      dispatchWelcomeCredentials({
+        name: createName,
+        email: createEmail,
+        phone: createPhone,
+        role: normalizedRole,
+      }, password).catch((err: any) => console.error('[Auth] dispatchWelcomeCredentials failed:', err?.message));
+    }
 
     return res.status(201).json({
       message: 'User created successfully',
@@ -958,7 +961,9 @@ router.post('/users/:userId/send-credentials', authenticate, async (req: AuthReq
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Generate a new temporary password and reset it via Supabase Auth
+    if (!['candidate', 'partner', 'employer'].includes(existingUser.role)) {
+      return res.status(400).json({ error: 'Credentials can only be sent for candidate, partner, and employer accounts' });
+    }
     const tempPassword = 'Falisha@' + Math.random().toString(36).slice(2, 8).toUpperCase();
     const supabase = supabaseAdminClient();
     const { error: resetError } = await supabase.auth.admin.updateUserById(userId, {

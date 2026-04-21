@@ -357,6 +357,12 @@ export async function enqueueCvParsingJobForAttachment(
       return { jobId: null, status: 'skipped_non_cv' as const };
     }
 
+    // Skip re-parsing if already successfully extracted (prevents duplicate OpenAI calls)
+    if (!options?.force && attachment?.parsing_status === 'extracted') {
+      logger.info('Skipping CV parsing enqueue — attachment already extracted', { attachmentId });
+      return { jobId: null, status: 'skipped_already_extracted' as const };
+    }
+
     const fileHash = attachment?.sha256 ?? null;
 
     const createdJobRow = await parsingJobs.createJob({ attachmentId, fileHash });

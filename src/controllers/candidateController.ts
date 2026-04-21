@@ -123,6 +123,7 @@ export async function listCandidatesController(req: Request, res: Response) {
       position: req.query.position as string,
       country_of_interest: req.query.country_of_interest as string,
       documents: req.query.documents as string,
+      partner_id: req.query.partner_id as string | undefined,
       applied_from: req.query.applied_from as string,
       applied_to: req.query.applied_to as string,
       sort_by: req.query.sort_by as string,

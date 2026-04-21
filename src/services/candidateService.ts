@@ -364,6 +364,8 @@ export interface CandidateFilters {
   position?: string;
   country_of_interest?: string;
   documents?: 'complete' | 'missing' | string;
+  /** Filter by partner user ID (admin Partner tab) */
+  partner_id?: string;
   /** Date Applied: from (ISO date or datetime, inclusive) */
   applied_from?: string;
   /** Date Applied: to (ISO date or datetime, inclusive) */
@@ -447,6 +449,11 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
   // Apply country-of-interest filter
   if (filters.country_of_interest && filters.country_of_interest !== 'all') {
     query = query.eq('country_of_interest', filters.country_of_interest);
+  }
+
+  // Apply partner filter (admin Partners tab)
+  if (filters.partner_id) {
+    query = query.eq('partner_id', filters.partner_id);
   }
 
   // Date Applied filter (created_at = when candidate applied)

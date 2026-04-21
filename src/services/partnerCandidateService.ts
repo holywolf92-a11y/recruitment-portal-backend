@@ -156,10 +156,55 @@ async function findMatchingCandidate(input: PartnerCandidateInput) {
   };
 }
 
+/**
+ * Partner-specific variant: only deduplicates by CNIC or passport.
+ * Phone and email are skipped because partners pre-fill their own contact
+ * details for every candidate — using them for matching would collapse all
+ * partner candidates into a single record.
+ */
+async function findMatchingCandidateForPartner(input: PartnerCandidateInput) {
+  const normalizedCnic = input.cnic ? normalizeCNIC(input.cnic) : null;
+  const explicitPassport = sanitizeText(input.passport);
+  const inferredPassport = !explicitPassport && input.cnic && !normalizedCnic ? sanitizeText(input.cnic) : null;
+  const normalizedPassport = explicitPassport
+    ? normalizePassport(explicitPassport)
+    : inferredPassport
+      ? normalizePassport(inferredPassport)
+      : null;
+  const normalizedPhone = input.phone ? normalizePhoneE164(input.phone) : null;
+  const normalizedEmail = sanitizeEmail(input.email);
+
+  if (normalizedCnic) {
+    const byCnic = await findSingleCandidateByField('cnic_normalized', normalizedCnic, 'cnic');
+    if (byCnic.candidate) {
+      return { ...byCnic, normalizedCnic, normalizedPassport, normalizedPhone, normalizedEmail };
+    }
+  }
+
+  if (normalizedPassport) {
+    const byPassport = await findSingleCandidateByField('passport_normalized', normalizedPassport, 'passport');
+    if (byPassport.candidate) {
+      return { ...byPassport, normalizedCnic, normalizedPassport, normalizedPhone, normalizedEmail };
+    }
+  }
+
+  // Deliberately skip phone/email matching for partner uploads
+  return {
+    candidate: null,
+    matchedBy: null,
+    normalizedCnic,
+    normalizedPassport,
+    normalizedPhone,
+    normalizedEmail,
+  };
+}
+
 export async function upsertPartnerCandidate(input: PartnerCandidateInput, partner: PartnerContext): Promise<PartnerCandidateUpsertResult> {
   const db = supabaseAdminClient();
   const partnerSource = buildPartnerCandidateSource(partner);
-  const match = await findMatchingCandidate(input);
+  // Use partner-specific matching: only CNIC/passport, never phone/email
+  // (partners pre-fill their own contact info, so phone/email cannot identify unique candidates)
+  const match = await findMatchingCandidateForPartner(input);
 
   if (!match.candidate) {
     const candidate = await createCandidate(
@@ -228,8 +273,17 @@ export async function upsertPartnerCandidate(input: PartnerCandidateInput, partn
     fieldSources['name'] = { field: 'name', source: 'partner_portal', updated_at: now, updated_by: partner.partnerId };
   }
   maybeFill('father_name', sanitizeText(input.father_name));
-  maybeFill('email', match.normalizedEmail);
-  maybeFill('phone', match.normalizedPhone);
+  // Always overwrite phone/email with partner's contact details (partner is the point of contact)
+  if (match.normalizedEmail) {
+    updateData['email'] = match.normalizedEmail;
+    updatedFields.push('email');
+    fieldSources['email'] = { field: 'email', source: 'partner_portal', updated_at: now, updated_by: partner.partnerId };
+  }
+  if (match.normalizedPhone) {
+    updateData['phone'] = match.normalizedPhone;
+    updatedFields.push('phone');
+    fieldSources['phone'] = { field: 'phone', source: 'partner_portal', updated_at: now, updated_by: partner.partnerId };
+  }
   maybeFill('address', sanitizeText(input.address));
   maybeFill('nationality', sanitizeText(input.nationality));
   maybeFill('position', sanitizeText(input.position));
@@ -388,6 +442,19 @@ export async function uploadPartnerManualDocument(args: {
   if (!candidate) throw new Error('Candidate not found');
 
   const resolved = resolveManualDocumentType(candidate as CandidateRow, args.requestedType, args.fileName);
+
+  // CVs go through the inbox/parsing pipeline so text is extracted and candidate
+  // fields are populated automatically (phone/email remain the partner's contact
+  // details since they were already set on the record).
+  if (resolved.category === DOCUMENT_CATEGORIES.CV_RESUME) {
+    return await ingestPartnerBulkAttachment({
+      candidateId: args.candidateId,
+      partner: args.partner,
+      fileName: args.fileName,
+      mimeType: args.mimeType,
+      buffer: args.buffer,
+    });
+  }
   const storagePath = `candidates/${args.candidateId}/partner-manual/${Date.now()}_${sanitizeStoragePathSegment(args.fileName)}`;
   const upload = await db.storage.from(STORAGE_BUCKET).upload(storagePath, args.buffer, {
     contentType: args.mimeType || detectMimeType(args.fileName),

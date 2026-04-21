@@ -309,7 +309,30 @@ export async function maybeSendMissingDataEmail(args: {
 
     const toEmail = getCandidatePreferredEmail(candidate);
 
-    if (!toEmail) {
+    // For partner-uploaded candidates, email the partner (not the candidate).
+    // The candidate's stored phone/email belongs to the partner, so the partner
+    // is the correct point of contact for missing documents.
+    let resolvedEmail: string | null = toEmail;
+    let emailRecipientName: string | null = candidate.name;
+    let isPartnerEmail = false;
+    if (candidate.is_partner_candidate && candidate.partner_id) {
+      try {
+        const { data: partnerUser } = await db
+          .from('users')
+          .select('email, name')
+          .eq('id', candidate.partner_id)
+          .maybeSingle();
+        if (partnerUser?.email) {
+          resolvedEmail = partnerUser.email;
+          emailRecipientName = partnerUser.name || partnerUser.email;
+          isPartnerEmail = true;
+        }
+      } catch {
+        // Non-fatal: fall back to candidate email
+      }
+    }
+
+    if (!resolvedEmail) {
       return { sent: false, reason: 'missing_email' } as const;
     }
 
@@ -374,7 +397,10 @@ export async function maybeSendMissingDataEmail(args: {
 
     const rendered = renderMissingDataEmail({
       candidateId: args.candidateId,
-      candidateName: candidate.name,
+      // When emailing a partner, address them by their name but mention the candidate
+      candidateName: isPartnerEmail
+        ? `${emailRecipientName} (re: candidate ${candidate.name || args.candidateId})`
+        : candidate.name,
       missingFields,
       missingDocs,
       trackingToken,
@@ -383,7 +409,7 @@ export async function maybeSendMissingDataEmail(args: {
     // Send via EmailService (Resend in production, SMTP in local dev)
     const { emailService: emailSvc } = await import('./emailService');
     const sendResult = await emailSvc.sendEmailDetailed({
-      to: toEmail,
+      to: resolvedEmail,
       subject: rendered.subject,
       html: rendered.bodyHtml,
       text: rendered.bodyText,
@@ -420,7 +446,7 @@ export async function maybeSendMissingDataEmail(args: {
       await db.from('candidate_missing_data_email_log').insert({
         candidate_id: args.candidateId,
         provider_message_id: sendResult.providerMessageId || null,
-        to_email: toEmail,
+        to_email: resolvedEmail,
         subject: rendered.subject,
         body_text: rendered.bodyText,
         missing_fields: importantMissingFieldsRaw,

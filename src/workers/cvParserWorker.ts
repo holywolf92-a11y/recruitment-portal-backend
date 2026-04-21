@@ -1220,6 +1220,32 @@ export function startCvParserWorker() {
           );
           existingCandidateId = attachmentMeta.candidate_id;
         }
+
+        // ── Sibling-attachment race condition guard ────────────────────────────
+        // When a single email contains many attachments (e.g. CV + passport +
+        // certificates), BullMQ processes them all concurrently.  Each job may
+        // see an empty DB (no candidate yet) and create its own duplicate.
+        // Fix: if a sibling attachment from the same inbox_message was already
+        // linked to a candidate, use that candidate instead of creating a new one.
+        const siblingInboxMessageId = (attachmentMeta as any)?.inbox_message_id as string | null;
+        if (!existingCandidateId && siblingInboxMessageId) {
+          const { data: siblingAttachment } = await db
+            .from('inbox_attachments')
+            .select('candidate_id')
+            .eq('inbox_message_id', siblingInboxMessageId)
+            .not('candidate_id', 'is', null)
+            .neq('id', attachmentId)
+            .limit(1)
+            .maybeSingle();
+          if (siblingAttachment?.candidate_id) {
+            existingCandidateId = siblingAttachment.candidate_id;
+            console.log(
+              `[CVParser] 🔗 Sibling-attachment match: using candidate ${existingCandidateId} ` +
+              `from same inbox_message ${siblingInboxMessageId} (prevents race-condition duplicate)`
+            );
+          }
+        }
+        // ──────────────────────────────────────────────────────────────────────
         
         let candidate;
         if (existingCandidateId) {

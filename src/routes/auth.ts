@@ -617,6 +617,14 @@ router.post(
         message: 'Document uploaded successfully.',
       });
     } catch (error: any) {
+      // Duplicate CV is not an error — the same file was already uploaded for this candidate
+      if (error?.type === 'DUPLICATE_ERROR' || error?.statusCode === 409) {
+        return res.status(200).json({
+          success: true,
+          duplicate: true,
+          message: 'This document has already been uploaded for this candidate.',
+        });
+      }
       console.error('Error uploading partner candidate document:', error);
       return res.status(400).json({ error: error.message || 'Failed to upload partner document' });
     }

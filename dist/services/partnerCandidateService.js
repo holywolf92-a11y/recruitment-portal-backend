@@ -312,7 +312,7 @@ async function uploadPartnerManualDocument(args) {
         source: 'manual',
         status: 'received',
         verification_status: documentCategories_1.VERIFICATION_STATUS.VERIFIED,
-        verification_source: 'partner_manual_upload',
+        verification_source: 'manual_review',
         received_at: now,
         ai_processing_completed_at: now,
         confidence: 1,

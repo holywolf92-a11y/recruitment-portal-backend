@@ -8,6 +8,32 @@ const inboxAttachmentService_1 = require("../services/inboxAttachmentService");
 const queue_1 = require("../config/queue");
 const parsingJobsService_1 = require("../services/parsingJobsService");
 const router = (0, express_1.Router)();
+function firstNonEmptyString(...values) {
+    for (const value of values) {
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (trimmed)
+                return trimmed;
+        }
+    }
+    return null;
+}
+function extractSenderName(payload) {
+    return firstNonEmptyString(payload?.sender_name, payload?.profile?.name, payload?.raw?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name, payload?.raw?.contacts?.[0]?.profile?.name);
+}
+function extractSenderContact(payload, source) {
+    const direct = firstNonEmptyString(payload?.sender_contact, payload?.effectiveFrom, payload?.from, payload?.raw?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from, payload?.raw?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.wa_id, payload?.raw?.contacts?.[0]?.wa_id);
+    if (direct)
+        return direct;
+    if (source === 'gmail' || source === 'email' || source === 'hostinger-imap') {
+        const fromRaw = firstNonEmptyString(payload?.from, payload?.sender_contact);
+        if (!fromRaw)
+            return null;
+        const match = fromRaw.match(/<([^>]+)>/) || fromRaw.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+        return match?.[1] || match?.[0] || null;
+    }
+    return null;
+}
 // GET /cv-inbox/stats — accurate summary counts (2 DB queries, not N queries)
 router.get('/stats', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const since = req.query.since;
@@ -103,6 +129,7 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
         .filter((r) => !source || r.inbox_messages?.source === source)
         .map((r) => {
         const msg = r.inbox_messages;
+        const payload = msg?.payload || {};
         const job = jobMap[r.id];
         const resolvedCandidateId = r.candidate_id || r.linked_candidate_id;
         let status;
@@ -142,8 +169,8 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
             status,
             source: msg?.source || 'unknown',
             receivedAt: msg?.received_at || r.created_at,
-            senderName: msg?.payload?.sender_name || null,
-            senderContact: msg?.payload?.sender_contact || null,
+            senderName: extractSenderName(payload),
+            senderContact: extractSenderContact(payload, msg?.source),
         };
     });
     res.json({ items, total: count ?? 0, limit, offset });

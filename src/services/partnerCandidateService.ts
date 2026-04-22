@@ -83,6 +83,62 @@ function sanitizeEmail(value?: string | null) {
   return trimmed || null;
 }
 
+function normalizeNationalityLabel(value?: string | null) {
+  const text = sanitizeText(value);
+  if (!text) return null;
+
+  const normalized = text.toLowerCase();
+  const map: Record<string, string> = {
+    pakistan: 'Pakistan',
+    pakistani: 'Pakistan',
+    india: 'India',
+    indian: 'India',
+    bangladesh: 'Bangladesh',
+    bangladeshi: 'Bangladesh',
+    nepal: 'Nepal',
+    nepali: 'Nepal',
+    'sri lanka': 'Sri Lanka',
+    'sri lankan': 'Sri Lanka',
+    uae: 'UAE',
+    'united arab emirates': 'UAE',
+    'saudi arabia': 'Saudi Arabia',
+    saudi: 'Saudi Arabia',
+    qatar: 'Qatar',
+    kuwait: 'Kuwait',
+    oman: 'Oman',
+    bahrain: 'Bahrain',
+  };
+
+  return map[normalized] || text;
+}
+
+function deriveNationalityFromPartnerInput(args: {
+  explicitNationality?: string | null;
+  normalizedCnic?: string | null;
+  normalizedPassport?: string | null;
+  normalizedPhone?: string | null;
+}) {
+  const explicit = normalizeNationalityLabel(args.explicitNationality);
+  if (explicit) return explicit;
+
+  const cnicDigits = String(args.normalizedCnic || '').replace(/\D/g, '');
+  if (cnicDigits.length === 13) return 'Pakistan';
+
+  const passport = String(args.normalizedPassport || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+  if (passport.startsWith('PA') || passport.startsWith('AB')) return 'Pakistan';
+  if (passport.startsWith('IN')) return 'India';
+  if (passport.startsWith('BD')) return 'Bangladesh';
+
+  const phoneDigits = String(args.normalizedPhone || '').replace(/\D/g, '').replace(/^0+/, '');
+  if (phoneDigits.startsWith('92')) return 'Pakistan';
+  if (phoneDigits.startsWith('91')) return 'India';
+  if (phoneDigits.startsWith('880')) return 'Bangladesh';
+  if (phoneDigits.startsWith('971')) return 'UAE';
+  if (phoneDigits.startsWith('966')) return 'Saudi Arabia';
+
+  return null;
+}
+
 async function findSingleCandidateByField(
   field: 'cnic_normalized' | 'passport_normalized' | 'phone' | 'email',
   value: string,
@@ -205,6 +261,12 @@ export async function upsertPartnerCandidate(input: PartnerCandidateInput, partn
   // Use partner-specific matching: only CNIC/passport, never phone/email
   // (partners pre-fill their own contact info, so phone/email cannot identify unique candidates)
   const match = await findMatchingCandidateForPartner(input);
+  const derivedNationality = deriveNationalityFromPartnerInput({
+    explicitNationality: input.nationality,
+    normalizedCnic: match.normalizedCnic,
+    normalizedPassport: match.normalizedPassport,
+    normalizedPhone: match.normalizedPhone,
+  });
 
   if (!match.candidate) {
     const candidate = await createCandidate(
@@ -217,7 +279,7 @@ export async function upsertPartnerCandidate(input: PartnerCandidateInput, partn
         passport: match.normalizedPassport || undefined,
         position: sanitizeText(input.position) || undefined,
         country_of_interest: sanitizeText(input.country_of_interest) || undefined,
-        nationality: sanitizeText(input.nationality) || undefined,
+        nationality: derivedNationality || undefined,
         address: sanitizeText(input.address) || undefined,
         status: 'Applied',
         source: 'Manual',
@@ -285,7 +347,7 @@ export async function upsertPartnerCandidate(input: PartnerCandidateInput, partn
     fieldSources['phone'] = { field: 'phone', source: 'partner_portal', updated_at: now, updated_by: partner.partnerId };
   }
   maybeFill('address', sanitizeText(input.address));
-  maybeFill('nationality', sanitizeText(input.nationality));
+  maybeFill('nationality', derivedNationality);
   maybeFill('position', sanitizeText(input.position));
   maybeFill('country_of_interest', sanitizeText(input.country_of_interest));
   maybeFill('cnic_normalized', match.normalizedCnic);

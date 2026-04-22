@@ -539,6 +539,7 @@ router.post('/partner/candidates', authenticate, async (req: AuthRequest, res) =
     const name = String(payload.name || '').trim();
     const email = String(payload.email || '').trim();
     const phone = String(payload.phone || '').trim();
+    const nationality = String(payload.nationality || '').trim();
 
     if (!name) {
       return res.status(400).json({ error: 'Candidate name is required' });
@@ -546,6 +547,10 @@ router.post('/partner/candidates', authenticate, async (req: AuthRequest, res) =
 
     if (!phone) {
       return res.status(400).json({ error: 'Phone is required' });
+    }
+
+    if (!nationality) {
+      return res.status(400).json({ error: 'Country / Nationality is required' });
     }
 
     const portalProfile = await getPortalProfile(user.id);
@@ -562,7 +567,7 @@ router.post('/partner/candidates', authenticate, async (req: AuthRequest, res) =
         passport: String(payload.passport || '').trim() || undefined,
         position: typeof payload.position === 'string' ? payload.position : undefined,
         country_of_interest: typeof payload.country_of_interest === 'string' ? payload.country_of_interest : undefined,
-        nationality: typeof payload.nationality === 'string' ? payload.nationality : undefined,
+        nationality,
         address: typeof payload.address === 'string' ? payload.address : undefined,
       },
       {

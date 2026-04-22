@@ -46,11 +46,25 @@ const DEVELOPER_NUMBERS = new Set([
     '46727676973', // Developer test number — tests job seeker / partner / employer flows
     '923303333335', // Owner test number — should always receive AI/bot replies for live testing
 ]);
+const UNSUPPORTED_WHATSAPP_FILE_EXTENSIONS = new Set([
+    '.lnk', '.exe', '.dll', '.bat', '.cmd', '.msi', '.scr',
+    '.zip', '.rar', '.7z', '.tar', '.gz',
+    '.mp4', '.mp3', '.avi', '.mov', '.mkv', '.wav', '.flac',
+]);
 function isInternalNumber(phone) {
     const normalized = phone.replace(/^\+/, '').trim();
     // Also handle if number is stored as 0xxx (convert to 92xxx Pakistan format)
     const withCountry = normalized.startsWith('0') ? '92' + normalized.slice(1) : normalized;
     return INTERNAL_NUMBERS.has(normalized) || INTERNAL_NUMBERS.has(withCountry);
+}
+function getUnsupportedWhatsAppFileExtension(fileName) {
+    if (!fileName)
+        return null;
+    const dot = fileName.lastIndexOf('.');
+    if (dot < 0)
+        return null;
+    const ext = fileName.slice(dot).toLowerCase();
+    return UNSUPPORTED_WHATSAPP_FILE_EXTENSIONS.has(ext) ? ext : null;
 }
 function isDeveloperNumber(phone) {
     const normalized = phone.replace(/^\+/, '').trim();
@@ -217,6 +231,39 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, errorHandling
     }
     else {
         logger.warn('WhatsApp webhook message missing effective sender number (skip storing conversation)', { wamid: messageData.wamid });
+    }
+    const unsupportedFileExtension = getUnsupportedWhatsAppFileExtension(messageData.fileName);
+    if (messageData.mediaId && effectiveFrom && unsupportedFileExtension) {
+        const unsupportedReply = unsupportedFileExtension === '.lnk'
+            ? 'You sent Windows shortcut files, not actual CVs. Please send the real PDF/JPG files.'
+            : 'You sent an unsupported file type. Please send the real PDF/JPG files.';
+        if (inboxMessage?.id) {
+            try {
+                const db = (0, database_1.supabaseAdminClient)();
+                await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessage.id);
+            }
+            catch {
+                // Non-fatal: acknowledgement to Meta is more important than this status update.
+            }
+        }
+        try {
+            await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, effectiveFrom, unsupportedReply);
+        }
+        catch (err) {
+            logger.warn('Failed to send unsupported-file WhatsApp reply', {
+                err: err instanceof Error ? err.message : String(err),
+                to: effectiveFrom,
+                fileName: messageData.fileName,
+                extension: unsupportedFileExtension,
+            });
+        }
+        logger.info('Skipped unsupported WhatsApp upload before queueing', {
+            wamid: messageData.wamid,
+            from: effectiveFrom,
+            fileName: messageData.fileName,
+            extension: unsupportedFileExtension,
+        });
+        return res.status(200).json({ status: 'unsupported_media', extension: unsupportedFileExtension });
     }
     // Handle media asynchronously (webhook must ACK quickly)
     if (messageData.mediaId && inboxMessage?.id && effectiveFrom) {

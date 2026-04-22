@@ -9,6 +9,20 @@ import { whatsappAttachmentVerificationQueue } from '../config/queue';
 
 const logger = createLogger('WhatsAppMediaWorker');
 
+const UNSUPPORTED_WHATSAPP_FILE_EXTENSIONS = new Set([
+  '.lnk', '.exe', '.dll', '.bat', '.cmd', '.msi', '.scr',
+  '.zip', '.rar', '.7z', '.tar', '.gz',
+  '.mp4', '.mp3', '.avi', '.mov', '.mkv', '.wav', '.flac',
+]);
+
+function getUnsupportedWhatsAppFileExtension(fileName?: string | null): string | null {
+  if (!fileName) return null;
+  const dot = fileName.lastIndexOf('.');
+  if (dot < 0) return null;
+  const ext = fileName.slice(dot).toLowerCase();
+  return UNSUPPORTED_WHATSAPP_FILE_EXTENSIONS.has(ext) ? ext : null;
+}
+
 export interface WhatsAppMediaJobData {
   inboxMessageId: string;
   wamid: string;
@@ -58,6 +72,34 @@ export function startWhatsAppMediaWorker() {
       // filename from the webhook payload (job.data.fileName) is more reliable.
       const fileName = meta.file_name || job.data.fileName || meta.id || `${mediaId}.bin`;
       const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
+      const unsupportedFileExtension = getUnsupportedWhatsAppFileExtension(fileName);
+
+      if (unsupportedFileExtension) {
+        try {
+          const db = supabaseAdminClient();
+          await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessageId);
+        } catch (err) {
+          logger.warn('Failed to mark unsupported WhatsApp upload as processed', {
+            inboxMessageId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        logger.warn('Skipping unsupported WhatsApp file before attachment creation', {
+          jobId: job.id,
+          wamid,
+          mediaId,
+          fileName,
+          extension: unsupportedFileExtension,
+          inboxMessageId,
+        });
+
+        return {
+          skippedUnsupported: true,
+          extension: unsupportedFileExtension,
+          fileName,
+        };
+      }
 
       const classification = DocumentClassifier.classify(fileName, undefined, mimeType, buffer);
       const normalizedMime = String(mimeType || '').toLowerCase();

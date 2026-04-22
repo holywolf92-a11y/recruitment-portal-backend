@@ -62,6 +62,15 @@ export class ParsingJobsService {
   async setStatus(jobId: string, status: JobStatus, extra?: Record<string, any>) {
     const db = supabaseAdminClient();
 
+    const resultPayload = extra?.result_json !== undefined
+      ? (typeof extra.result_json === 'object' && extra.result_json !== null
+          ? {
+              ...extra.result_json,
+              ...(extra?.skipped_reason != null && { skipped_reason: extra.skipped_reason }),
+            }
+          : extra.result_json)
+      : (extra?.skipped_reason != null ? { skipped_reason: extra.skipped_reason } : undefined);
+
     // Progressive payloads: try most-complete first, fall back to minimal on schema errors.
     // Production table (migration 002) has: id, inbox_attachment_id, status, output, created_at
     // Newer migrations add: finished_at, error_code, error_message, result_json, etc.
@@ -72,12 +81,12 @@ export class ParsingJobsService {
         ...(extra?.finished_at  != null && { finished_at:  extra.finished_at }),
         ...(extra?.error_code   != null && { error_code:   extra.error_code }),
         ...(extra?.error_message != null && { error_message: extra.error_message }),
-        ...(extra?.result_json  !== undefined && { output: extra.result_json }),
+        ...(resultPayload !== undefined && { output: resultPayload }),
       },
       // Minimal: status + output (migration 002 schema)
       {
         status,
-        ...(extra?.result_json !== undefined && { output: extra.result_json }),
+        ...(resultPayload !== undefined && { output: resultPayload }),
       },
       // Absolute minimum
       { status },

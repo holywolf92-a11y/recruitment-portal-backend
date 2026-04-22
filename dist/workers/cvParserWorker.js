@@ -1105,6 +1105,29 @@ function startCvParserWorker() {
                 console.log(`[CVParser] Progressive match returned no result; using attachment's linked candidate ${attachmentMeta.candidate_id} (force=true)`);
                 existingCandidateId = attachmentMeta.candidate_id;
             }
+            // ── Sibling-attachment race condition guard ────────────────────────────
+            // When a single email contains many attachments (e.g. CV + passport +
+            // certificates), BullMQ processes them all concurrently.  Each job may
+            // see an empty DB (no candidate yet) and create its own duplicate.
+            // Fix: if a sibling attachment from the same inbox_message was already
+            // linked to a candidate, use that candidate instead of creating a new one.
+            const siblingInboxMessageId = attachmentMeta?.inbox_message_id;
+            if (!existingCandidateId && siblingInboxMessageId) {
+                const { data: siblingAttachment } = await db
+                    .from('inbox_attachments')
+                    .select('candidate_id')
+                    .eq('inbox_message_id', siblingInboxMessageId)
+                    .not('candidate_id', 'is', null)
+                    .neq('id', attachmentId)
+                    .limit(1)
+                    .maybeSingle();
+                if (siblingAttachment?.candidate_id) {
+                    existingCandidateId = siblingAttachment.candidate_id;
+                    console.log(`[CVParser] 🔗 Sibling-attachment match: using candidate ${existingCandidateId} ` +
+                        `from same inbox_message ${siblingInboxMessageId} (prevents race-condition duplicate)`);
+                }
+            }
+            // ──────────────────────────────────────────────────────────────────────
             let candidate;
             if (existingCandidateId) {
                 // Update existing candidate using progressive completion
@@ -1292,6 +1315,12 @@ function startCvParserWorker() {
             // This prevents the attachment from silently staying 'extracted' with no candidate.
             if (!newCandidate?.id) {
                 console.warn(`[CVParser] ⚠️  No candidate created or found for attachment ${attachmentId} after all attempts. Marking as needs_review.`);
+                await setJobAndAttachmentStatus('extracted', {
+                    finished_at: new Date().toISOString(),
+                    skipped_reason: 'candidate_creation_failed',
+                    error_code: null,
+                    error_message: null,
+                });
                 await db.from('inbox_attachments').update({ parsing_status: 'needs_review' }).eq('id', attachmentId);
                 return { skipped: true, reason: 'candidate_creation_failed' };
             }
@@ -1361,7 +1390,7 @@ function startCvParserWorker() {
                             const uploadId = (0, crypto_2.randomUUID)();
                             const originalPath = await (0, splitUploadService_1.preserveOriginalPdf)(fileBytes, uploadId, mimeType);
                             console.log(`[CVParser] Original PDF preserved at: ${originalPath}`);
-                            const splitResult = await (0, splitUploadService_1.callSplitAndCategorize)(fileBase64, fileName, mimeType, undefined, true);
+                            const splitResult = await (0, splitUploadService_1.callSplitAndCategorize)(fileBase64, fileName, mimeType, undefined, false);
                             const docs = (splitResult?.documents || []).slice().sort((a, b) => {
                                 const aIsCv = String(a?.doc_type || '').toLowerCase() === 'cv_resume';
                                 const bIsCv = String(b?.doc_type || '').toLowerCase() === 'cv_resume';

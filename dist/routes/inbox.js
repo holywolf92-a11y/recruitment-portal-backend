@@ -34,6 +34,88 @@ function extractSenderContact(payload, source) {
     }
     return null;
 }
+function isWhatsAppLikeSource(source) {
+    return source === 'whatsapp' || source === 'WhatsApp' || source === 'whatsapp_backfill_pdf';
+}
+function isForwardedWhatsAppPayload(payload) {
+    return payload?.context?.forwarded === true ||
+        payload?.raw?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.context?.forwarded === true ||
+        payload?.raw?.messages?.[0]?.context?.forwarded === true;
+}
+function parseJobOutput(job) {
+    const raw = job?.output ?? job?.result_json ?? null;
+    if (!raw)
+        return null;
+    if (typeof raw === 'object')
+        return raw;
+    if (typeof raw !== 'string')
+        return null;
+    try {
+        return JSON.parse(raw);
+    }
+    catch {
+        return null;
+    }
+}
+function humanizeSkippedReason(skippedReason) {
+    switch (skippedReason) {
+        case 'insufficient_candidate_signals':
+            return 'Insufficient identity signals in the CV';
+        case 'candidate_creation_failed':
+            return 'Candidate was not created automatically. Manual review is required.';
+        case 'duplicate_file_hash':
+            return 'Duplicate CV file already linked to an existing candidate';
+        case 'already_linked':
+            return 'Already linked to an existing candidate';
+        case 'pre_2024_cutoff':
+            return 'Historical pre-2024 email import skipped by policy';
+        case 'non_cv_attachment':
+            return 'Attachment is not a CV';
+        default:
+            return skippedReason.replace(/_/g, ' ');
+    }
+}
+function deriveSenderContactNote(payload, source) {
+    if (isWhatsAppLikeSource(source)) {
+        return isForwardedWhatsAppPayload(payload)
+            ? 'Sender WhatsApp number only. Forwarded message; not the candidate phone.'
+            : 'Sender WhatsApp number only. Not stored as the candidate phone.';
+    }
+    if (source === 'gmail' || source === 'email' || source === 'hostinger-imap') {
+        return 'Sender email only.';
+    }
+    return null;
+}
+function deriveReviewReason(args) {
+    const { status, source, payload, job, hasCandidate } = args;
+    if (hasCandidate) {
+        return 'Candidate created and linked';
+    }
+    if (status === 'queued') {
+        return 'Waiting to be parsed';
+    }
+    if (status === 'processing') {
+        return 'Parsing in progress';
+    }
+    if (status === 'error') {
+        return firstNonEmptyString(job?.error_message, 'Parsing failed') || 'Parsing failed';
+    }
+    const jobOutput = parseJobOutput(job);
+    const skippedReason = firstNonEmptyString(jobOutput?.skipped_reason, job?.skipped_reason);
+    if (skippedReason) {
+        return humanizeSkippedReason(skippedReason);
+    }
+    if (isWhatsAppLikeSource(source) && isForwardedWhatsAppPayload(payload)) {
+        return 'Forwarded WhatsApp CV. Sender contact below belongs to the sender, not the candidate.';
+    }
+    if (/duplicate/i.test(String(job?.error_message || ''))) {
+        return 'Possible duplicate candidate or duplicate CV. Manual review required.';
+    }
+    if (isWhatsAppLikeSource(source)) {
+        return 'No safe auto-link from WhatsApp. Review candidate identity manually.';
+    }
+    return 'Candidate was not created or auto-linked. Review identity details manually.';
+}
 // GET /cv-inbox/stats — accurate summary counts (2 DB queries, not N queries)
 router.get('/stats', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const since = req.query.since;
@@ -114,7 +196,7 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     if (attachmentIds.length > 0) {
         const { data: jobs } = await db
             .from('parsing_jobs')
-            .select('id, status, error_message, inbox_attachment_id, attachment_id, created_at')
+            .select('*')
             .or(`inbox_attachment_id.in.(${attachmentIds.join(',')}),attachment_id.in.(${attachmentIds.join(',')})`)
             .order('created_at', { ascending: false });
         for (const j of jobs || []) {
@@ -163,14 +245,23 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
             fileName: r.file_name || 'Attachment',
             mimeType: r.mime_type,
             candidateId: resolvedCandidateId || null,
+            candidateCreated: !!resolvedCandidateId,
             jobId: job?.id || null,
             jobStatus: job?.status || null,
             jobError: job?.error_message || null,
             status,
+            reviewReason: deriveReviewReason({
+                status,
+                source: msg?.source,
+                payload,
+                job,
+                hasCandidate: !!resolvedCandidateId,
+            }),
             source: msg?.source || 'unknown',
             receivedAt: msg?.received_at || r.created_at,
             senderName: extractSenderName(payload),
             senderContact: extractSenderContact(payload, msg?.source),
+            senderContactNote: deriveSenderContactNote(payload, msg?.source),
         };
     });
     res.json({ items, total: count ?? 0, limit, offset });

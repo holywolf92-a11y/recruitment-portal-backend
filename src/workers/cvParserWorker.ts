@@ -1466,6 +1466,12 @@ export function startCvParserWorker() {
         // This prevents the attachment from silently staying 'extracted' with no candidate.
         if (!newCandidate?.id) {
           console.warn(`[CVParser] ⚠️  No candidate created or found for attachment ${attachmentId} after all attempts. Marking as needs_review.`);
+          await setJobAndAttachmentStatus('extracted', {
+            finished_at: new Date().toISOString(),
+            skipped_reason: 'candidate_creation_failed',
+            error_code: null,
+            error_message: null,
+          });
           await db.from('inbox_attachments').update({ parsing_status: 'needs_review' }).eq('id', attachmentId);
           return { skipped: true, reason: 'candidate_creation_failed' };
         }

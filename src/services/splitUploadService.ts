@@ -160,7 +160,7 @@ export async function callSplitAndCategorize(
     file_name: fileName,
     mime_type: mimeType,
     candidate_data: candidateData ?? null,
-    use_textract: useTextract ?? true,
+    use_textract: useTextract ?? false,
   };
   const body = Buffer.from(JSON.stringify(payload), 'utf8');
   const sig = hmacSignature(body);

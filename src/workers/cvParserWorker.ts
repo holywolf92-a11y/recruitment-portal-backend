@@ -1539,7 +1539,7 @@ export function startCvParserWorker() {
             const originalPath = await preserveOriginalPdf(fileBytes, uploadId, mimeType);
             console.log(`[CVParser] Original PDF preserved at: ${originalPath}`);
 
-            const splitResult = await callSplitAndCategorize(fileBase64, fileName, mimeType, undefined, true);
+            const splitResult = await callSplitAndCategorize(fileBase64, fileName, mimeType, undefined, false);
             const docs = (splitResult?.documents || []).slice().sort((a: any, b: any) => {
               const aIsCv = String(a?.doc_type || '').toLowerCase() === 'cv_resume';
               const bIsCv = String(b?.doc_type || '').toLowerCase() === 'cv_resume';

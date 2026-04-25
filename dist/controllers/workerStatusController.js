@@ -5,6 +5,23 @@ const database_1 = require("../config/database");
 const queue_1 = require("../config/queue");
 const WORKER_STATUS_CACHE_TTL_MS = Number(process.env.WORKER_STATUS_CACHE_TTL_MS || 60000);
 let workerStatusCache = null;
+function getDeployedCommitSha() {
+    const sha = process.env.RAILWAY_GIT_COMMIT_SHA ||
+        process.env.RAILWAY_GIT_COMMIT ||
+        process.env.COMMIT_SHA ||
+        process.env.GIT_COMMIT ||
+        process.env.SOURCE_VERSION ||
+        process.env.VERCEL_GIT_COMMIT_SHA ||
+        process.env.RENDER_GIT_COMMIT ||
+        process.env.FLY_IMAGE_REF ||
+        null;
+    return sha ? String(sha) : null;
+}
+function shortSha(sha) {
+    if (!sha)
+        return null;
+    return sha.length > 12 ? sha.slice(0, 12) : sha;
+}
 /**
  * Get worker status and queue health
  * GET /api/worker-status
@@ -31,6 +48,8 @@ async function getWorkerStatus(req, res) {
                 role: deploymentRole,
                 service: process.env.RAILWAY_SERVICE_NAME || 'unknown',
                 splitArchitecture,
+                commitSha: getDeployedCommitSha(),
+                commitShort: shortSha(getDeployedCommitSha()),
             },
             environment: {
                 RUN_WORKER: process.env.RUN_WORKER || 'not set',

@@ -532,24 +532,39 @@ export async function getCandidateBrowseMetadata(userId: string): Promise<Candid
     photo_received?: boolean | null;
     medical_received?: boolean | null;
   };
-  const { data, error } = await db
-    .from('candidates')
-    .select([
-      'position',
-      'country_of_interest',
-      'status',
-      'cv_received',
-      'passport_received',
-      'certificate_received',
-      'photo_received',
-      'medical_received',
-    ].join(','))
-    .neq('status', 'Deleted')
-    .limit(100000);
 
-  if (error) throw error;
+  // Paginate through ALL records to avoid PostgREST's default max_rows=1000 cap.
+  // Without pagination, the single fetch is silently truncated and profession counts
+  // are computed from an incomplete dataset, producing wrong totals.
+  const PAGE_SIZE = 1000;
+  const allRows: CandidateBrowseMetadataRow[] = [];
+  let page = 0;
+  while (true) {
+    const from = page * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+    const { data, error } = await db
+      .from('candidates')
+      .select([
+        'position',
+        'country_of_interest',
+        'status',
+        'cv_received',
+        'passport_received',
+        'certificate_received',
+        'photo_received',
+        'medical_received',
+      ].join(','))
+      .neq('status', 'Deleted')
+      .range(from, to);
 
-  const rows = ((data || []) as CandidateBrowseMetadataRow[]);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    allRows.push(...(data as CandidateBrowseMetadataRow[]));
+    if (data.length < PAGE_SIZE) break; // last page
+    page++;
+  }
+
+  const rows = allRows;
 
   const professionMap = new Map<string, {
     count: number;
@@ -709,20 +724,32 @@ export async function getCandidateDashboardStats(userId: string): Promise<Candid
     pendingReviewRes,
     deployedRes,
     newThisWeekRes,
-    professionsRes,
   ] = await Promise.all([
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').limit(0),
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('needs_review', true).limit(0),
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('status', 'Deployed').limit(0),
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').gte('created_at', weekAgoIso).limit(0),
-    db.from('candidates').select('position').neq('status', 'Deleted').not('position', 'is', null).limit(100000),
   ]);
 
-  const distinctProfessions = new Set(
-    (professionsRes.data || [])
-      .map((row: any) => String(row.position || '').trim())
-      .filter((value: string) => value.length > 0)
-  );
+  // Paginate through all candidates to get distinct professions — Supabase max_rows caps single queries at 1000
+  const distinctProfessions = new Set<string>();
+  let pg = 0;
+  const PG = 1000;
+  while (true) {
+    const { data: posData } = await db
+      .from('candidates')
+      .select('position')
+      .neq('status', 'Deleted')
+      .not('position', 'is', null)
+      .range(pg * PG, (pg + 1) * PG - 1);
+    if (!posData || posData.length === 0) break;
+    posData.forEach((row: any) => {
+      const p = String(row.position || '').trim();
+      if (p) distinctProfessions.add(p);
+    });
+    if (posData.length < PG) break;
+    pg++;
+  }
 
   return {
     totalCandidates: totalCandidatesRes.count ?? 0,

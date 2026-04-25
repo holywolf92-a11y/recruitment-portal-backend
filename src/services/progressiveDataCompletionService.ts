@@ -297,6 +297,15 @@ export async function enrichCandidateData(
       father_name: 255,
       // Some deployments have this as VARCHAR(255); CV summaries can exceed that.
       professional_summary: 255,
+
+      // Additional CV extraction fields that are VARCHAR(255) in some deployments.
+      // Keep these short to avoid BullMQ retry loops due to Postgres 22001 errors.
+      skills: 255,
+      languages: 255,
+      certifications: 255,
+      internships: 255,
+      previous_employment: 255,
+      address: 255,
     };
     for (const [col, maxLen] of Object.entries(VARCHAR_LIMITS)) {
       if (typeof updates[col] === 'string' && updates[col].length > maxLen) {

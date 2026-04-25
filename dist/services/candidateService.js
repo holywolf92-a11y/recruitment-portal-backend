@@ -330,14 +330,27 @@ const LIST_FIELDS = [
 async function listCandidates(filters = {}, userId) {
     const db = (0, database_1.supabaseAdminClient)();
     let query = db.from('candidates').select(LIST_FIELDS, { count: 'exact' });
+    const normalizedSearch = (filters.search || '').trim();
+    const normalizedSearchLower = normalizedSearch.toLowerCase();
+    const genderSearch = normalizedSearchLower === 'female'
+        ? 'Female'
+        : normalizedSearchLower === 'male'
+            ? 'Male'
+            : normalizedSearchLower === 'other'
+                ? 'Other'
+                : null;
     // By default, exclude deleted candidates (unless explicitly filtering for them)
     if (!filters.status || filters.status !== 'Deleted') {
         query = query.neq('status', 'Deleted');
     }
     // Global search: partial, case-insensitive, across name, passport, CNIC, email, phone, position, skills (server-side)
-    if (filters.search && filters.search.trim()) {
-        const q = filters.search.trim();
-        query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%,candidate_code.ilike.%${q}%,phone.ilike.%${q}%,passport_normalized.ilike.%${q}%,cnic_normalized.ilike.%${q}%,position.ilike.%${q}%,partner_name.ilike.%${q}%,skills.ilike.%${q}%`);
+    if (normalizedSearch) {
+        if (genderSearch) {
+            query = query.eq('gender', genderSearch);
+        }
+        else {
+            query = query.or(`name.ilike.%${normalizedSearch}%,email.ilike.%${normalizedSearch}%,candidate_code.ilike.%${normalizedSearch}%,phone.ilike.%${normalizedSearch}%,passport_normalized.ilike.%${normalizedSearch}%,cnic_normalized.ilike.%${normalizedSearch}%,position.ilike.%${normalizedSearch}%,partner_name.ilike.%${normalizedSearch}%,skills.ilike.%${normalizedSearch}%`);
+        }
     }
     // Apply status filter
     if (filters.status && filters.status !== 'all' && filters.status !== 'Deleted') {
@@ -512,12 +525,25 @@ async function getCandidateBrowseMetadata(userId) {
 /** Daily summary for Excel-style report cards. Respects same filters as list (date range, folder, search). */
 async function getDailyStats(filters, userId) {
     const db = (0, database_1.supabaseAdminClient)();
+    const normalizedSearch = (filters.search || '').trim();
+    const normalizedSearchLower = normalizedSearch.toLowerCase();
+    const genderSearch = normalizedSearchLower === 'female'
+        ? 'Female'
+        : normalizedSearchLower === 'male'
+            ? 'Male'
+            : normalizedSearchLower === 'other'
+                ? 'Other'
+                : null;
     function buildBaseQuery(options) {
         let q = db.from('candidates').select('id', { count: 'exact' });
         q = q.neq('status', 'Deleted');
-        if (filters.search?.trim()) {
-            const search = filters.search.trim();
-            q = q.or(`name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,passport_normalized.ilike.%${search}%,cnic_normalized.ilike.%${search}%`);
+        if (normalizedSearch) {
+            if (genderSearch) {
+                q = q.eq('gender', genderSearch);
+            }
+            else {
+                q = q.or(`name.ilike.%${normalizedSearch}%,email.ilike.%${normalizedSearch}%,phone.ilike.%${normalizedSearch}%,passport_normalized.ilike.%${normalizedSearch}%,cnic_normalized.ilike.%${normalizedSearch}%`);
+            }
         }
         if (filters.position && filters.position !== 'all')
             q = q.eq('position', filters.position);

@@ -29,6 +29,7 @@
     "smoke:local-queue": "node scripts/smoke-local-queue.js",
     "smoke:whatsapp-bot": "node scripts/smoke-whatsapp-bot-flow-guards.js",
     "fix:photo-metadata": "node scripts/fixCandidatePhotoMetadata.js",
+    "audit:explicit-gender": "node scripts/auditExplicitCandidateGender.js",
     "eval:whatsapp-grounding:dist": "node dist/scripts/runWhatsAppGroundingEval.js",
     "eval:whatsapp-grounding": "npm run build:compile && npm run eval:whatsapp-grounding:dist",
     "report:whatsapp-baseline": "npm run build:compile && node dist/scripts/runWhatsAppBaselineReport.js",

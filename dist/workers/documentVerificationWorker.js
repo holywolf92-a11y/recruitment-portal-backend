@@ -335,6 +335,18 @@ async function processDocumentVerification(job) {
     if (currentDocument?.candidate_id) {
         candidateId = currentDocument.candidate_id;
     }
+    // IMPORTANT: Avoid expensive re-processing on BullMQ retries.
+    // If the document has already moved out of pending_ai (e.g. needs_review/failed/verified),
+    // do not call the AI service again.
+    if (currentDocument?.verification_status && currentDocument.verification_status !== documentCategories_1.VERIFICATION_STATUS.PENDING_AI) {
+        console.log(`[DocumentVerification] Skipping document ${documentId} (verification_status=${currentDocument.verification_status}) — not pending_ai`);
+        return {
+            success: true,
+            skipped: true,
+            documentId,
+            verification_status: currentDocument.verification_status,
+        };
+    }
     const allowCandidateReassignment = currentDocument?.source !== 'email';
     const trustedStoredAiResult = buildTrustedStoredAiResult(currentDocument);
     try {

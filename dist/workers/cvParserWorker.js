@@ -61,6 +61,22 @@ const singleCvHeuristics_1 = require("../utils/singleCvHeuristics");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 const STORAGE_BUCKET = 'documents';
+function isVarcharOverflowError(err) {
+    const message = String(err?.message || err || '');
+    const code = String(err?.code || err?.status || err?.statusCode || '');
+    const details = String(err?.details || err?.hint || '');
+    // Postgres: string_data_right_truncation
+    if (code === '22001')
+        return true;
+    return (/value too long for type character varying\(\d+\)/i.test(message) ||
+        /value too long for type character varying\(\d+\)/i.test(details) ||
+        /string_data_right_truncation/i.test(message) ||
+        /string_data_right_truncation/i.test(details));
+}
+function safeErrorMessage(err, maxLen = 500) {
+    const msg = String(err?.message || err || 'Unknown error');
+    return msg.length > maxLen ? `${msg.slice(0, maxLen)}…` : msg;
+}
 function signHmac(body) {
     return crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
 }
@@ -1762,6 +1778,25 @@ function startCvParserWorker() {
         }
         catch (err) {
             const db = (0, database_1.supabaseAdminClient)();
+            const errMsg = safeErrorMessage(err);
+            // PERMANENT DEFUSE: known DB constraint / varchar overflow should NEVER retry-loop.
+            // Mark the attachment as unknown + needs_review to force the worker to skip it in future,
+            // and prevent BullMQ from retrying this job.
+            if (isVarcharOverflowError(err)) {
+                const { error: attachmentUpdateError } = await db
+                    .from('inbox_attachments')
+                    .update({ attachment_kind: 'unknown', parsing_status: 'needs_review' })
+                    .eq('id', attachmentId);
+                if (attachmentUpdateError) {
+                    console.warn(`[CVParser] Failed to defuse attachment ${attachmentId} after varchar overflow:`, attachmentUpdateError.message);
+                }
+                await parsingJobs.setStatus(jobId, 'failed', {
+                    finished_at: new Date().toISOString(),
+                    error_code: 'NON_RETRYABLE_DB_VARCHAR_OVERFLOW',
+                    error_message: errMsg,
+                });
+                throw new bullmq_1.UnrecoverableError(`Non-retryable DB varchar overflow: ${errMsg}`);
+            }
             const { error: attachmentStatusError } = await db
                 .from('inbox_attachments')
                 .update({ parsing_status: 'failed' })
@@ -1772,7 +1807,7 @@ function startCvParserWorker() {
             await parsingJobs.setStatus(jobId, 'failed', {
                 finished_at: new Date().toISOString(),
                 error_code: 'PARSING_FAILED',
-                error_message: err?.message ?? 'Unknown error',
+                error_message: errMsg,
             });
             throw err;
         }

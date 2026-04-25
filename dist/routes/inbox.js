@@ -8,6 +8,37 @@ const inboxAttachmentService_1 = require("../services/inboxAttachmentService");
 const queue_1 = require("../config/queue");
 const parsingJobsService_1 = require("../services/parsingJobsService");
 const router = (0, express_1.Router)();
+
+function chunkArray(arr, size) {
+    if (size <= 0)
+        return [arr];
+    const chunks = [];
+    for (let i = 0; i < arr.length; i += size) {
+        chunks.push(arr.slice(i, i + size));
+    }
+    return chunks;
+}
+
+function isAllowedCvInboxMime({ mimeType, fileName, source }) {
+    const mime = String(mimeType || '').toLowerCase();
+    const name = String(fileName || '').toLowerCase();
+    const src = String(source || '').toLowerCase();
+    const isWhatsAppSource = src.startsWith('whatsapp');
+    const looksLikePdf = mime === 'application/pdf' || name.endsWith('.pdf');
+    // WhatsApp channel is PDF-only.
+    if (isWhatsAppSource) {
+        return looksLikePdf;
+    }
+    if (looksLikePdf ||
+        mime === 'application/msword' ||
+        mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+        return true;
+    }
+    if (mime.startsWith('image/')) {
+        return src === 'web';
+    }
+    return false;
+}
 function firstNonEmptyString(...values) {
     for (const value of values) {
         if (typeof value === 'string') {
@@ -120,53 +151,109 @@ function deriveReviewReason(args) {
 router.get('/stats', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const since = req.query.since;
     const db = (0, database_1.supabaseAdminClient)();
+    const docMimes = [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ];
+    const baseCvOrNeedsReview = 'attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review';
     // Total CV attachments
         // Include legacy `attachment_type=cv`, new `attachment_kind=cv` (WhatsApp flow often uses attachment_type=document)
         // and any explicitly defused/flagged rows (`parsing_status=needs_review`) so they show up for manual cleanup.
-        let totalQ = db
-            .from('inbox_attachments')
-            .select('id', { count: 'exact', head: true })
-            .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review');
+    let totalDocsQ = db
+        .from('inbox_attachments')
+        .select('id', { count: 'exact', head: true })
+        .or(baseCvOrNeedsReview)
+        .in('mime_type', docMimes);
     if (since)
-        totalQ = totalQ.gte('created_at', since);
-    const { count: total } = await totalQ;
+        totalDocsQ = totalDocsQ.gte('created_at', since);
+    const { count: totalDocs } = await totalDocsQ;
+    let totalWebImagesQ = db
+        .from('inbox_attachments')
+        .select('id, inbox_messages!inner(source)', { count: 'exact', head: true })
+        .or(baseCvOrNeedsReview)
+        .ilike('mime_type', 'image/%')
+        .eq('inbox_messages.source', 'web');
+    if (since)
+        totalWebImagesQ = totalWebImagesQ.gte('created_at', since);
+    const { count: totalWebImages } = await totalWebImagesQ;
+    const total = (totalDocs ?? 0) + (totalWebImages ?? 0);
     // Extracted (candidate linked)
-        let extractedQ = db
-            .from('inbox_attachments')
-            .select('id', { count: 'exact', head: true })
-            .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
-            .not('candidate_id', 'is', null);
+    let extractedDocsQ = db
+        .from('inbox_attachments')
+        .select('id', { count: 'exact', head: true })
+        .or(baseCvOrNeedsReview)
+        .in('mime_type', docMimes)
+        .not('candidate_id', 'is', null);
     if (since)
-        extractedQ = extractedQ.gte('created_at', since);
-    const { count: extracted } = await extractedQ;
+        extractedDocsQ = extractedDocsQ.gte('created_at', since);
+    const { count: extractedDocs } = await extractedDocsQ;
+    let extractedWebImagesQ = db
+        .from('inbox_attachments')
+        .select('id, inbox_messages!inner(source)', { count: 'exact', head: true })
+        .or(baseCvOrNeedsReview)
+        .ilike('mime_type', 'image/%')
+        .eq('inbox_messages.source', 'web')
+        .not('candidate_id', 'is', null);
+    if (since)
+        extractedWebImagesQ = extractedWebImagesQ.gte('created_at', since);
+    const { count: extractedWebImages } = await extractedWebImagesQ;
+    const extracted = (extractedDocs ?? 0) + (extractedWebImages ?? 0);
     // linked_candidate_id extracted (WhatsApp flow)
-        let linkedQ = db
-            .from('inbox_attachments')
-            .select('id', { count: 'exact', head: true })
-            .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
-            .is('candidate_id', null)
-            .not('linked_candidate_id', 'is', null);
+    let linkedDocsQ = db
+        .from('inbox_attachments')
+        .select('id', { count: 'exact', head: true })
+        .or(baseCvOrNeedsReview)
+        .in('mime_type', docMimes)
+        .is('candidate_id', null)
+        .not('linked_candidate_id', 'is', null);
     if (since)
-        linkedQ = linkedQ.gte('created_at', since);
-    const { count: linked } = await linkedQ;
+        linkedDocsQ = linkedDocsQ.gte('created_at', since);
+    const { count: linkedDocs } = await linkedDocsQ;
+    let linkedWebImagesQ = db
+        .from('inbox_attachments')
+        .select('id, inbox_messages!inner(source)', { count: 'exact', head: true })
+        .or(baseCvOrNeedsReview)
+        .ilike('mime_type', 'image/%')
+        .eq('inbox_messages.source', 'web')
+        .is('candidate_id', null)
+        .not('linked_candidate_id', 'is', null);
+    if (since)
+        linkedWebImagesQ = linkedWebImagesQ.gte('created_at', since);
+    const { count: linkedWebImages } = await linkedWebImagesQ;
+    const linked = (linkedDocs ?? 0) + (linkedWebImages ?? 0);
     const extractedTotal = (extracted ?? 0) + (linked ?? 0);
     const pending = (total ?? 0) - extractedTotal;
     // needs_review = parsing succeeded but no candidate could be created/linked
-        let needsReviewQ = db
-            .from('inbox_attachments')
-            .select('id', { count: 'exact', head: true })
-            .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
-            .is('candidate_id', null)
-            .is('linked_candidate_id', null)
-            .in('parsing_status', ['needs_review', 'extracted']);
+    let needsReviewDocsQ = db
+        .from('inbox_attachments')
+        .select('id', { count: 'exact', head: true })
+        .or(baseCvOrNeedsReview)
+        .in('mime_type', docMimes)
+        .is('candidate_id', null)
+        .is('linked_candidate_id', null)
+        .in('parsing_status', ['needs_review', 'extracted']);
     if (since)
-        needsReviewQ = needsReviewQ.gte('created_at', since);
-    const { count: needsReview } = await needsReviewQ;
+        needsReviewDocsQ = needsReviewDocsQ.gte('created_at', since);
+    const { count: needsReviewDocs } = await needsReviewDocsQ;
+    let needsReviewWebImagesQ = db
+        .from('inbox_attachments')
+        .select('id, inbox_messages!inner(source)', { count: 'exact', head: true })
+        .or(baseCvOrNeedsReview)
+        .ilike('mime_type', 'image/%')
+        .eq('inbox_messages.source', 'web')
+        .is('candidate_id', null)
+        .is('linked_candidate_id', null)
+        .in('parsing_status', ['needs_review', 'extracted']);
+    if (since)
+        needsReviewWebImagesQ = needsReviewWebImagesQ.gte('created_at', since);
+    const { count: needsReviewWebImages } = await needsReviewWebImagesQ;
+    const needsReview = (needsReviewDocs ?? 0) + (needsReviewWebImages ?? 0);
     res.json({
-        total: total ?? 0,
+        total,
         extracted: extractedTotal,
         pending,
-        needs_review: needsReview ?? 0,
+        needs_review: needsReview,
     });
 }));
 // GET /cv-inbox/items — efficient single-page fetch (replaces N+1 calls from UI)
@@ -178,12 +265,15 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const source = req.query.source;
     const db = (0, database_1.supabaseAdminClient)();
     // Query 1: inbox_attachments + joined message info
-          let query = db
-                .from('inbox_attachments')
-                .select(`id, file_name, mime_type, attachment_type, parsing_status,
+        let query = db
+            .from('inbox_attachments')
+            .select(`id, file_name, mime_type, attachment_type, parsing_status,
             candidate_id, linked_candidate_id, inbox_message_id, created_at,
             inbox_messages(source, received_at, status, payload)`, { count: 'exact' })
-                .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+            .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+            // Audio/video WhatsApp messages are stored but cannot be parsed as CVs; exclude them from CV Inbox.
+            .not('mime_type', 'ilike', 'audio/%')
+            .not('mime_type', 'ilike', 'video/%')
                 .order('created_at', { ascending: false })
                 .range(offset, offset + limit - 1);
     if (since)
@@ -196,21 +286,37 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     // Query 2: latest parsing job per attachment (one batch query, not N)
     const jobMap = {};
     if (attachmentIds.length > 0) {
-        const { data: jobs } = await db
-            .from('parsing_jobs')
-            .select('*')
-            .or(`inbox_attachment_id.in.(${attachmentIds.join(',')}),attachment_id.in.(${attachmentIds.join(',')})`)
-            .order('created_at', { ascending: false });
-        for (const j of jobs || []) {
-            const aid = j.inbox_attachment_id || j.attachment_id;
-            if (aid && !jobMap[aid]) {
-                jobMap[aid] = { id: j.id, status: j.status, error_message: j.error_message };
+        // IMPORTANT: don't use one giant `.or(in.(...))` list — it can exceed URL limits and
+        // silently fail. Chunk the lookup and fall back across schema variants.
+        for (const chunk of chunkArray(attachmentIds, 80)) {
+            const collected = [];
+            const resA = await db
+                .from('parsing_jobs')
+                .select('id,status,created_at,error_message,inbox_attachment_id')
+                .in('inbox_attachment_id', chunk)
+                .order('created_at', { ascending: false });
+            if (!resA.error && resA.data)
+                collected.push(...resA.data);
+            const resB = await db
+                .from('parsing_jobs')
+                .select('id,status,created_at,error_message,attachment_id')
+                .in('attachment_id', chunk)
+                .order('created_at', { ascending: false });
+            if (!resB.error && resB.data)
+                collected.push(...resB.data);
+            for (const j of collected) {
+                const aid = j.inbox_attachment_id || j.attachment_id;
+                if (aid && !jobMap[aid]) {
+                    jobMap[aid] = { id: j.id, status: j.status, error_message: j.error_message };
+                }
             }
         }
     }
     const items = rows
         // Optional source filter (applied in JS since nested resource filter varies by PG version)
         .filter((r) => !source || r.inbox_messages?.source === source)
+        // Enforce inbox allow-list so WhatsApp can't clutter CV Inbox.
+        .filter((r) => isAllowedCvInboxMime({ mimeType: r.mime_type, fileName: r.file_name, source: r.inbox_messages?.source }))
         .map((r) => {
         const msg = r.inbox_messages;
         const payload = msg?.payload || {};

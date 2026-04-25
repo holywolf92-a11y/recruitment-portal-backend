@@ -42,6 +42,61 @@ function startWhatsAppMediaWorker() {
         if (!meta?.url) {
             throw new Error(`Media metadata missing url for mediaId=${mediaId}`);
         }
+        // WhatsApp media metadata API rarely returns the real filename; the original
+        // filename from the webhook payload (job.data.fileName) is more reliable.
+        const fileName = meta.file_name || job.data.fileName || meta.id || `${mediaId}.bin`;
+        const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
+        const normalizedMime = String(mimeType || '').toLowerCase();
+        const unsupportedFileExtension = getUnsupportedWhatsAppFileExtension(fileName);
+        // Business rule: WhatsApp channel is CV-only and CVs must be PDFs.
+        // Default is ON; can be disabled via env for emergencies.
+        const enforcePdfOnly = String(process.env.WHATSAPP_ENFORCE_PDF_ONLY ?? 'true').toLowerCase() !== 'false';
+        const looksLikePdf = normalizedMime === 'application/pdf' || String(fileName).toLowerCase().endsWith('.pdf');
+        if (unsupportedFileExtension || (enforcePdfOnly && !looksLikePdf)) {
+            try {
+                const db = (0, database_1.supabaseAdminClient)();
+                await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessageId);
+            }
+            catch (err) {
+                logger.warn('Failed to mark rejected WhatsApp upload as processed', {
+                    inboxMessageId,
+                    err: err instanceof Error ? err.message : String(err),
+                });
+            }
+            // Best-effort: optionally tell sender to resend as PDF.
+            const shouldReply = String(process.env.WHATSAPP_SEND_REJECT_REPLY ?? 'false').toLowerCase() === 'true';
+            if (shouldReply && enforcePdfOnly && !looksLikePdf) {
+                try {
+                    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+                    if (phoneNumberId) {
+                        await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, fromPhone, 'Please send your CV as a PDF document only.');
+                    }
+                }
+                catch (err) {
+                    logger.warn('Failed to send WhatsApp PDF-only reply (non-fatal)', {
+                        inboxMessageId,
+                        fromPhone,
+                        err: err instanceof Error ? err.message : String(err),
+                    });
+                }
+            }
+            logger.warn('Rejecting WhatsApp upload before attachment creation', {
+                jobId: job.id,
+                wamid,
+                mediaId,
+                fileName,
+                mimeType,
+                reason: unsupportedFileExtension ? `unsupported_extension:${unsupportedFileExtension}` : 'non_pdf',
+                inboxMessageId,
+            });
+            return {
+                skippedUnsupported: !!unsupportedFileExtension,
+                skippedNonPdf: enforcePdfOnly && !looksLikePdf,
+                extension: unsupportedFileExtension,
+                fileName,
+                mimeType,
+            };
+        }
         const buffer = await (0, whatsappService_1.downloadMedia)(meta.url, accessToken);
         if (!buffer || buffer.length === 0) {
             throw new Error('Downloaded media is empty');
@@ -51,38 +106,7 @@ function startWhatsAppMediaWorker() {
         if (buffer.length > maxBytes) {
             throw new Error(`Media too large: ${buffer.length} bytes > ${maxBytes}`);
         }
-        // WhatsApp media metadata API rarely returns the real filename; the original
-        // filename from the webhook payload (job.data.fileName) is more reliable.
-        const fileName = meta.file_name || job.data.fileName || meta.id || `${mediaId}.bin`;
-        const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
-        const unsupportedFileExtension = getUnsupportedWhatsAppFileExtension(fileName);
-        if (unsupportedFileExtension) {
-            try {
-                const db = (0, database_1.supabaseAdminClient)();
-                await db.from('inbox_messages').update({ status: 'processed' }).eq('id', inboxMessageId);
-            }
-            catch (err) {
-                logger.warn('Failed to mark unsupported WhatsApp upload as processed', {
-                    inboxMessageId,
-                    err: err instanceof Error ? err.message : String(err),
-                });
-            }
-            logger.warn('Skipping unsupported WhatsApp file before attachment creation', {
-                jobId: job.id,
-                wamid,
-                mediaId,
-                fileName,
-                extension: unsupportedFileExtension,
-                inboxMessageId,
-            });
-            return {
-                skippedUnsupported: true,
-                extension: unsupportedFileExtension,
-                fileName,
-            };
-        }
         const classification = documentClassifier_1.DocumentClassifier.classify(fileName, undefined, mimeType, buffer);
-        const normalizedMime = String(mimeType || '').toLowerCase();
         const attachmentType = classification.attachmentKind === 'cv' ? 'cv' : 'document';
         // Detect unsupported binary formats — video/audio cannot be parsed as CVs or identity docs.
         const isUnsupportedMedia = normalizedMime.startsWith('video/') ||

@@ -20,6 +20,46 @@ import { ParsingJobsService } from '../services/parsingJobsService';
 
 const router = Router();
 
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  if (size <= 0) return [arr];
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function isAllowedCvInboxMime(args: { mimeType?: string | null; fileName?: string | null; source?: string | null }): boolean {
+  const mime = String(args.mimeType || '').toLowerCase();
+  const fileName = String(args.fileName || '').toLowerCase();
+  const source = String(args.source || '').toLowerCase();
+
+  const isWhatsAppSource = source.startsWith('whatsapp');
+  const looksLikePdf = mime === 'application/pdf' || fileName.endsWith('.pdf');
+
+  // WhatsApp channel is PDF-only.
+  if (isWhatsAppSource) {
+    return looksLikePdf;
+  }
+
+  // Always allow real document CVs
+  if (
+    looksLikePdf ||
+    mime === 'application/msword' ||
+    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ) {
+    return true;
+  }
+
+  // Images are only allowed when uploaded manually from the web CV inbox.
+  if (mime.startsWith('image/')) {
+    return source === 'web';
+  }
+
+  // Everything else should not appear in CV Inbox (audio/video/other docs)
+  return false;
+}
+
 function firstNonEmptyString(...values: unknown[]): string | null {
   for (const value of values) {
     if (typeof value === 'string') {
@@ -169,54 +209,116 @@ router.get(
     const since = req.query.since as string | undefined;
     const db = supabaseAdminClient();
 
+    const docMimes = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ];
+
+    const baseCvOrNeedsReview = 'attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review';
+
     // Total CV attachments
     // Include legacy `attachment_type=cv`, new `attachment_kind=cv` (WhatsApp flow often uses attachment_type=document)
     // and any explicitly defused/flagged rows (`parsing_status=needs_review`) so they show up for manual cleanup.
-    let totalQ = db
+    let totalDocsQ = db
       .from('inbox_attachments')
       .select('id', { count: 'exact', head: true })
-      .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review');
-    if (since) totalQ = totalQ.gte('created_at', since);
-    const { count: total } = await totalQ;
+      .or(baseCvOrNeedsReview)
+      .in('mime_type', docMimes);
+    if (since) totalDocsQ = totalDocsQ.gte('created_at', since);
+    const { count: totalDocs } = await totalDocsQ;
+
+    let totalWebImagesQ = db
+      .from('inbox_attachments')
+      .select('id, inbox_messages!inner(source)', { count: 'exact', head: true })
+      .or(baseCvOrNeedsReview)
+      .ilike('mime_type', 'image/%')
+      .eq('inbox_messages.source', 'web');
+    if (since) totalWebImagesQ = totalWebImagesQ.gte('created_at', since);
+    const { count: totalWebImages } = await totalWebImagesQ;
+
+    const total = (totalDocs ?? 0) + (totalWebImages ?? 0);
 
     // Extracted (candidate linked)
-    let extractedQ = db
+    let extractedDocsQ = db
       .from('inbox_attachments')
       .select('id', { count: 'exact', head: true })
-      .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+      .or(baseCvOrNeedsReview)
+      .in('mime_type', docMimes)
       .not('candidate_id', 'is', null);
-    if (since) extractedQ = extractedQ.gte('created_at', since);
-    const { count: extracted } = await extractedQ;
+    if (since) extractedDocsQ = extractedDocsQ.gte('created_at', since);
+    const { count: extractedDocs } = await extractedDocsQ;
+
+    let extractedWebImagesQ = db
+      .from('inbox_attachments')
+      .select('id, inbox_messages!inner(source)', { count: 'exact', head: true })
+      .or(baseCvOrNeedsReview)
+      .ilike('mime_type', 'image/%')
+      .eq('inbox_messages.source', 'web')
+      .not('candidate_id', 'is', null);
+    if (since) extractedWebImagesQ = extractedWebImagesQ.gte('created_at', since);
+    const { count: extractedWebImages } = await extractedWebImagesQ;
+
+    const extracted = (extractedDocs ?? 0) + (extractedWebImages ?? 0);
 
     // linked_candidate_id extracted (WhatsApp flow)
-    let linkedQ = db
+    let linkedDocsQ = db
       .from('inbox_attachments')
       .select('id', { count: 'exact', head: true })
-      .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+      .or(baseCvOrNeedsReview)
+      .in('mime_type', docMimes)
       .is('candidate_id', null)
       .not('linked_candidate_id', 'is', null);
-    if (since) linkedQ = linkedQ.gte('created_at', since);
-    const { count: linked } = await linkedQ;
+    if (since) linkedDocsQ = linkedDocsQ.gte('created_at', since);
+    const { count: linkedDocs } = await linkedDocsQ;
+
+    let linkedWebImagesQ = db
+      .from('inbox_attachments')
+      .select('id, inbox_messages!inner(source)', { count: 'exact', head: true })
+      .or(baseCvOrNeedsReview)
+      .ilike('mime_type', 'image/%')
+      .eq('inbox_messages.source', 'web')
+      .is('candidate_id', null)
+      .not('linked_candidate_id', 'is', null);
+    if (since) linkedWebImagesQ = linkedWebImagesQ.gte('created_at', since);
+    const { count: linkedWebImages } = await linkedWebImagesQ;
+
+    const linked = (linkedDocs ?? 0) + (linkedWebImages ?? 0);
 
     const extractedTotal = (extracted ?? 0) + (linked ?? 0);
     const pending = (total ?? 0) - extractedTotal;
 
     // needs_review = parsing succeeded but no candidate could be created/linked
-    let needsReviewQ = db
+    let needsReviewDocsQ = db
       .from('inbox_attachments')
       .select('id', { count: 'exact', head: true })
-      .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+      .or(baseCvOrNeedsReview)
+      .in('mime_type', docMimes)
       .is('candidate_id', null)
       .is('linked_candidate_id', null)
       .in('parsing_status', ['needs_review', 'extracted']);
-    if (since) needsReviewQ = needsReviewQ.gte('created_at', since);
-    const { count: needsReview } = await needsReviewQ;
+    if (since) needsReviewDocsQ = needsReviewDocsQ.gte('created_at', since);
+    const { count: needsReviewDocs } = await needsReviewDocsQ;
+
+    let needsReviewWebImagesQ = db
+      .from('inbox_attachments')
+      .select('id, inbox_messages!inner(source)', { count: 'exact', head: true })
+      .or(baseCvOrNeedsReview)
+      .ilike('mime_type', 'image/%')
+      .eq('inbox_messages.source', 'web')
+      .is('candidate_id', null)
+      .is('linked_candidate_id', null)
+      .in('parsing_status', ['needs_review', 'extracted']);
+    if (since) needsReviewWebImagesQ = needsReviewWebImagesQ.gte('created_at', since);
+    const { count: needsReviewWebImages } = await needsReviewWebImagesQ;
+
+    const needsReview = (needsReviewDocs ?? 0) + (needsReviewWebImages ?? 0);
 
     res.json({
-      total: total ?? 0,
+      total,
       extracted: extractedTotal,
       pending,
-      needs_review: needsReview ?? 0,
+      needs_review: needsReview,
     });
   })
 );
@@ -243,6 +345,9 @@ router.get(
         { count: 'exact' }
       )
       .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+      // Audio/video WhatsApp messages are stored but cannot be parsed as CVs; exclude them from CV Inbox.
+      .not('mime_type', 'ilike', 'audio/%')
+      .not('mime_type', 'ilike', 'video/%')
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -257,18 +362,33 @@ router.get(
     // Query 2: latest parsing job per attachment (one batch query, not N)
     const jobMap: Record<string, any> = {};
     if (attachmentIds.length > 0) {
-      const { data: jobs } = await db
-        .from('parsing_jobs')
-        .select('*')
-        .or(
-          `inbox_attachment_id.in.(${attachmentIds.join(',')}),attachment_id.in.(${attachmentIds.join(',')})`
-        )
-        .order('created_at', { ascending: false });
+      // IMPORTANT: don't use one giant `.or(in.(...))` list — it can exceed URL limits and
+      // silently fail. Chunk the lookup and fall back across schema variants.
+      for (const chunk of chunkArray(attachmentIds, 80)) {
+        const collected: any[] = [];
 
-      for (const j of (jobs as any[]) || []) {
-        const aid = j.inbox_attachment_id || j.attachment_id;
-        if (aid && !jobMap[aid]) {
-          jobMap[aid] = { id: j.id, status: j.status, error_message: j.error_message };
+        // Variant A: inbox_attachment_id
+        const resA = await db
+          .from('parsing_jobs')
+          .select('id,status,created_at,error_message,inbox_attachment_id')
+          .in('inbox_attachment_id', chunk)
+          .order('created_at', { ascending: false });
+        if (!resA.error && resA.data) collected.push(...(resA.data as any[]));
+
+        // Variant B: attachment_id
+        const resB = await db
+          .from('parsing_jobs')
+          .select('id,status,created_at,error_message,attachment_id')
+          .in('attachment_id', chunk)
+          .order('created_at', { ascending: false });
+        if (!resB.error && resB.data) collected.push(...(resB.data as any[]));
+
+        // Build latest-by-attachment map (created_at desc ensured; keep first)
+        for (const j of collected) {
+          const aid = (j as any).inbox_attachment_id || (j as any).attachment_id;
+          if (aid && !jobMap[aid]) {
+            jobMap[aid] = { id: j.id, status: j.status, error_message: j.error_message };
+          }
         }
       }
     }
@@ -276,6 +396,8 @@ router.get(
     const items = rows
       // Optional source filter (applied in JS since nested resource filter varies by PG version)
       .filter((r) => !source || (r.inbox_messages as any)?.source === source)
+      // Enforce inbox allow-list so WhatsApp can't clutter CV Inbox.
+      .filter((r) => isAllowedCvInboxMime({ mimeType: r.mime_type, fileName: r.file_name, source: (r.inbox_messages as any)?.source }))
       .map((r) => {
         const msg = r.inbox_messages as any;
         const payload = msg?.payload || {};

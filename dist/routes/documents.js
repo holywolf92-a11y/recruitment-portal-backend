@@ -230,6 +230,7 @@ router.get('/unmatched', async (req, res) => {
             let query = db
                 .from('unmatched_documents')
                 .select(selectColumns, { count: 'exact' })
+                .order('received_at', { ascending: false, nullsFirst: false })
                 .order('id', { ascending: false })
                 .range(offset, offset + limit - 1);
             if (includeManualReviewFilter && filterStatus === 'needs_review') {
@@ -239,6 +240,13 @@ router.get('/unmatched', async (req, res) => {
                 query = query.eq('needs_manual_review', false);
             }
             return query;
+        };
+        const buildLegacyQuery = (selectColumns) => {
+            return db
+                .from('unmatched_documents')
+                .select(selectColumns, { count: 'exact' })
+                .order('id', { ascending: false })
+                .range(offset, offset + limit - 1);
         };
         let { data: documents, error, count } = await buildBaseQuery(true, UNMATCHED_DOCUMENT_SELECT);
         const errorMessage = String(error?.message || '');
@@ -250,50 +258,73 @@ router.get('/unmatched', async (req, res) => {
             logger.warn('Legacy unmatched_documents schema detected; retrying with compatibility query', {
                 message: errorMessage,
             });
-            ({ data: documents, error, count } = await buildBaseQuery(false, LEGACY_UNMATCHED_DOCUMENT_SELECT));
+            ({ data: documents, error, count } = await buildLegacyQuery(LEGACY_UNMATCHED_DOCUMENT_SELECT));
         }
         if (error)
             throw error;
-        // Generate download URLs
         const unmatchedDocuments = (documents || []);
-        const docsWithUrls = await Promise.all(unmatchedDocuments.map(async (doc) => {
+        // Generate download URLs (bulk per bucket to avoid bursty per-row calls)
+        const urlMap = new Map();
+        const bucketToPaths = new Map();
+        for (const doc of unmatchedDocuments) {
             const storageBucket = normalizeStorageBucket(doc.storage_bucket);
-            const reviewReasons = normalizeReviewReasons(doc.review_reasons);
+            const storagePath = String(doc.storage_path || '').trim();
+            if (!storagePath)
+                continue;
+            const key = `${storageBucket}:${storagePath}`;
+            if (urlMap.has(key))
+                continue;
+            const paths = bucketToPaths.get(storageBucket) || [];
+            paths.push(storagePath);
+            bucketToPaths.set(storageBucket, paths);
+        }
+        for (const [bucket, paths] of bucketToPaths.entries()) {
             try {
-                const { data } = await db.storage
-                    .from(storageBucket)
-                    .createSignedUrl(doc.storage_path, 3600);
-                return {
-                    id: doc.id,
-                    document_type: doc.document_type,
-                    file_name: doc.file_name,
-                    storage_bucket: storageBucket,
-                    storage_path: doc.storage_path,
-                    received_at: doc.received_at || null,
-                    source: doc.source || null,
-                    extracted_metadata: doc.extracted_metadata || null,
-                    needs_manual_review: Boolean(doc.needs_manual_review),
-                    review_reasons: reviewReasons,
-                    downloadUrl: data?.signedUrl || null,
-                };
+                const storage = db.storage.from(bucket);
+                if (typeof storage.createSignedUrls === 'function') {
+                    const { data, error: signError } = await storage.createSignedUrls(paths, 3600);
+                    if (signError)
+                        throw signError;
+                    for (const row of data || []) {
+                        const path = String(row?.path || '').trim();
+                        const key = `${bucket}:${path}`;
+                        urlMap.set(key, row?.signedUrl || null);
+                    }
+                }
+                else {
+                    for (const path of paths) {
+                        const { data } = await storage.createSignedUrl(path, 3600);
+                        urlMap.set(`${bucket}:${path}`, data?.signedUrl || null);
+                    }
+                }
             }
             catch (err) {
-                logger.warn(`Failed to generate signed URL for ${storageBucket}/${doc.storage_path}`, err);
-                return {
-                    id: doc.id,
-                    document_type: doc.document_type,
-                    file_name: doc.file_name,
-                    storage_bucket: storageBucket,
-                    storage_path: doc.storage_path,
-                    received_at: doc.received_at || null,
-                    source: doc.source || null,
-                    extracted_metadata: doc.extracted_metadata || null,
-                    needs_manual_review: Boolean(doc.needs_manual_review),
-                    review_reasons: reviewReasons,
-                    downloadUrl: null,
-                };
+                logger.warn(`Failed to generate signed URLs for bucket=${bucket}`, err);
+                for (const path of paths) {
+                    urlMap.set(`${bucket}:${path}`, null);
+                }
             }
-        }));
+        }
+        const docsWithUrls = unmatchedDocuments.map((doc) => {
+            const storageBucket = normalizeStorageBucket(doc.storage_bucket);
+            const reviewReasons = normalizeReviewReasons(doc.review_reasons);
+            const storagePath = String(doc.storage_path || '').trim();
+            const key = storagePath ? `${storageBucket}:${storagePath}` : '';
+            const downloadUrl = key ? (urlMap.get(key) ?? null) : null;
+            return {
+                id: doc.id,
+                document_type: doc.document_type,
+                file_name: doc.file_name,
+                storage_bucket: storageBucket,
+                storage_path: doc.storage_path,
+                received_at: doc.received_at || null,
+                source: doc.source || null,
+                extracted_metadata: doc.extracted_metadata || null,
+                needs_manual_review: Boolean(doc.needs_manual_review),
+                review_reasons: reviewReasons,
+                downloadUrl,
+            };
+        });
         res.json({
             documents: docsWithUrls,
             total: count || 0,

@@ -280,6 +280,8 @@ router.get('/unmatched', async (req: Request, res: Response) => {
       let query = db
         .from('unmatched_documents')
         .select(selectColumns, { count: 'exact' })
+        // Prefer chronology; fall back handled by legacy query if schema lacks received_at.
+        .order('received_at', { ascending: false, nullsFirst: false })
         .order('id', { ascending: false })
         .range(offset, offset + limit - 1);
 
@@ -290,6 +292,14 @@ router.get('/unmatched', async (req: Request, res: Response) => {
       }
 
       return query;
+    };
+
+    const buildLegacyQuery = (selectColumns: string) => {
+      return db
+        .from('unmatched_documents')
+        .select(selectColumns, { count: 'exact' })
+        .order('id', { ascending: false })
+        .range(offset, offset + limit - 1);
     };
 
     let { data: documents, error, count } = await buildBaseQuery(true, UNMATCHED_DOCUMENT_SELECT);
@@ -305,54 +315,75 @@ router.get('/unmatched', async (req: Request, res: Response) => {
       logger.warn('Legacy unmatched_documents schema detected; retrying with compatibility query', {
         message: errorMessage,
       });
-      ({ data: documents, error, count } = await buildBaseQuery(false, LEGACY_UNMATCHED_DOCUMENT_SELECT));
+      ({ data: documents, error, count } = await buildLegacyQuery(LEGACY_UNMATCHED_DOCUMENT_SELECT));
     }
 
     if (error) throw error;
 
-    // Generate download URLs
     const unmatchedDocuments = ((documents || []) as any[]);
 
-    const docsWithUrls = await Promise.all(
-      unmatchedDocuments.map(async (doc) => {
-        const storageBucket = normalizeStorageBucket((doc as any).storage_bucket);
-        const reviewReasons = normalizeReviewReasons((doc as any).review_reasons);
+    // Generate download URLs (bulk per bucket to avoid bursty per-row calls)
+    const urlMap = new Map<string, string | null>();
+    const bucketToPaths = new Map<string, string[]>();
 
-        try {
-          const { data } = await db.storage
-            .from(storageBucket)
-            .createSignedUrl(doc.storage_path, 3600);
-          return {
-            id: doc.id,
-            document_type: doc.document_type,
-            file_name: doc.file_name,
-            storage_bucket: storageBucket,
-            storage_path: doc.storage_path,
-            received_at: doc.received_at || null,
-            source: doc.source || null,
-            extracted_metadata: doc.extracted_metadata || null,
-            needs_manual_review: Boolean(doc.needs_manual_review),
-            review_reasons: reviewReasons,
-            downloadUrl: data?.signedUrl || null,
-          };
-        } catch (err) {
-          logger.warn(`Failed to generate signed URL for ${storageBucket}/${doc.storage_path}`, err);
-          return {
-            id: doc.id,
-            document_type: doc.document_type,
-            file_name: doc.file_name,
-            storage_bucket: storageBucket,
-            storage_path: doc.storage_path,
-            received_at: doc.received_at || null,
-            source: doc.source || null,
-            extracted_metadata: doc.extracted_metadata || null,
-            needs_manual_review: Boolean(doc.needs_manual_review),
-            review_reasons: reviewReasons,
-            downloadUrl: null,
-          };
+    for (const doc of unmatchedDocuments) {
+      const storageBucket = normalizeStorageBucket((doc as any).storage_bucket);
+      const storagePath = String((doc as any).storage_path || '').trim();
+      if (!storagePath) continue;
+      const key = `${storageBucket}:${storagePath}`;
+      if (urlMap.has(key)) continue;
+      const paths = bucketToPaths.get(storageBucket) || [];
+      paths.push(storagePath);
+      bucketToPaths.set(storageBucket, paths);
+    }
+
+    for (const [bucket, paths] of bucketToPaths.entries()) {
+      try {
+        const storage: any = db.storage.from(bucket) as any;
+        if (typeof storage.createSignedUrls === 'function') {
+          const { data, error: signError } = await storage.createSignedUrls(paths, 3600);
+          if (signError) throw signError;
+          for (const row of (data || []) as any[]) {
+            const path = String(row?.path || '').trim();
+            const key = `${bucket}:${path}`;
+            urlMap.set(key, row?.signedUrl || null);
+          }
+        } else {
+          // Fallback: older client API
+          for (const path of paths) {
+            const { data } = await storage.createSignedUrl(path, 3600);
+            urlMap.set(`${bucket}:${path}`, data?.signedUrl || null);
+          }
         }
-      })
-    );
+      } catch (err) {
+        logger.warn(`Failed to generate signed URLs for bucket=${bucket}`, err);
+        for (const path of paths) {
+          urlMap.set(`${bucket}:${path}`, null);
+        }
+      }
+    }
+
+    const docsWithUrls = unmatchedDocuments.map((doc) => {
+      const storageBucket = normalizeStorageBucket((doc as any).storage_bucket);
+      const reviewReasons = normalizeReviewReasons((doc as any).review_reasons);
+      const storagePath = String((doc as any).storage_path || '').trim();
+      const key = storagePath ? `${storageBucket}:${storagePath}` : '';
+      const downloadUrl = key ? (urlMap.get(key) ?? null) : null;
+
+      return {
+        id: doc.id,
+        document_type: doc.document_type,
+        file_name: doc.file_name,
+        storage_bucket: storageBucket,
+        storage_path: doc.storage_path,
+        received_at: doc.received_at || null,
+        source: doc.source || null,
+        extracted_metadata: doc.extracted_metadata || null,
+        needs_manual_review: Boolean(doc.needs_manual_review),
+        review_reasons: reviewReasons,
+        downloadUrl,
+      };
+    });
 
     res.json({
       documents: docsWithUrls,

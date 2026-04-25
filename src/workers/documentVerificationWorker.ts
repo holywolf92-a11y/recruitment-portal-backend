@@ -2,6 +2,7 @@ import { Worker, Job } from 'bullmq';
 import { redis } from '../config/redis';
 import crypto from 'crypto';
 import { supabaseAdminClient } from '../config/database';
+import { documentVerificationQueue } from '../config/queue';
 import { documentVerificationLogService } from '../services/documentVerificationLogService';
 import { identityMatchingService } from '../services/identityMatchingService';
 import { CandidateMatcher } from '../services/candidateMatcher';
@@ -162,6 +163,147 @@ interface DocumentVerificationJobData {
   storagePath: string;
   fileName: string;
   mimeType: string;
+}
+
+const MAX_UPSTASH_REDIS_REQUEST_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_JOB_DATA_BYTES = 9_000_000; // keep comfortably under Upstash 10MB limit
+const DEFAULT_MAX_STRING_FIELD_LENGTH = 2_000_000;
+
+function safeJsonByteLength(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8');
+  } catch {
+    return 0;
+  }
+}
+
+function analyzeJobDataSize(jobData: any): {
+  approxBytes: number;
+  hasSuspiciousBase64: boolean;
+  longestStringField: { key: string; length: number } | null;
+} {
+  const approxBytes = safeJsonByteLength(jobData);
+  let hasSuspiciousBase64 = false;
+  let longestStringField: { key: string; length: number } | null = null;
+
+  if (jobData && typeof jobData === 'object') {
+    for (const [key, value] of Object.entries(jobData)) {
+      if (typeof value === 'string') {
+        if (!longestStringField || value.length > longestStringField.length) {
+          longestStringField = { key, length: value.length };
+        }
+        if (key === 'file_content' || key.toLowerCase().includes('base64') || key.toLowerCase().includes('filecontent')) {
+          hasSuspiciousBase64 = true;
+        }
+      }
+    }
+  }
+
+  return { approxBytes, hasSuspiciousBase64, longestStringField };
+}
+
+async function attemptRepairOversizedVerificationJob(jobId: string | number) {
+  const autoRepair = String(process.env.DOC_VERIFICATION_AUTO_REPAIR_OVERSIZE ?? 'true').toLowerCase() !== 'false';
+  if (!autoRepair) return;
+
+  // Defensive: if the queue wrapper ever changes and doesn't expose getJob,
+  // skip auto-repair rather than spamming logs.
+  if (typeof (documentVerificationQueue as any)?.getJob !== 'function') return;
+
+  const maxJobBytes = Number(process.env.DOC_VERIFICATION_MAX_JOB_BYTES || DEFAULT_MAX_JOB_DATA_BYTES);
+  const maxStringLen = Number(process.env.DOC_VERIFICATION_MAX_STRING_LEN || DEFAULT_MAX_STRING_FIELD_LENGTH);
+
+  try {
+    const job = await documentVerificationQueue.getJob(String(jobId));
+    if (!job) return;
+
+    const analysis = analyzeJobDataSize(job.data);
+    const isOversize =
+      analysis.approxBytes >= maxJobBytes ||
+      (analysis.longestStringField?.length ?? 0) >= maxStringLen ||
+      analysis.hasSuspiciousBase64;
+
+    if (!isOversize) return;
+
+    const dataKeys = job.data && typeof job.data === 'object' ? Object.keys(job.data) : [];
+    console.warn('[DocumentVerificationWorker] Oversized job detected; attempting auto-repair', {
+      jobId: String(jobId),
+      jobName: job.name,
+      approxBytes: analysis.approxBytes,
+      limitBytes: MAX_UPSTASH_REDIS_REQUEST_BYTES,
+      keys: dataKeys.slice(0, 30),
+      longestStringField: analysis.longestStringField,
+    });
+
+    const documentId: string | undefined =
+      job.data?.documentId || job.data?.document_id || job.data?.document?.id;
+
+    if (!documentId) {
+      console.warn('[DocumentVerificationWorker] Cannot repair oversized job (missing documentId); leaving job as-is', {
+        jobId: String(jobId),
+        keys: dataKeys.slice(0, 30),
+      });
+      return;
+    }
+
+    const db = supabaseAdminClient();
+    const { data: doc, error: docErr } = await db
+      .from('candidate_documents')
+      .select('id, candidate_id, storage_bucket, storage_path, file_name, mime_type')
+      .eq('id', documentId)
+      .single();
+
+    if (docErr || !doc) {
+      console.warn('[DocumentVerificationWorker] Cannot repair oversized job (document lookup failed)', {
+        jobId: String(jobId),
+        documentId,
+        error: docErr?.message || String(docErr || 'unknown'),
+      });
+      return;
+    }
+
+    // Best-effort: remove the problematic job and re-enqueue a minimal payload job.
+    try {
+      await job.remove();
+    } catch (removeErr: any) {
+      console.warn('[DocumentVerificationWorker] Failed to remove oversized job (will not re-enqueue to avoid duplicates)', {
+        jobId: String(jobId),
+        documentId,
+        error: removeErr?.message || String(removeErr),
+      });
+      return;
+    }
+
+    const repairedRequestId = crypto.randomUUID();
+    const repairedJobName = typeof job.name === 'string' && job.name ? job.name : 'verify-document';
+    const repairedJobData: DocumentVerificationJobData = {
+      requestId: repairedRequestId,
+      documentId: doc.id,
+      candidateId: doc.candidate_id,
+      storageBucket: doc.storage_bucket || 'documents',
+      storagePath: doc.storage_path,
+      fileName: doc.file_name,
+      mimeType: doc.mime_type || 'application/pdf',
+    };
+
+    await documentVerificationQueue.add(repairedJobName, repairedJobData, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 2000 },
+      removeOnComplete: 200,
+      removeOnFail: 200,
+    });
+
+    console.warn('[DocumentVerificationWorker] Repaired oversized job by re-enqueueing minimal payload', {
+      oldJobId: String(jobId),
+      documentId,
+      repairedJobName,
+    });
+  } catch (err: any) {
+    console.warn('[DocumentVerificationWorker] Oversized job auto-repair attempt failed (non-fatal)', {
+      jobId: String(jobId),
+      error: err?.message || String(err),
+    });
+  }
 }
 
 interface AICategorizationResponse {
@@ -1495,7 +1637,19 @@ export function startDocumentVerificationWorker() {
   });
 
   worker.on('active', (job) => {
-    console.log(`[DocumentVerificationWorker] Job ${job.id} is now active - processing document ${job.data.documentId}`);
+    const analysis = analyzeJobDataSize((job as any)?.data);
+    const approxKb = Math.round(analysis.approxBytes / 1024);
+    const note = analysis.approxBytes > 256_000 ? ` jobData≈${approxKb}KB` : '';
+    console.log(`[DocumentVerificationWorker] Job ${job.id} is now active - processing document ${job.data.documentId}${note}`);
+    if (analysis.approxBytes >= DEFAULT_MAX_JOB_DATA_BYTES) {
+      const keys = job.data && typeof job.data === 'object' ? Object.keys(job.data) : [];
+      console.warn('[DocumentVerificationWorker] Active job has unusually large job.data (may hit Upstash 10MB limit)', {
+        jobId: job.id,
+        approxBytes: analysis.approxBytes,
+        longestStringField: analysis.longestStringField,
+        keys: keys.slice(0, 30),
+      });
+    }
   });
 
   worker.on('completed', (job) => {
@@ -1505,7 +1659,13 @@ export function startDocumentVerificationWorker() {
   worker.on('failed', (job, err) => {
     console.error(`[DocumentVerificationWorker] Job ${job?.id} failed:`, err.message);
     if (job) {
-      console.error(`[DocumentVerificationWorker] Failed job data:`, JSON.stringify(job.data, null, 2));
+      const analysis = analyzeJobDataSize((job as any)?.data);
+      const keys = job.data && typeof job.data === 'object' ? Object.keys(job.data) : [];
+      console.error(`[DocumentVerificationWorker] Failed job data summary:`, {
+        approxBytes: analysis.approxBytes,
+        keys: keys.slice(0, 30),
+        longestStringField: analysis.longestStringField,
+      });
     }
   });
 
@@ -1515,6 +1675,9 @@ export function startDocumentVerificationWorker() {
 
   worker.on('stalled', (jobId) => {
     console.warn(`[DocumentVerificationWorker] Job ${jobId} stalled`);
+    // Best-effort: attempt to auto-repair a job that contains a huge base64 payload
+    // (common cause of Upstash max request size exceeded errors around ~10MB).
+    void attemptRepairOversizedVerificationJob(jobId);
   });
 
   console.log('[DocumentVerificationWorker] Worker started, listening for jobs...');

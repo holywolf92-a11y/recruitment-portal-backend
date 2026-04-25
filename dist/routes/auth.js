@@ -82,6 +82,39 @@ function mapCandidateIdentityFields(candidate) {
         passport: candidate.passport_normalized || candidate.passport || null,
     };
 }
+async function withSignedProfilePhoto(candidate) {
+    if (!candidate) {
+        return candidate;
+    }
+    const enrichedCandidate = { ...candidate };
+    const db = (0, database_1.supabaseAdminClient)();
+    let bucket = enrichedCandidate.profile_photo_bucket || 'documents';
+    let storagePath = enrichedCandidate.profile_photo_path || null;
+    if (!storagePath && enrichedCandidate.profile_photo_url) {
+        const url = String(enrichedCandidate.profile_photo_url);
+        const publicMarker = '/storage/v1/object/public/';
+        const signMarker = '/storage/v1/object/sign/';
+        if (url.includes(publicMarker)) {
+            const rest = url.substring(url.indexOf(publicMarker) + publicMarker.length);
+            const parts = rest.split('/');
+            bucket = parts.shift() || bucket;
+            storagePath = parts.join('/');
+        }
+        else if (url.includes(signMarker)) {
+            const rest = url.substring(url.indexOf(signMarker) + signMarker.length).split('?')[0];
+            const parts = rest.split('/');
+            bucket = parts.shift() || bucket;
+            storagePath = parts.join('/');
+        }
+    }
+    if (storagePath) {
+        const { data } = await db.storage.from(bucket).createSignedUrl(storagePath, 31536000);
+        if (data?.signedUrl) {
+            enrichedCandidate.profile_photo_signed_url = data.signedUrl;
+        }
+    }
+    return enrichedCandidate;
+}
 /** Normalize a phone number to WhatsApp format: digits only, no leading '+'. */
 function toWhatsAppPhone(phone) {
     return phone.replace(/\D/g, '');
@@ -455,7 +488,8 @@ router.post('/candidate-profile/bootstrap', auth_1.authenticate, async (req, res
             email: authUserResult.user.email || null,
             user_metadata: authUserResult.user.user_metadata || null,
         });
-        return res.json({ candidate });
+        const candidateWithPhoto = await withSignedProfilePhoto(candidate);
+        return res.json({ candidate: candidateWithPhoto });
     }
     catch (error) {
         console.error('Error bootstrapping candidate profile:', error);

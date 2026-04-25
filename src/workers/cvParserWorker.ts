@@ -17,6 +17,7 @@ import { extractProfilePhotoFromPdfUsingAI } from '../services/aiProfilePhotoExt
 import { sendMessage, sendTemplateMessage } from '../services/whatsappService';
 import { ensureConversationForPhone, recordOutboundMessage } from '../services/whatsappInboxService';
 import { inferProfessionFromCvData } from '../services/professionInferenceService';
+import { emailService } from '../services/emailService';
 import { shouldSkipSplitAndCategorizeForSingleCvUpload } from '../utils/singleCvHeuristics';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
@@ -219,7 +220,7 @@ function buildCvReceivedWhatsAppText(params: {
       ? `We have sent an email to ${email} requesting the missing documents. Please check your inbox/spam and reply to that email with the required documents.`
       : `We will contact you via email at ${email} if any documents are missing.`
     : `If any documents are missing, our team will contact you.`;
-  const linkedinLine = 'For further updates, please follow us on LinkedIn:\nhttps://www.linkedin.com/company/falishaenterprises';
+  const linkedinLine = 'For further updates, please follow us on LinkedIn:\nhttps://www.linkedin.com/company/111465919/admin/analytics/followers/?invite=true';
 
   return `${greeting},\n\nFalisha Manpower: We have received your CV.\n${emailLine}\n\n${linkedinLine}\n\nThank you.`;
 }
@@ -1974,8 +1975,45 @@ export function startCvParserWorker() {
     }
   );
 
-  worker.on('failed', (job: Job | undefined, err: Error) => {
-    console.error('cv-parsing failed', job?.id, err?.message);
+  worker.on('failed', async (job: Job | undefined, err: Error) => {
+    const maxAttempts = job?.opts?.attempts ?? 3;
+    const attemptsMade = job?.attemptsMade ?? 0;
+    console.error('cv-parsing failed', job?.id, `attempt ${attemptsMade}/${maxAttempts}`, err?.message);
+
+    // Only alert admin when all retries are exhausted — never on intermediate failures
+    if (job && attemptsMade >= maxAttempts) {
+      const { attachmentId, jobId } = (job.data ?? {}) as { attachmentId?: string; jobId?: string };
+      const adminEmail = process.env.ADMIN_ALERT_EMAIL || 'falishaoep4035@gmail.com';
+      try {
+        await emailService.sendEmail({
+          to: adminEmail,
+          subject: `[Falisha] CV parsing permanently failed – ${attachmentId ?? jobId ?? job.id}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <div style="background: #dc2626; padding: 16px; border-radius: 8px 8px 0 0;">
+                <h2 style="color: white; margin: 0;">CV Parsing Failed Permanently</h2>
+              </div>
+              <div style="background: #f9fafb; padding: 20px; border: 1px solid #e5e7eb; border-radius: 0 0 8px 8px;">
+                <p>A CV has exhausted all <strong>${maxAttempts} retry attempts</strong> and will not retry automatically. Manual review is required.</p>
+                <table style="border-collapse: collapse; width: 100%;">
+                  <tr><td style="padding: 6px; font-weight: bold;">Attachment ID:</td><td style="padding: 6px;">${attachmentId ?? 'N/A'}</td></tr>
+                  <tr><td style="padding: 6px; font-weight: bold;">Parsing Job ID:</td><td style="padding: 6px;">${jobId ?? 'N/A'}</td></tr>
+                  <tr><td style="padding: 6px; font-weight: bold;">Error:</td><td style="padding: 6px; color: #dc2626;">${err?.message ?? 'Unknown error'}</td></tr>
+                  <tr><td style="padding: 6px; font-weight: bold;">Attempts:</td><td style="padding: 6px;">${attemptsMade} of ${maxAttempts}</td></tr>
+                  <tr><td style="padding: 6px; font-weight: bold;">Failed at:</td><td style="padding: 6px;">${new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' })} (PKT)</td></tr>
+                </table>
+                <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 16px 0;" />
+                <p><a href="https://app.falishajobs.com/cv-inbox" style="background: #2563eb; color: white; padding: 8px 16px; border-radius: 4px; text-decoration: none;">Review in CV Inbox</a></p>
+                <p style="color: #6b7280; font-size: 13px;">To retry manually, open the CV Inbox, find this attachment and click Reprocess.</p>
+              </div>
+            </div>`,
+          text: `CV Parsing Failed Permanently\nAttachment ID: ${attachmentId ?? 'N/A'}\nError: ${err?.message ?? 'Unknown error'}\nAttempts: ${attemptsMade}/${maxAttempts}\nReview: https://app.falishajobs.com/cv-inbox`,
+        });
+        console.log(`[CVParser] Admin notified of permanent failure for attachment ${attachmentId}`);
+      } catch (emailErr: any) {
+        console.warn('[CVParser] Failed to send admin failure notification:', emailErr?.message);
+      }
+    }
   });
 
   return worker;

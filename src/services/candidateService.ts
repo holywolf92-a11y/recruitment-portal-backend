@@ -257,6 +257,8 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
   const VARCHAR_LIMITS_CREATE: Record<string, number> = {
     name: 255, email: 255, phone: 50, position: 255, education: 255,
     nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
+    father_name: 255,
+    professional_summary: 255,
   };
   const truncCreate = (val: any, maxLen: number) =>
     typeof val === 'string' && val.length > maxLen ? val.slice(0, maxLen) : val;
@@ -265,7 +267,7 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
   const candidateData = {
     candidate_code: candidateCode,
     name: truncCreate(data.name, VARCHAR_LIMITS_CREATE.name),
-    father_name: data.father_name,
+    father_name: truncCreate(data.father_name, VARCHAR_LIMITS_CREATE.father_name),
     status: parseCandidateStatus(data.status, 'Applied'),
     payment_amount: parseCandidatePaymentAmount(data.payment_amount, 0),
     source: data.source,
@@ -295,7 +297,7 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     internships: data.internships,
     previous_employment: data.previous_employment,
     passport_expiry: data.passport_expiry,
-    professional_summary: data.professional_summary,
+    professional_summary: truncCreate(data.professional_summary, VARCHAR_LIMITS_CREATE.professional_summary),
 
     // Include checklist items if provided (defaults handled by DB)
     passport_received: data.passport_received,
@@ -1051,6 +1053,8 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
   const VARCHAR_LIMITS: Record<string, number> = {
     name: 255, email: 255, phone: 50, position: 255, education: 255,
     nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
+    father_name: 255,
+    professional_summary: 255,
   };
   for (const [col, maxLen] of Object.entries(VARCHAR_LIMITS)) {
     if (typeof updateData[col] === 'string' && updateData[col].length > maxLen) {

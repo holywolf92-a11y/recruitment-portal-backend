@@ -872,6 +872,9 @@ export function startCvParserWorker() {
         await setJobAndAttachmentStatus('processing', {
           started_at: new Date().toISOString(),
           attempts: (job.attemptsMade ?? 0) + 1,
+          finished_at: null,
+          error_code: null,
+          error_message: null,
         });
 
         // Fetch attachment metadata + linked inbox_message to get real Gmail email date.

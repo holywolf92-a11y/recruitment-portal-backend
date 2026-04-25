@@ -197,13 +197,15 @@ async function createCandidate(data, userId) {
     const VARCHAR_LIMITS_CREATE = {
         name: 255, email: 255, phone: 50, position: 255, education: 255,
         nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
+        father_name: 255,
+        professional_summary: 255,
     };
     const truncCreate = (val, maxLen) => typeof val === 'string' && val.length > maxLen ? val.slice(0, maxLen) : val;
     // Create candidate record
     const candidateData = {
         candidate_code: candidateCode,
         name: truncCreate(data.name, VARCHAR_LIMITS_CREATE.name),
-        father_name: data.father_name,
+        father_name: truncCreate(data.father_name, VARCHAR_LIMITS_CREATE.father_name),
         status: parseCandidateStatus(data.status, 'Applied'),
         payment_amount: parseCandidatePaymentAmount(data.payment_amount, 0),
         source: data.source,
@@ -232,7 +234,7 @@ async function createCandidate(data, userId) {
         internships: data.internships,
         previous_employment: data.previous_employment,
         passport_expiry: data.passport_expiry,
-        professional_summary: data.professional_summary,
+        professional_summary: truncCreate(data.professional_summary, VARCHAR_LIMITS_CREATE.professional_summary),
         // Include checklist items if provided (defaults handled by DB)
         passport_received: data.passport_received,
         cnic_received: data.cnic_received,
@@ -331,6 +333,10 @@ async function listCandidates(filters = {}, userId) {
     if (filters.country_of_interest && filters.country_of_interest !== 'all') {
         query = query.eq('country_of_interest', filters.country_of_interest);
     }
+    // Apply partner filter (admin Partners tab)
+    if (filters.partner_id) {
+        query = query.eq('partner_id', filters.partner_id);
+    }
     // Date Applied filter (created_at = when candidate applied)
     if (filters.applied_from) {
         const from = filters.applied_from.endsWith('Z') || filters.applied_from.includes('T')
@@ -390,23 +396,39 @@ async function listCandidates(filters = {}, userId) {
 }
 async function getCandidateBrowseMetadata(userId) {
     const db = (0, database_1.supabaseAdminClient)();
-    const { data, error } = await db
-        .from('candidates')
-        .select([
-        'position',
-        'country_of_interest',
-        'status',
-        'cv_received',
-        'passport_received',
-        'certificate_received',
-        'photo_received',
-        'medical_received',
-    ].join(','))
-        .neq('status', 'Deleted')
-        .limit(100000);
-    if (error)
-        throw error;
-    const rows = (data || []);
+    // Paginate through ALL records to avoid PostgREST's default max_rows=1000 cap.
+    // Without pagination, the single fetch is silently truncated and profession counts
+    // are computed from an incomplete dataset, producing wrong totals.
+    const PAGE_SIZE = 1000;
+    const allRows = [];
+    let page = 0;
+    while (true) {
+        const from = page * PAGE_SIZE;
+        const to = from + PAGE_SIZE - 1;
+        const { data, error } = await db
+            .from('candidates')
+            .select([
+            'position',
+            'country_of_interest',
+            'status',
+            'cv_received',
+            'passport_received',
+            'certificate_received',
+            'photo_received',
+            'medical_received',
+        ].join(','))
+            .neq('status', 'Deleted')
+            .range(from, to);
+        if (error)
+            throw error;
+        if (!data || data.length === 0)
+            break;
+        allRows.push(...data);
+        if (data.length < PAGE_SIZE)
+            break; // last page
+        page++;
+    }
+    const rows = allRows;
     const professionMap = new Map();
     const countryMap = new Map();
     const statusMap = new Map();
@@ -517,16 +539,34 @@ async function getDailyStats(filters, userId) {
 async function getCandidateDashboardStats(userId) {
     const db = (0, database_1.supabaseAdminClient)();
     const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const [totalCandidatesRes, pendingReviewRes, deployedRes, newThisWeekRes, professionsRes,] = await Promise.all([
+    const [totalCandidatesRes, pendingReviewRes, deployedRes, newThisWeekRes,] = await Promise.all([
         db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').limit(0),
         db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('needs_review', true).limit(0),
         db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('status', 'Deployed').limit(0),
         db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').gte('created_at', weekAgoIso).limit(0),
-        db.from('candidates').select('position').neq('status', 'Deleted').not('position', 'is', null).limit(100000),
     ]);
-    const distinctProfessions = new Set((professionsRes.data || [])
-        .map((row) => String(row.position || '').trim())
-        .filter((value) => value.length > 0));
+    // Paginate through all candidates to get distinct professions — Supabase max_rows caps single queries at 1000
+    const distinctProfessions = new Set();
+    let pg = 0;
+    const PG = 1000;
+    while (true) {
+        const { data: posData } = await db
+            .from('candidates')
+            .select('position')
+            .neq('status', 'Deleted')
+            .not('position', 'is', null)
+            .range(pg * PG, (pg + 1) * PG - 1);
+        if (!posData || posData.length === 0)
+            break;
+        posData.forEach((row) => {
+            const p = String(row.position || '').trim();
+            if (p)
+                distinctProfessions.add(p);
+        });
+        if (posData.length < PG)
+            break;
+        pg++;
+    }
     return {
         totalCandidates: totalCandidatesRes.count ?? 0,
         totalProfessions: distinctProfessions.size,
@@ -788,6 +828,8 @@ async function updateCandidate(id, data, userId) {
     const VARCHAR_LIMITS = {
         name: 255, email: 255, phone: 50, position: 255, education: 255,
         nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
+        father_name: 255,
+        professional_summary: 255,
     };
     for (const [col, maxLen] of Object.entries(VARCHAR_LIMITS)) {
         if (typeof updateData[col] === 'string' && updateData[col].length > maxLen) {

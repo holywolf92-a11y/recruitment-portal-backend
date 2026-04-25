@@ -294,6 +294,9 @@ export async function enrichCandidateData(
       name: 255, email: 255, phone: 50, position: 255, education: 255,
       nationality: 100, country_of_interest: 100, marital_status: 20,
       gender: 20,
+      father_name: 255,
+      // Some deployments have this as VARCHAR(255); CV summaries can exceed that.
+      professional_summary: 255,
     };
     for (const [col, maxLen] of Object.entries(VARCHAR_LIMITS)) {
       if (typeof updates[col] === 'string' && updates[col].length > maxLen) {

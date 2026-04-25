@@ -49,6 +49,9 @@ class ParsingJobsService {
     }
     async setStatus(jobId, status, extra) {
         const db = (0, database_1.supabaseAdminClient)();
+        const hasFinishedAt = !!extra && Object.prototype.hasOwnProperty.call(extra, 'finished_at');
+        const hasErrorCode = !!extra && Object.prototype.hasOwnProperty.call(extra, 'error_code');
+        const hasErrorMessage = !!extra && Object.prototype.hasOwnProperty.call(extra, 'error_message');
         const resultPayload = extra?.result_json !== undefined
             ? (typeof extra.result_json === 'object' && extra.result_json !== null
                 ? {
@@ -64,9 +67,9 @@ class ParsingJobsService {
             // Full modern schema
             {
                 status,
-                ...(extra?.finished_at != null && { finished_at: extra.finished_at }),
-                ...(extra?.error_code != null && { error_code: extra.error_code }),
-                ...(extra?.error_message != null && { error_message: extra.error_message }),
+                ...(hasFinishedAt && { finished_at: extra.finished_at }),
+                ...(hasErrorCode && { error_code: extra.error_code }),
+                ...(hasErrorMessage && { error_message: extra.error_message }),
                 ...(resultPayload !== undefined && { output: resultPayload }),
             },
             // Minimal: status + output (migration 002 schema)

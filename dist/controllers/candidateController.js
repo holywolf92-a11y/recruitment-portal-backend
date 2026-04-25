@@ -162,47 +162,19 @@ async function listCandidatesController(req, res) {
             offset: req.query.offset ? parseInt(req.query.offset) : undefined,
         };
         const result = await (0, candidateService_1.listCandidates)(filters, userId);
-        // Only re-sign photo URLs that are NOT already signed (e.g. old public URLs).
-        // Signed URLs use a 1-year TTL and are stored in profile_photo_url — no need to
-        // re-call Supabase on every list request. Previously this made N HTTP calls to
-        // Supabase per list request (one per candidate), generating significant Railway egress.
+        // IMPORTANT: Do not sign Supabase Storage URLs in the list endpoint.
+        // Signing can require N network calls to Storage per request (one per candidate)
+        // and easily exceed the frontend's 30s timeout. The UI already fetches per-candidate
+        // details in small chunks to obtain signed URLs when needed.
         const signMarker = '/storage/v1/object/sign/';
-        const publicMarker = '/storage/v1/object/public/';
-        const candidatesWithSignedUrls = await Promise.all(result.candidates.map(async (candidate) => {
-            try {
-                const storedUrl = candidate.profile_photo_url || '';
-                // Already a signed URL — return as-is, no extra Supabase call needed
-                if (storedUrl.includes(signMarker)) {
-                    return { ...candidate, profile_photo_signed_url: storedUrl };
-                }
-                // Public URL or explicit storage path — needs one-time signing
-                const db = (0, database_1.supabaseAdminClient)();
-                let bucket = candidate.profile_photo_bucket || 'documents';
-                let storagePath = candidate.profile_photo_path || null;
-                if (!storagePath && storedUrl.includes(publicMarker)) {
-                    const rest = storedUrl.substring(storedUrl.indexOf(publicMarker) + publicMarker.length);
-                    const parts = rest.split('/');
-                    bucket = parts.shift() || bucket;
-                    storagePath = parts.join('/');
-                }
-                if (storagePath) {
-                    const ttlSeconds = 31536000; // 1 year
-                    const { data: signedData, error: urlError } = await db.storage.from(bucket).createSignedUrl(storagePath, ttlSeconds);
-                    if (!urlError && signedData && signedData.signedUrl) {
-                        return {
-                            ...candidate,
-                            profile_photo_url: signedData.signedUrl,
-                            profile_photo_signed_url: signedData.signedUrl,
-                        };
-                    }
-                }
-                return candidate;
+        const candidatesWithPhotoHints = (result.candidates || []).map((candidate) => {
+            const storedUrl = candidate.profile_photo_url || '';
+            if (storedUrl && storedUrl.includes(signMarker)) {
+                return { ...candidate, profile_photo_signed_url: storedUrl };
             }
-            catch (e) {
-                return candidate;
-            }
-        }));
-        res.json({ ...result, candidates: candidatesWithSignedUrls });
+            return candidate;
+        });
+        res.json({ ...result, candidates: candidatesWithPhotoHints });
         return;
     }
     catch (error) {

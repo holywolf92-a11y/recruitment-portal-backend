@@ -175,7 +175,7 @@ router.get(
     let totalQ = db
       .from('inbox_attachments')
       .select('id', { count: 'exact', head: true })
-      .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review');
+      .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review');
     if (since) totalQ = totalQ.gte('created_at', since);
     const { count: total } = await totalQ;
 
@@ -183,7 +183,7 @@ router.get(
     let extractedQ = db
       .from('inbox_attachments')
       .select('id', { count: 'exact', head: true })
-      .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+      .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
       .not('candidate_id', 'is', null);
     if (since) extractedQ = extractedQ.gte('created_at', since);
     const { count: extracted } = await extractedQ;
@@ -192,7 +192,7 @@ router.get(
     let linkedQ = db
       .from('inbox_attachments')
       .select('id', { count: 'exact', head: true })
-      .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+      .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
       .is('candidate_id', null)
       .not('linked_candidate_id', 'is', null);
     if (since) linkedQ = linkedQ.gte('created_at', since);
@@ -205,7 +205,7 @@ router.get(
     let needsReviewQ = db
       .from('inbox_attachments')
       .select('id', { count: 'exact', head: true })
-      .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+      .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
       .is('candidate_id', null)
       .is('linked_candidate_id', null)
       .in('parsing_status', ['needs_review', 'extracted']);
@@ -242,7 +242,7 @@ router.get(
          inbox_messages(source, received_at, status, payload)`,
         { count: 'exact' }
       )
-      .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+      .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
 

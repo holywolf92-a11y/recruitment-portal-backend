@@ -44,6 +44,7 @@ function startWhatsAppMediaWorker() {
         }
         // WhatsApp media metadata API rarely returns the real filename; the original
         // filename from the webhook payload (job.data.fileName) is more reliable.
+        // IMPORTANT: enforce allow-list decisions BEFORE downloading any bytes.
         const fileName = meta.file_name || job.data.fileName || meta.id || `${mediaId}.bin`;
         const mimeType = meta.mime_type || job.data.mimeType || 'application/octet-stream';
         const normalizedMime = String(mimeType || '').toLowerCase();

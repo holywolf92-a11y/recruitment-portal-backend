@@ -42,12 +42,18 @@ function normalizePhoneE164(phone) {
         return null;
     // Remove all non-digit characters
     const digitsOnly = phone.replace(/\D/g, '');
+    // Common Pakistan local mobile format: 03XXXXXXXXX (11 digits)
+    // Convert to +923XXXXXXXXX
+    if (digitsOnly.length === 11 && digitsOnly.startsWith('03')) {
+        return `+92${digitsOnly.slice(1)}`;
+    }
+    // Another common form: 3XXXXXXXXX (10 digits) → +923XXXXXXXXX
+    if (digitsOnly.length === 10 && digitsOnly.startsWith('3')) {
+        return `+92${digitsOnly}`;
+    }
     // Add Pakistan country code if not present
     if (digitsOnly.startsWith('92') && digitsOnly.length === 12) {
         return `+${digitsOnly}`;
-    }
-    else if (digitsOnly.length === 10 && digitsOnly.startsWith('3')) {
-        return `+92${digitsOnly}`;
     }
     else if (digitsOnly.length === 13 && digitsOnly.startsWith('923')) {
         return `+${digitsOnly}`;
@@ -199,6 +205,12 @@ async function createCandidate(data, userId) {
         nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
         father_name: 255,
         professional_summary: 255,
+        skills: 255,
+        languages: 255,
+        certifications: 255,
+        internships: 255,
+        previous_employment: 255,
+        address: 255,
     };
     const truncCreate = (val, maxLen) => typeof val === 'string' && val.length > maxLen ? val.slice(0, maxLen) : val;
     // Create candidate record
@@ -220,19 +232,19 @@ async function createCandidate(data, userId) {
         date_of_birth: data.date_of_birth,
         gender: truncCreate(data.gender, VARCHAR_LIMITS_CREATE.gender),
         marital_status: truncCreate(data.marital_status, VARCHAR_LIMITS_CREATE.marital_status),
-        address: data.address,
+        address: truncCreate(data.address, VARCHAR_LIMITS_CREATE.address),
         cnic_normalized: cnicNormalized,
         passport_normalized: passportNormalized,
         nationality: truncCreate(data.nationality, VARCHAR_LIMITS_CREATE.nationality),
         position: truncCreate(data.position, VARCHAR_LIMITS_CREATE.position),
         experience_years: data.experience_years,
         country_of_interest: truncCreate(data.country_of_interest, VARCHAR_LIMITS_CREATE.country_of_interest),
-        skills: data.skills,
-        languages: data.languages,
+        skills: truncCreate(data.skills, VARCHAR_LIMITS_CREATE.skills),
+        languages: truncCreate(data.languages, VARCHAR_LIMITS_CREATE.languages),
         education: truncCreate(data.education, VARCHAR_LIMITS_CREATE.education),
-        certifications: data.certifications,
-        internships: data.internships,
-        previous_employment: data.previous_employment,
+        certifications: truncCreate(data.certifications, VARCHAR_LIMITS_CREATE.certifications),
+        internships: truncCreate(data.internships, VARCHAR_LIMITS_CREATE.internships),
+        previous_employment: truncCreate(data.previous_employment, VARCHAR_LIMITS_CREATE.previous_employment),
         passport_expiry: data.passport_expiry,
         professional_summary: truncCreate(data.professional_summary, VARCHAR_LIMITS_CREATE.professional_summary),
         // Include checklist items if provided (defaults handled by DB)
@@ -830,6 +842,12 @@ async function updateCandidate(id, data, userId) {
         nationality: 100, country_of_interest: 100, marital_status: 20, gender: 20,
         father_name: 255,
         professional_summary: 255,
+        skills: 255,
+        languages: 255,
+        certifications: 255,
+        internships: 255,
+        previous_employment: 255,
+        address: 255,
     };
     for (const [col, maxLen] of Object.entries(VARCHAR_LIMITS)) {
         if (typeof updateData[col] === 'string' && updateData[col].length > maxLen) {

@@ -513,11 +513,15 @@ router.post('/partner/candidates', auth_1.authenticate, async (req, res) => {
         const name = String(payload.name || '').trim();
         const email = String(payload.email || '').trim();
         const phone = String(payload.phone || '').trim();
+        const nationality = String(payload.nationality || '').trim();
         if (!name) {
             return res.status(400).json({ error: 'Candidate name is required' });
         }
         if (!phone) {
             return res.status(400).json({ error: 'Phone is required' });
+        }
+        if (!nationality) {
+            return res.status(400).json({ error: 'Country / Nationality is required' });
         }
         const portalProfile = await (0, userService_1.getPortalProfile)(user.id);
         const partnerName = portalProfile.user?.name || user.email || 'Partner';
@@ -531,7 +535,7 @@ router.post('/partner/candidates', auth_1.authenticate, async (req, res) => {
             passport: String(payload.passport || '').trim() || undefined,
             position: typeof payload.position === 'string' ? payload.position : undefined,
             country_of_interest: typeof payload.country_of_interest === 'string' ? payload.country_of_interest : undefined,
-            nationality: typeof payload.nationality === 'string' ? payload.nationality : undefined,
+            nationality,
             address: typeof payload.address === 'string' ? payload.address : undefined,
         }, {
             partnerId: user.id,
@@ -581,6 +585,14 @@ router.post('/partner/candidates/:candidateId/documents', auth_1.authenticate, b
         });
     }
     catch (error) {
+        // Duplicate CV is not an error — the same file was already uploaded for this candidate
+        if (error?.type === 'DUPLICATE_ERROR' || error?.statusCode === 409) {
+            return res.status(200).json({
+                success: true,
+                duplicate: true,
+                message: 'This document has already been uploaded for this candidate.',
+            });
+        }
         console.error('Error uploading partner candidate document:', error);
         return res.status(400).json({ error: error.message || 'Failed to upload partner document' });
     }
@@ -711,6 +723,56 @@ router.get('/users', auth_1.authenticate, async (req, res) => {
     catch (error) {
         console.error('Error fetching users:', error);
         return res.status(500).json({ error: error.message || 'Failed to fetch users' });
+    }
+});
+// GET /auth/partners — returns all partner users with candidate counts in one query
+router.get('/partners', auth_1.authenticate, async (req, res) => {
+    try {
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json({ error: 'Admins only' });
+        }
+        const db = (0, database_1.supabaseAdminClient)();
+        // 1. Get all partner users
+        const { data: partnerUsers, error: usersError } = await db
+            .from('users')
+            .select('id, email, name, role, phone, status, created_at')
+            .eq('role', 'partner')
+            .order('created_at', { ascending: false });
+        if (usersError)
+            throw usersError;
+        const partners = partnerUsers || [];
+        // 2. Get candidate counts for all partner IDs in a single query
+        const partnerIds = partners.map((p) => p.id);
+        let countMap = {};
+        if (partnerIds.length > 0) {
+            const { data: countRows, error: countError } = await db
+                .from('candidates')
+                .select('partner_id')
+                .in('partner_id', partnerIds)
+                .neq('status', 'Deleted');
+            if (!countError && countRows) {
+                countRows.forEach((row) => {
+                    if (row.partner_id) {
+                        countMap[row.partner_id] = (countMap[row.partner_id] || 0) + 1;
+                    }
+                });
+            }
+        }
+        const result = partners.map((p) => ({
+            id: p.id,
+            email: p.email,
+            name: p.name,
+            role: 'partner',
+            phone: p.phone,
+            status: p.status,
+            created_at: p.created_at,
+            candidateCount: countMap[p.id] || 0,
+        }));
+        return res.json({ partners: result });
+    }
+    catch (error) {
+        console.error('Error fetching partners:', error);
+        return res.status(500).json({ error: error.message || 'Failed to fetch partners' });
     }
 });
 router.patch('/users/:userId', auth_1.authenticate, async (req, res) => {

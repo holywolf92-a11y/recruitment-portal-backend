@@ -154,6 +154,7 @@ async function listCandidatesController(req, res) {
             position: req.query.position,
             country_of_interest: req.query.country_of_interest,
             documents: req.query.documents,
+            partner_id: req.query.partner_id,
             applied_from: req.query.applied_from,
             applied_to: req.query.applied_to,
             sort_by: req.query.sort_by,

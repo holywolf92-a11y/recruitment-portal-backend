@@ -289,22 +289,40 @@ function decideWhatsAppReply(context) {
         escalationReason: escalation.escalationLevel !== 'none' ? escalation.reason : undefined,
     };
 }
+const CONTACT_BLOCK = `Dear Valued Customer,
+
+For any information or assistance, please feel free to contact us:
+
+📞 0300-5547806
+📞 0300-5787762
+📞 051-4927145-6
+📧 Support@falishajobs.com
+
+📍 Office No. 10, 11 & 12, 1st Floor, Umer Farooq Plaza, Murree Road, Chandni Chowk, Rawalpindi, Pakistan
+Near Mezan Bank
+🗺 https://maps.app.goo.gl/bA7XTJzFKaRb9BgB8
+
+We are always here to assist you.
+
+Best regards,
+Falisha Jobs Team`;
 function buildFallbackReply(personCtx) {
     if (personCtx.role === 'candidate') {
-        return 'I can help with your application status, required documents, profile link, or current jobs. Tell me which one you need.';
+        return `I can help with your application status, required documents, profile link, or current jobs. If you need further assistance:\n\n${CONTACT_BLOCK}`;
     }
     if (personCtx.role === 'employer') {
-        return 'I can help with your hiring request status, employer dashboard, recruitment process, or social links. Tell me what you need.';
+        return `I can help with your hiring request status, employer dashboard, or recruitment process. If you need further assistance:\n\n${CONTACT_BLOCK}`;
     }
     if (personCtx.role === 'partner') {
-        return 'I can help with your partner application status, dashboard access, candidate submission process, or social links. Tell me what you need.';
+        return `I can help with your partner application status or dashboard access. If you need further assistance:\n\n${CONTACT_BLOCK}`;
     }
     return [
         'Welcome to Falisha Manpower.',
         `Job Seeker: ${FRONTEND_URL}/apply/candidate`,
         `Employer: ${FRONTEND_URL}/apply/employer`,
         `Partner: ${FRONTEND_URL}/apply/partner`,
-        'You can also ask for jobs, portal links, or social media links.',
+        '',
+        CONTACT_BLOCK,
     ].join('\n');
 }
 /**
@@ -442,6 +460,27 @@ You are Falisha Manpower's WhatsApp customer support assistant.
 - Pricing negotiation or custom commercial terms
 - Manual account recovery that cannot be solved with a link or guidance
 - A question that cannot be answered from the available account context
+
+# When escalating or when you cannot answer
+Always end your reply with the following contact block exactly as written (do not modify it):
+
+Dear Valued Customer,
+
+For any information or assistance, please feel free to contact us:
+
+📞 0300-5547806
+📞 0300-5787762
+📞 051-4927145-6
+📧 Support@falishajobs.com
+
+📍 Office No. 10, 11 & 12, 1st Floor, Umer Farooq Plaza, Murree Road, Chandni Chowk, Rawalpindi, Pakistan
+Near Mezan Bank
+🗺 https://maps.app.goo.gl/bA7XTJzFKaRb9BgB8
+
+We are always here to assist you.
+
+Best regards,
+Falisha Jobs Team
 
 # Style
 - Sound like an experienced support agent at an international recruitment company.
@@ -633,7 +672,7 @@ async function generateWhatsAppReply(context) {
                 status: response.status,
                 error: errorText.substring(0, 200)
             });
-            return 'Thank you for your message. Our team will respond to you shortly.';
+            return CONTACT_BLOCK;
         }
         const data = await response.json();
         const reply = data.choices?.[0]?.message?.content?.trim();

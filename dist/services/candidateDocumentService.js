@@ -237,7 +237,7 @@ async function uploadCandidateDocument(data) {
                 // Call split-and-categorize
                 const base64 = data.buffer.toString('base64');
                 const splitResult = await (0, splitUploadService_1.callSplitAndCategorize)(base64, data.file_name, data.mime_type, undefined, // candidateData - could fetch candidate data if needed
-                true // useTextract
+                false // useTextract
                 );
                 // If split returned multiple documents, create candidate_documents for each
                 if (splitResult.documents && splitResult.documents.length > 1) {

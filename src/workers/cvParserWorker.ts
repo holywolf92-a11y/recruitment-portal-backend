@@ -2,7 +2,7 @@ import { Worker, Job, UnrecoverableError } from 'bullmq';
 import { redis } from '../config/redis';
 import crypto from 'crypto';
 import { ParsingJobsService } from '../services/parsingJobsService';
-import { createCandidate, CreateCandidateData } from '../services/candidateService';
+import { createCandidate, CreateCandidateData, normalizePhoneE164 } from '../services/candidateService';
 import { supabaseAdminClient } from '../config/database';
 import { callSplitAndCategorize, docTypeToFolder, preserveOriginalPdf } from '../services/splitUploadService';
 import { extractProfilePhotoHybrid, uploadExtractedPhotoToCandidatePhotos } from '../services/hybridPhotoExtractionService';
@@ -24,6 +24,13 @@ const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
 const STORAGE_BUCKET = 'documents';
 
+type PartnerSenderContext = {
+  partnerId: string;
+  partnerName: string;
+  partnerEmail?: string | null;
+  partnerPhone?: string | null;
+};
+
 function isVarcharOverflowError(err: any): boolean {
   const message = String(err?.message || err || '');
   const code = String(err?.code || err?.status || err?.statusCode || '');
@@ -43,6 +50,96 @@ function isVarcharOverflowError(err: any): boolean {
 function safeErrorMessage(err: any, maxLen = 500): string {
   const msg = String(err?.message || err || 'Unknown error');
   return msg.length > maxLen ? `${msg.slice(0, maxLen)}…` : msg;
+}
+
+function isNullLikeString(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  return !normalized || ['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(normalized);
+}
+
+function cleanIdentityToken(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'string') return String(value);
+  const trimmed = value.trim();
+  if (isNullLikeString(trimmed)) return undefined;
+  return trimmed;
+}
+
+function firstNonEmptyString(...values: any[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function extractWhatsAppSenderContact(payload: any): string | null {
+  return firstNonEmptyString(
+    payload?.sender_contact,
+    payload?.effectiveFrom,
+    payload?.from,
+    payload?.raw?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from,
+    payload?.raw?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.wa_id,
+    payload?.raw?.contacts?.[0]?.wa_id,
+  );
+}
+
+function isForwardedWhatsAppPayload(payload: any): boolean {
+  return payload?.context?.forwarded === true ||
+    payload?.raw?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.context?.forwarded === true ||
+    payload?.raw?.messages?.[0]?.context?.forwarded === true;
+}
+
+function isLikelyDuplicateCandidateError(err: any): boolean {
+  const code = String(err?.code || err?.status || err?.statusCode || '');
+  const msg = safeErrorMessage(err, 1200).toLowerCase();
+
+  if (code === '23505') return true; // Postgres unique violation
+  if (msg.includes('duplicate candidate found')) return true;
+  return /duplicate key|unique constraint|already exists/i.test(msg);
+}
+
+async function findSingleCandidateIdByEmailOrPhone(args: {
+  email?: string | null;
+  phone?: string | null;
+}): Promise<string | null> {
+  const db = supabaseAdminClient();
+
+  const email = typeof args.email === 'string' ? args.email.trim().toLowerCase() : '';
+  if (email) {
+    const { data, error } = await db
+      .from('candidates')
+      .select('id')
+      .ilike('email', email)
+      .neq('status', 'Deleted')
+      .order('created_at', { ascending: false })
+      .limit(2);
+    if (!error && Array.isArray(data)) {
+      if (data.length === 1) return String(data[0].id);
+      if (data.length > 1) return null;
+    }
+  }
+
+  const phoneRaw = typeof args.phone === 'string' ? args.phone.trim() : '';
+  if (phoneRaw) {
+    const e164 = normalizePhoneE164(phoneRaw);
+    if (e164) {
+      const { data, error } = await db
+        .from('candidates')
+        .select('id')
+        .eq('phone', e164)
+        .neq('status', 'Deleted')
+        .order('created_at', { ascending: false })
+        .limit(2);
+      if (!error && Array.isArray(data)) {
+        if (data.length === 1) return String(data[0].id);
+        if (data.length > 1) return null;
+      }
+    }
+  }
+
+  return null;
 }
 
 function signHmac(body: string) {
@@ -306,7 +403,16 @@ function trunc(value: string | undefined | null, maxLen: number): string | undef
 }
 
 // Helper to create candidate from parsed CV data
-async function createCandidateFromParsedData(parsed: any, attachmentId: string, identityFields?: any, messageSource?: string) {
+async function createCandidateFromParsedData(
+  parsed: any,
+  attachmentId: string,
+  identityFields?: any,
+  messageSource?: string,
+  options?: {
+    partnerSender?: PartnerSenderContext | null;
+    trustSenderAsCandidate?: boolean;
+  }
+) {
   try {
     const candidate = parsed.candidate || {};
     
@@ -340,6 +446,11 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
       identityFields?.name && isPlaceholderName(candidate.full_name)
         ? identityFields.name
         : (candidate.full_name || identityFields?.name || 'Unknown');
+
+    const cleanedFatherName = cleanIdentityToken(identityFields?.father_name || candidate.father_name);
+    const cleanedCnic = cleanIdentityToken(identityFields?.cnic || candidate.cnic);
+    const cleanedPassport = cleanIdentityToken(identityFields?.passport_no || candidate.passport);
+    const cleanedMarital = cleanIdentityToken(candidate.marital_status);
     
     if (extractedEmail && !candidateEmail) {
       console.log(`[CVParser] Filtered out official/government email during extraction: ${extractedEmail}`);
@@ -362,14 +473,14 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
 
     const candidateData: CreateCandidateData = {
       name: trunc(resolvedName, 255) || 'Unknown',
-      father_name: identityFields?.father_name || candidate.father_name || undefined,
+      father_name: cleanedFatherName,
       email: trunc(resolvedEmail, 255),
       phone: trunc(resolvedPhone, 50),
       address: candidate.location || undefined,
       date_of_birth: dateOfBirth,
-      marital_status: trunc(candidate.marital_status, 20) || undefined,
-      cnic: identityFields?.cnic || candidate.cnic || undefined,
-      passport: identityFields?.passport_no || candidate.passport || undefined,
+      marital_status: trunc(cleanedMarital, 20) || undefined,
+      cnic: cleanedCnic,
+      passport: cleanedPassport,
       nationality: trunc(candidate.nationality || identityFields?.nationality, 100) || undefined,
       position: trunc(extractedPosition, 255),
       experience_years: candidate.experience_years || undefined,
@@ -397,14 +508,86 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
       auto_extracted: true,
     };
 
+    // Partner sender rule (WhatsApp only):
+    // If the sender is a verified partner and the message is NOT forwarded,
+    // trust the sender context. Always tag the candidate with partner metadata.
+    const partnerSender = options?.partnerSender || null;
+    if (messageSource === 'whatsapp' && partnerSender) {
+      (candidateData as any).partner_id = partnerSender.partnerId;
+      (candidateData as any).partner_name = partnerSender.partnerName;
+
+      if (options?.trustSenderAsCandidate) {
+        // Only fill contact from partner if CV contact is missing/placeholder.
+        if (!candidateData.email && partnerSender.partnerEmail) {
+          candidateData.email = String(partnerSender.partnerEmail).trim().toLowerCase();
+        }
+        if (!candidateData.phone && partnerSender.partnerPhone) {
+          candidateData.phone = String(partnerSender.partnerPhone).trim();
+        }
+      }
+    }
+
+    // If we are about to create a candidate but the email/phone already exists,
+    // link to the existing candidate instead of failing to needs_review.
+    // This is especially important for WhatsApp forwarded CVs.
+    const preexistingId = await findSingleCandidateIdByEmailOrPhone({
+      email: candidateData.email || null,
+      phone: candidateData.phone || null,
+    });
+    if (preexistingId) {
+      const db = supabaseAdminClient();
+      await db
+        .from('inbox_attachments')
+        .update({ candidate_id: preexistingId, linked_candidate_id: preexistingId })
+        .eq('id', attachmentId);
+
+      const { data: existingCandidate } = await db
+        .from('candidates')
+        .select('*')
+        .eq('id', preexistingId)
+        .maybeSingle();
+
+      console.log(`[CVParser] Linked attachment ${attachmentId} to existing candidate ${preexistingId} (pre-check by email/phone)`);
+      return existingCandidate;
+    }
+
     // Create candidate (system-created, no specific userId)
-    const newCandidate = await createCandidate(candidateData);
+    let newCandidate: any;
+    try {
+      newCandidate = await createCandidate(candidateData);
+    } catch (createErr: any) {
+      if (isLikelyDuplicateCandidateError(createErr)) {
+        const fallbackId = await findSingleCandidateIdByEmailOrPhone({
+          email: candidateData.email || null,
+          phone: candidateData.phone || null,
+        });
+        if (fallbackId) {
+          const db = supabaseAdminClient();
+          await db
+            .from('inbox_attachments')
+            .update({ candidate_id: fallbackId, linked_candidate_id: fallbackId })
+            .eq('id', attachmentId);
+
+          const { data: existingCandidate } = await db
+            .from('candidates')
+            .select('*')
+            .eq('id', fallbackId)
+            .maybeSingle();
+
+          console.warn(
+            `[CVParser] createCandidate failed due to duplicate; linked attachment ${attachmentId} to existing candidate ${fallbackId}`
+          );
+          return existingCandidate;
+        }
+      }
+      throw createErr;
+    }
 
     // Link the attachment to the candidate
     const db = supabaseAdminClient();
     await db
       .from('inbox_attachments')
-      .update({ candidate_id: newCandidate.id })
+      .update({ candidate_id: newCandidate.id, linked_candidate_id: newCandidate.id })
       .eq('id', attachmentId);
 
     console.log(`[CVParser] Created candidate ${newCandidate.id} for attachment ${attachmentId}`);
@@ -417,6 +600,44 @@ async function createCandidateFromParsedData(parsed: any, attachmentId: string, 
 
 export function startCvParserWorker() {
   const parsingJobs = new ParsingJobsService();
+
+  async function resolveApprovedPartnerSender(senderContact: string): Promise<PartnerSenderContext | null> {
+    try {
+      const db = supabaseAdminClient();
+      const digits = String(senderContact || '').replace(/\D/g, '');
+      const e164 = normalizePhoneE164(senderContact);
+      const phoneOr = [
+        e164 ? `phone_number.eq.${e164}` : null,
+        digits ? `phone_number.eq.+${digits}` : null,
+        digits ? `phone_number.eq.${digits}` : null,
+        digits ? `phone_number.ilike.%${digits}%` : null,
+      ].filter(Boolean).join(',');
+
+      if (!phoneOr) return null;
+
+      const { data: partner } = await db
+        .from('partner_applications')
+        .select('id, applicant_name, email, phone_number, status')
+        .or(phoneOr)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!partner) return null;
+      const status = String((partner as any).status || '').trim().toLowerCase();
+      const approved = status === 'approved' || status === 'active';
+      if (!approved) return null;
+
+      return {
+        partnerId: String((partner as any).id),
+        partnerName: String((partner as any).applicant_name || 'Partner'),
+        partnerEmail: (partner as any).email || null,
+        partnerPhone: (partner as any).phone_number || null,
+      };
+    } catch {
+      return null;
+    }
+  }
 
   async function reconcileAttachmentCandidateOwnership(candidateId: string, attachmentId: string) {
     try {
@@ -1227,10 +1448,21 @@ export function startCvParserWorker() {
           combinedData.passport_expiry = parseDate(combinedData.passport_expiry, 'passport_expiry');
         }
         
+        const whatsappSenderContact = inboxMsg?.source === 'whatsapp'
+          ? extractWhatsAppSenderContact(inboxMsg?.payload)
+          : null;
+        const isForwardedWhatsApp = inboxMsg?.source === 'whatsapp' && isForwardedWhatsAppPayload(inboxMsg?.payload);
+        const partnerSender = (inboxMsg?.source === 'whatsapp' && whatsappSenderContact)
+          ? await resolveApprovedPartnerSender(whatsappSenderContact)
+          : null;
+        const trustSenderAsCandidate = !!partnerSender && !isForwardedWhatsApp;
+
         // WhatsApp CVs are often forwarded by recruiters or agencies on behalf of
         // multiple candidates, so a shared phone/email is not strong enough to
         // auto-link on its own.
-        const requireCorroborationForContactSignals = inboxMsg?.source === 'whatsapp';
+        // Exception: if sender is a verified partner AND the message is not forwarded,
+        // allow single-signal linking/creation for smoother partner flows.
+        const requireCorroborationForContactSignals = inboxMsg?.source === 'whatsapp' && !trustSenderAsCandidate;
 
         // Find existing candidate using progressive completion matching.
         // If force=true and the attachment is already linked to a candidate, use that
@@ -1391,7 +1623,10 @@ export function startCvParserWorker() {
           console.log(`[CVParser] ✅ Enriched existing candidate ${existingCandidateId} with CV data`);
         } else {
           // Create new candidate from parsed data (including identity fields) and link to attachment
-          candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields, inboxMsg?.source);
+          candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields, inboxMsg?.source, {
+            partnerSender,
+            trustSenderAsCandidate,
+          });
           
           // If creation failed silently (e.g. duplicate email/CNIC), fall back to finding
           // the existing candidate without WhatsApp corroboration restrictions.

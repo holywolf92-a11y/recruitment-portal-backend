@@ -22,11 +22,21 @@ export function normalizePhoneE164(phone: string): string | null {
   if (!phone) return null;
   // Remove all non-digit characters
   const digitsOnly = phone.replace(/\D/g, '');
+
+  // Common Pakistan local mobile format: 03XXXXXXXXX (11 digits)
+  // Convert to +923XXXXXXXXX
+  if (digitsOnly.length === 11 && digitsOnly.startsWith('03')) {
+    return `+92${digitsOnly.slice(1)}`;
+  }
+
+  // Another common form: 3XXXXXXXXX (10 digits) → +923XXXXXXXXX
+  if (digitsOnly.length === 10 && digitsOnly.startsWith('3')) {
+    return `+92${digitsOnly}`;
+  }
+
   // Add Pakistan country code if not present
   if (digitsOnly.startsWith('92') && digitsOnly.length === 12) {
     return `+${digitsOnly}`;
-  } else if (digitsOnly.length === 10 && digitsOnly.startsWith('3')) {
-    return `+92${digitsOnly}`;
   } else if (digitsOnly.length === 13 && digitsOnly.startsWith('923')) {
     return `+${digitsOnly}`;
   }

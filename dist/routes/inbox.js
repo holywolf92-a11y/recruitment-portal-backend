@@ -121,42 +121,44 @@ router.get('/stats', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const since = req.query.since;
     const db = (0, database_1.supabaseAdminClient)();
     // Total CV attachments
-    let totalQ = db
-        .from('inbox_attachments')
-        .select('id', { count: 'exact', head: true })
-        .or('attachment_type.eq.cv,attachment_type.is.null');
+        // Include legacy `attachment_type=cv`, new `attachment_kind=cv` (WhatsApp flow often uses attachment_type=document)
+        // and any explicitly defused/flagged rows (`parsing_status=needs_review`) so they show up for manual cleanup.
+        let totalQ = db
+            .from('inbox_attachments')
+            .select('id', { count: 'exact', head: true })
+            .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review');
     if (since)
         totalQ = totalQ.gte('created_at', since);
     const { count: total } = await totalQ;
     // Extracted (candidate linked)
-    let extractedQ = db
-        .from('inbox_attachments')
-        .select('id', { count: 'exact', head: true })
-        .or('attachment_type.eq.cv,attachment_type.is.null')
-        .not('candidate_id', 'is', null);
+        let extractedQ = db
+            .from('inbox_attachments')
+            .select('id', { count: 'exact', head: true })
+            .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+            .not('candidate_id', 'is', null);
     if (since)
         extractedQ = extractedQ.gte('created_at', since);
     const { count: extracted } = await extractedQ;
     // linked_candidate_id extracted (WhatsApp flow)
-    let linkedQ = db
-        .from('inbox_attachments')
-        .select('id', { count: 'exact', head: true })
-        .or('attachment_type.eq.cv,attachment_type.is.null')
-        .is('candidate_id', null)
-        .not('linked_candidate_id', 'is', null);
+        let linkedQ = db
+            .from('inbox_attachments')
+            .select('id', { count: 'exact', head: true })
+            .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+            .is('candidate_id', null)
+            .not('linked_candidate_id', 'is', null);
     if (since)
         linkedQ = linkedQ.gte('created_at', since);
     const { count: linked } = await linkedQ;
     const extractedTotal = (extracted ?? 0) + (linked ?? 0);
     const pending = (total ?? 0) - extractedTotal;
     // needs_review = parsing succeeded but no candidate could be created/linked
-    let needsReviewQ = db
-        .from('inbox_attachments')
-        .select('id', { count: 'exact', head: true })
-        .or('attachment_type.eq.cv,attachment_type.is.null')
-        .is('candidate_id', null)
-        .is('linked_candidate_id', null)
-        .in('parsing_status', ['needs_review', 'extracted']);
+        let needsReviewQ = db
+            .from('inbox_attachments')
+            .select('id', { count: 'exact', head: true })
+            .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+            .is('candidate_id', null)
+            .is('linked_candidate_id', null)
+            .in('parsing_status', ['needs_review', 'extracted']);
     if (since)
         needsReviewQ = needsReviewQ.gte('created_at', since);
     const { count: needsReview } = await needsReviewQ;
@@ -176,14 +178,14 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const source = req.query.source;
     const db = (0, database_1.supabaseAdminClient)();
     // Query 1: inbox_attachments + joined message info
-    let query = db
-        .from('inbox_attachments')
-        .select(`id, file_name, mime_type, attachment_type, parsing_status,
-         candidate_id, linked_candidate_id, inbox_message_id, created_at,
-         inbox_messages(source, received_at, status, payload)`, { count: 'exact' })
-        .or('attachment_type.eq.cv,attachment_type.is.null')
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1);
+          let query = db
+                .from('inbox_attachments')
+                .select(`id, file_name, mime_type, attachment_type, parsing_status,
+            candidate_id, linked_candidate_id, inbox_message_id, created_at,
+            inbox_messages(source, received_at, status, payload)`, { count: 'exact' })
+                .or('attachment_kind.eq.cv,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+                .order('created_at', { ascending: false })
+                .range(offset, offset + limit - 1);
     if (since)
         query = query.gte('created_at', since);
     const { data, error, count } = await query;

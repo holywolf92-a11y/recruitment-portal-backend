@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.extractPhotoFromPdfController = extractPhotoFromPdfController;
 const database_1 = require("../config/database");
 const pdfPhotoExtractionService_1 = require("../services/pdfPhotoExtractionService");
+const profilePhotoStorage_1 = require("../utils/profilePhotoStorage");
 /**
  * POST /api/documents/candidates/:candidateId/extract-photo
  * Extracts a photo from the candidate's profile photo PDF and saves it as an image
@@ -41,9 +42,16 @@ async function extractPhotoFromPdfController(req, res) {
             return res.status(500).json({ error: 'Failed to extract photo from PDF' });
         }
         // Update candidate's profile_photo_url to point to the extracted image
+        const storageRef = (0, profilePhotoStorage_1.deriveProfilePhotoStorageRef)(signedUrl);
         const { error: updateError } = await db
             .from('candidates')
-            .update({ profile_photo_url: signedUrl })
+            .update({
+            profile_photo_url: signedUrl,
+            profile_photo_bucket: storageRef?.bucket,
+            profile_photo_path: storageRef?.storagePath,
+            photo_received: true,
+            photo_received_at: new Date().toISOString(),
+        })
             .eq('id', candidateId);
         if (updateError) {
             console.warn(`[Extract Photo] Update error (non-fatal):`, updateError);

@@ -58,6 +58,7 @@ const whatsappInboxService_1 = require("../services/whatsappInboxService");
 const professionInferenceService_1 = require("../services/professionInferenceService");
 const emailService_1 = require("../services/emailService");
 const singleCvHeuristics_1 = require("../utils/singleCvHeuristics");
+const profilePhotoStorage_1 = require("../utils/profilePhotoStorage");
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 const STORAGE_BUCKET = 'documents';
@@ -1524,8 +1525,11 @@ function startCvParserWorker() {
                 const isProfilePhotoPdf = !!normalizedProfilePhotoUrl && normalizedProfilePhotoUrl.toLowerCase().includes('.pdf');
                 if (!hasProfilePhoto(candidate) && normalizedProfilePhotoUrl && !isProfilePhotoPdf) {
                     try {
+                        const storageRef = (0, profilePhotoStorage_1.deriveProfilePhotoStorageRef)(normalizedProfilePhotoUrl);
                         await db.from('candidates').update({
                             profile_photo_url: normalizedProfilePhotoUrl,
+                            profile_photo_bucket: storageRef?.bucket,
+                            profile_photo_path: storageRef?.storagePath,
                             photo_received: true,
                             photo_received_at: new Date().toISOString(),
                         }).eq('id', existingCandidateId);

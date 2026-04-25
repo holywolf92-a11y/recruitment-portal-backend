@@ -16,7 +16,8 @@ export async function fixApprovedPhotos(req: Request, res: Response) {
       .select(`
         id,
         file_name,
-        file_url,
+        storage_bucket,
+        storage_path,
         category,
         verification_status,
         candidate_id
@@ -71,12 +72,14 @@ export async function fixApprovedPhotos(req: Request, res: Response) {
       const { data: updated, error: updateError } = await db
         .from('candidates')
         .update({
-          profile_photo_url: doc.file_url,
+          profile_photo_url: null,
+          profile_photo_bucket: doc.storage_bucket || 'documents',
+          profile_photo_path: doc.storage_path,
           photo_received: true,
           updated_at: new Date().toISOString(),
         })
         .eq('id', candidate.id)
-        .select('id, name, profile_photo_url')
+        .select('id, name, profile_photo_url, profile_photo_bucket, profile_photo_path')
         .single();
 
       if (updateError) {
@@ -89,7 +92,8 @@ export async function fixApprovedPhotos(req: Request, res: Response) {
       fixedCandidates.push({
         id: updated.id,
         name: updated.name,
-        photo_url: updated.profile_photo_url,
+        photo_bucket: (updated as any).profile_photo_bucket,
+        photo_path: (updated as any).profile_photo_path,
         document: doc.file_name,
       });
     }

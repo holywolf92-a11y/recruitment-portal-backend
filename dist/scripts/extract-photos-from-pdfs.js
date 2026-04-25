@@ -97,7 +97,7 @@ async function extractPhotosFromPDFs() {
                     .from('candidates')
                     .update({
                     profile_photo_path: doc.storage_path,
-                    profile_photo_url: doc.storage_url || storageUrl,
+                    profile_photo_url: null,
                     profile_photo_bucket: doc.storage_bucket || 'documents',
                     photo_received: true,
                     photo_received_at: new Date().toISOString()

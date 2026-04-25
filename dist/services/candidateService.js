@@ -22,6 +22,7 @@ const database_1 = require("../config/database");
 const timelineService_1 = require("./timelineService");
 const documentLinkService_1 = require("./documentLinkService");
 const publicUrl_1 = require("../utils/publicUrl");
+const profilePhotoStorage_1 = require("../utils/profilePhotoStorage");
 // Normalization helper functions
 function normalizeCNIC(cnic) {
     if (!cnic)
@@ -184,6 +185,8 @@ async function createCandidate(data, userId) {
     const candidateCode = await generateCandidateCode();
     // Validate profile_photo_url (only allow image URLs or Supabase signed URLs)
     let validProfilePhotoUrl = null;
+    let profilePhotoBucket;
+    let profilePhotoPath;
     if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
         const url = data.profile_photo_url.toLowerCase();
         const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
@@ -193,6 +196,11 @@ async function createCandidate(data, userId) {
         // Accept all valid image URLs including CV-extracted photos
         if (isSupabaseUrl || (extMatch && allowedExts.includes(extMatch[1]))) {
             validProfilePhotoUrl = data.profile_photo_url;
+            const storageRef = (0, profilePhotoStorage_1.deriveProfilePhotoStorageRef)(validProfilePhotoUrl);
+            if (storageRef) {
+                profilePhotoBucket = storageRef.bucket;
+                profilePhotoPath = storageRef.storagePath;
+            }
             console.log(`[ProfilePhotoValidation] Accepted profile photo URL: ${data.profile_photo_url}`);
         }
         else {
@@ -259,6 +267,8 @@ async function createCandidate(data, userId) {
         certificate_received: data.certificate_received,
         // Profile photo URL (validated)
         profile_photo_url: validProfilePhotoUrl,
+        profile_photo_bucket: profilePhotoBucket,
+        profile_photo_path: profilePhotoPath,
     };
     const { data: candidate, error } = await db
         .from('candidates')

@@ -60,7 +60,7 @@ router.post('/:id/extract-photo', async (req, res) => {
       .update({
         profile_photo_path: doc.storage_path,
         // Prefer stable storage refs; signed URLs expire.
-        profile_photo_url: doc.storage_url || null,
+        profile_photo_url: null,
         profile_photo_bucket: doc.storage_bucket || 'documents',
         photo_received: true,
         photo_received_at: new Date().toISOString()

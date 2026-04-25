@@ -2,6 +2,7 @@ import { supabaseAdminClient } from '../config/database';
 import { logProfileCreated, logProfileUpdated } from './timelineService';
 import { DocumentLinkService } from './documentLinkService';
 import { resolveBackendApiBaseUrl, resolveFrontendUrl } from '../utils/publicUrl';
+import { deriveProfilePhotoStorageRef } from '../utils/profilePhotoStorage';
 
 // Normalization helper functions
 export function normalizeCNIC(cnic: string): string | null {
@@ -246,6 +247,8 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
 
   // Validate profile_photo_url (only allow image URLs or Supabase signed URLs)
   let validProfilePhotoUrl = null;
+  let profilePhotoBucket: string | undefined;
+  let profilePhotoPath: string | undefined;
   if (data.profile_photo_url && typeof data.profile_photo_url === 'string') {
     const url = data.profile_photo_url.toLowerCase();
     const allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
@@ -257,6 +260,11 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     // Accept all valid image URLs including CV-extracted photos
     if (isSupabaseUrl || (extMatch && allowedExts.includes(extMatch[1]))) {
       validProfilePhotoUrl = data.profile_photo_url;
+      const storageRef = deriveProfilePhotoStorageRef(validProfilePhotoUrl);
+      if (storageRef) {
+        profilePhotoBucket = storageRef.bucket;
+        profilePhotoPath = storageRef.storagePath;
+      }
       console.log(`[ProfilePhotoValidation] Accepted profile photo URL: ${data.profile_photo_url}`);
     } else {
       console.warn(`[ProfilePhotoValidation] Rejected non-image profile_photo_url: ${data.profile_photo_url}`);
@@ -329,6 +337,8 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
 
     // Profile photo URL (validated)
     profile_photo_url: validProfilePhotoUrl,
+    profile_photo_bucket: profilePhotoBucket,
+    profile_photo_path: profilePhotoPath,
   };
 
   const { data: candidate, error } = await db

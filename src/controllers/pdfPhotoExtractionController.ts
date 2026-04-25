@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { supabaseAdminClient } from '../config/database';
 import { extractAndSavePhotoFromPdf } from '../services/pdfPhotoExtractionService';
+import { deriveProfilePhotoStorageRef } from '../utils/profilePhotoStorage';
 
 /**
  * POST /api/documents/candidates/:candidateId/extract-photo
@@ -51,9 +52,16 @@ export async function extractPhotoFromPdfController(req: Request, res: Response)
     }
     
     // Update candidate's profile_photo_url to point to the extracted image
+    const storageRef = deriveProfilePhotoStorageRef(signedUrl);
     const { error: updateError } = await db
       .from('candidates')
-      .update({ profile_photo_url: signedUrl })
+      .update({
+        profile_photo_url: signedUrl,
+        profile_photo_bucket: storageRef?.bucket,
+        profile_photo_path: storageRef?.storagePath,
+        photo_received: true,
+        photo_received_at: new Date().toISOString(),
+      })
       .eq('id', candidateId);
     
     if (updateError) {

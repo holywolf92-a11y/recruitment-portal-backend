@@ -19,6 +19,7 @@ import { ensureConversationForPhone, recordOutboundMessage } from '../services/w
 import { inferProfessionFromCvData } from '../services/professionInferenceService';
 import { emailService } from '../services/emailService';
 import { shouldSkipSplitAndCategorizeForSingleCvUpload } from '../utils/singleCvHeuristics';
+import { deriveProfilePhotoStorageRef } from '../utils/profilePhotoStorage';
 
 const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
@@ -1724,8 +1725,11 @@ export function startCvParserWorker() {
 
           if (!hasProfilePhoto(candidate) && normalizedProfilePhotoUrl && !isProfilePhotoPdf) {
             try {
+              const storageRef = deriveProfilePhotoStorageRef(normalizedProfilePhotoUrl);
               await db.from('candidates').update({
                 profile_photo_url: normalizedProfilePhotoUrl,
+                profile_photo_bucket: storageRef?.bucket,
+                profile_photo_path: storageRef?.storagePath,
                 photo_received: true,
                 photo_received_at: new Date().toISOString(),
               }).eq('id', existingCandidateId);

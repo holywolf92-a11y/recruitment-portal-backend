@@ -142,6 +142,22 @@ async function findSingleCandidateIdByEmailOrPhone(args: {
   return null;
 }
 
+async function findSinglePartnerCandidateId(partnerId: string): Promise<string | null> {
+  const db = supabaseAdminClient();
+  const { data, error } = await db
+    .from('candidates')
+    .select('id')
+    .eq('partner_id', partnerId)
+    .eq('is_partner_candidate', true)
+    .neq('status', 'Deleted')
+    .order('created_at', { ascending: false })
+    .limit(2);
+
+  if (error || !Array.isArray(data)) return null;
+  if (data.length === 1) return String(data[0].id);
+  return null;
+}
+
 function signHmac(body: string) {
   return crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
 }
@@ -517,13 +533,36 @@ async function createCandidateFromParsedData(
       (candidateData as any).partner_name = partnerSender.partnerName;
 
       if (options?.trustSenderAsCandidate) {
-        // Only fill contact from partner if CV contact is missing/placeholder.
-        if (!candidateData.email && partnerSender.partnerEmail) {
-          candidateData.email = String(partnerSender.partnerEmail).trim().toLowerCase();
+        (candidateData as any).is_partner_candidate = true;
+
+        // Dedicated partner-candidate: link by partner_id first.
+        const existingPartnerCandidateId = await findSinglePartnerCandidateId(partnerSender.partnerId);
+        if (existingPartnerCandidateId) {
+          const db = supabaseAdminClient();
+          await db
+            .from('inbox_attachments')
+            .update({ candidate_id: existingPartnerCandidateId, linked_candidate_id: existingPartnerCandidateId })
+            .eq('id', attachmentId);
+
+          const { data: existingCandidate } = await db
+            .from('candidates')
+            .select('*')
+            .eq('id', existingPartnerCandidateId)
+            .maybeSingle();
+
+          console.log(
+            `[CVParser] Trusted partner sender: linked attachment ${attachmentId} to existing partner candidate ${existingPartnerCandidateId}`
+          );
+          return existingCandidate;
         }
-        if (!candidateData.phone && partnerSender.partnerPhone) {
-          candidateData.phone = String(partnerSender.partnerPhone).trim();
-        }
+
+        // New partner-candidate: use partner's own contact details for candidate info.
+        candidateData.email = partnerSender.partnerEmail
+          ? String(partnerSender.partnerEmail).trim().toLowerCase()
+          : undefined;
+        candidateData.phone = partnerSender.partnerPhone
+          ? String(partnerSender.partnerPhone).trim()
+          : undefined;
       }
     }
 

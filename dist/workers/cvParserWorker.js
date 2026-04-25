@@ -1470,7 +1470,7 @@ function startCvParserWorker() {
                     requireCorroborationForContactSignals,
                 });
             }
-            const boundAttachmentCandidateId = attachmentMeta?.candidate_id || attachmentMeta?.linked_candidate_id || null;
+            const boundAttachmentCandidateId = attachmentMeta?.candidate_id || null;
             if (!existingCandidateId && force && boundAttachmentCandidateId) {
                 console.log(`[CVParser] Progressive match returned no result; using attachment binding ${boundAttachmentCandidateId} (force=true)`);
                 existingCandidateId = boundAttachmentCandidateId;

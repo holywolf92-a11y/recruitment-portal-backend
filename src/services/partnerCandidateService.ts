@@ -423,7 +423,7 @@ export async function ingestPartnerBulkAttachment(args: {
     attachmentType: 'cv',
     storageBucket: STORAGE_BUCKET,
     storagePath: `partner-bulk/${args.candidateId}/${Date.now()}_${sanitizeStoragePathSegment(args.fileName)}`,
-    candidateId: args.candidateId,
+    linkedCandidateId: args.candidateId,
     messageSubject: `Partner bulk upload ${args.partner.partnerName}`,
     messageSource: 'web',
   });

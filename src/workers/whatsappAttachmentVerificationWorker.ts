@@ -441,10 +441,8 @@ export function startWhatsAppAttachmentVerificationWorker() {
         );
       }
 
-      // Mark inbox_attachments as linked (do not overwrite storage_path; it points to raw upload).
-      // Write both linked_candidate_id (identity-first signal) AND candidate_id (required by CV Inbox
-      // UI to show status as "extracted" rather than "queued").
-      await db.from('inbox_attachments').update({ linked_candidate_id: candidateId, candidate_id: candidateId }).eq('id', attachmentId);
+      // Preserve the identity-first candidate binding separately from parser-owned linkage.
+      await db.from('inbox_attachments').update({ linked_candidate_id: candidateId }).eq('id', attachmentId);
 
       // If the AI identified this as a CV/resume, also trigger full structured CV parsing so that
       // position, experience, skills, education etc. get extracted into the candidate profile.
@@ -455,8 +453,7 @@ export function startWhatsAppAttachmentVerificationWorker() {
         try {
           await db.from('inbox_attachments').update({ attachment_kind: 'cv' }).eq('id', attachmentId);
           const { enqueueCvParsingJobForAttachment } = await import('../services/inboxAttachmentService');
-          // force: true bypasses the 'already_linked' idempotency guard because candidate_id was
-          // just written above and would otherwise cause the CV parser to skip this attachment.
+          // force: true keeps identity-first review intact while still running full CV parsing.
           await enqueueCvParsingJobForAttachment(attachmentId, { force: true });
           logger.info('Enqueued full CV parsing for cv_resume WhatsApp attachment', { attachmentId, candidateId });
         } catch (cvParseErr) {

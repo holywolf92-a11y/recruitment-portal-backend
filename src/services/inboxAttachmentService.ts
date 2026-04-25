@@ -18,6 +18,7 @@ export interface InboxAttachmentCreateInput {
   storageBucket: string;
   storagePath: string;
   candidateId?: string;
+  linkedCandidateId?: string;
   messageSubject?: string; // For classification
   messageSource?: string; // gmail, whatsapp, web
   whatsappWamid?: string;
@@ -134,6 +135,7 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
       .insert({
         inbox_message_id: input.inboxMessageId,
         candidate_id: input.candidateId ?? null,
+        linked_candidate_id: input.linkedCandidateId ?? null,
         storage_bucket: input.storageBucket,
         storage_path: finalStoragePath,
         file_name: input.fileName,
@@ -211,6 +213,7 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
       storagePath: input.storagePath,
       sha256,
       candidateId: input.candidateId,
+      linkedCandidateId: input.linkedCandidateId,
       });
     }
 

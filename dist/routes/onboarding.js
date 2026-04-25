@@ -4,10 +4,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const crypto_1 = require("crypto");
 const multer_1 = __importDefault(require("multer"));
 const auth_1 = require("../middleware/auth");
 const database_1 = require("../config/database");
 const candidateDocumentService_1 = require("../services/candidateDocumentService");
+const documentClassifier_1 = require("../services/documentClassifier");
+const inboxAttachmentService_1 = require("../services/inboxAttachmentService");
+const inboxService_1 = require("../services/inboxService");
 const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
 const timelineService_1 = require("../services/timelineService");
 const router = (0, express_1.Router)();
@@ -202,6 +206,48 @@ router.post('/documents', documentUpload.single('file'), async (req, res) => {
         const candidate = await getCandidateByToken(token);
         if (!candidate) {
             return res.status(404).json({ error: 'Onboarding profile not found' });
+        }
+        const requestedCv = ['cv', 'resume', 'cv_resume'].includes(documentType.toLowerCase());
+        const classification = documentClassifier_1.DocumentClassifier.classify(req.file.originalname, requestedCv ? 'cv' : documentType, req.file.mimetype, req.file.buffer);
+        if (requestedCv || classification.attachmentKind === 'cv') {
+            const safeFileName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+            const inboxMessage = await (0, inboxService_1.createInboxMessage)({
+                source: 'web',
+                externalMessageId: `onboarding:${candidate.id}:${(0, crypto_1.randomUUID)()}`,
+                payload: {
+                    origin: 'candidate_onboarding_cv_upload',
+                    candidate_id: candidate.id,
+                    email_tracking_token: token,
+                    document_type: documentType || null,
+                    file_name: req.file.originalname,
+                },
+                status: 'received',
+                receivedAt: new Date().toISOString(),
+            });
+            const attachment = await (0, inboxAttachmentService_1.createAttachment)({
+                inboxMessageId: inboxMessage.id,
+                fileBuffer: req.file.buffer,
+                fileName: req.file.originalname,
+                mimeType: req.file.mimetype,
+                attachmentType: 'cv',
+                storageBucket: 'documents',
+                storagePath: `onboarding/${candidate.id}/${Date.now()}_${safeFileName}`,
+                linkedCandidateId: candidate.id,
+                messageSubject: 'Candidate onboarding CV upload',
+                messageSource: 'web',
+            });
+            const jobInfo = await (0, inboxAttachmentService_1.enqueueCvParsingJobForAttachment)(attachment.id, {
+                force: false,
+                expiresInSeconds: 3600,
+            });
+            return res.status(201).json({
+                success: true,
+                document: null,
+                request_id: jobInfo.jobId || attachment.id,
+                intake_attachment_id: attachment.id,
+                intake_status: jobInfo.status,
+                onboarding: await buildOnboardingPayload(await getCandidateByToken(token)),
+            });
         }
         const uploadResult = await (0, candidateDocumentService_1.uploadCandidateDocument)({
             candidate_id: candidate.id,

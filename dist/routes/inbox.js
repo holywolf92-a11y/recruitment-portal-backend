@@ -8,7 +8,6 @@ const inboxAttachmentService_1 = require("../services/inboxAttachmentService");
 const queue_1 = require("../config/queue");
 const parsingJobsService_1 = require("../services/parsingJobsService");
 const router = (0, express_1.Router)();
-
 function chunkArray(arr, size) {
     if (size <= 0)
         return [arr];
@@ -18,25 +17,27 @@ function chunkArray(arr, size) {
     }
     return chunks;
 }
-
-function isAllowedCvInboxMime({ mimeType, fileName, source }) {
-    const mime = String(mimeType || '').toLowerCase();
-    const name = String(fileName || '').toLowerCase();
-    const src = String(source || '').toLowerCase();
-    const isWhatsAppSource = src.startsWith('whatsapp');
-    const looksLikePdf = mime === 'application/pdf' || name.endsWith('.pdf');
+function isAllowedCvInboxMime(args) {
+    const mime = String(args.mimeType || '').toLowerCase();
+    const fileName = String(args.fileName || '').toLowerCase();
+    const source = String(args.source || '').toLowerCase();
+    const isWhatsAppSource = source.startsWith('whatsapp');
+    const looksLikePdf = mime === 'application/pdf' || fileName.endsWith('.pdf');
     // WhatsApp channel is PDF-only.
     if (isWhatsAppSource) {
         return looksLikePdf;
     }
+    // Always allow real document CVs
     if (looksLikePdf ||
         mime === 'application/msword' ||
         mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
         return true;
     }
+    // Images are only allowed when uploaded manually from the web CV inbox.
     if (mime.startsWith('image/')) {
-        return src === 'web';
+        return source === 'web';
     }
+    // Everything else should not appear in CV Inbox (audio/video/other docs)
     return false;
 }
 function firstNonEmptyString(...values) {
@@ -158,8 +159,8 @@ router.get('/stats', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     ];
     const baseCvOrNeedsReview = 'attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review';
     // Total CV attachments
-        // Include legacy `attachment_type=cv`, new `attachment_kind=cv` (WhatsApp flow often uses attachment_type=document)
-        // and any explicitly defused/flagged rows (`parsing_status=needs_review`) so they show up for manual cleanup.
+    // Include legacy `attachment_type=cv`, new `attachment_kind=cv` (WhatsApp flow often uses attachment_type=document)
+    // and any explicitly defused/flagged rows (`parsing_status=needs_review`) so they show up for manual cleanup.
     let totalDocsQ = db
         .from('inbox_attachments')
         .select('id', { count: 'exact', head: true })
@@ -265,17 +266,17 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const source = req.query.source;
     const db = (0, database_1.supabaseAdminClient)();
     // Query 1: inbox_attachments + joined message info
-        let query = db
-            .from('inbox_attachments')
-            .select(`id, file_name, mime_type, attachment_type, parsing_status,
-            candidate_id, linked_candidate_id, inbox_message_id, created_at,
-            inbox_messages(source, received_at, status, payload)`, { count: 'exact' })
-            .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
-            // Audio/video WhatsApp messages are stored but cannot be parsed as CVs; exclude them from CV Inbox.
-            .not('mime_type', 'ilike', 'audio/%')
-            .not('mime_type', 'ilike', 'video/%')
-                .order('created_at', { ascending: false })
-                .range(offset, offset + limit - 1);
+    let query = db
+        .from('inbox_attachments')
+        .select(`id, file_name, mime_type, attachment_type, parsing_status,
+         candidate_id, linked_candidate_id, inbox_message_id, created_at,
+         inbox_messages(source, received_at, status, payload)`, { count: 'exact' })
+        .or('attachment_kind.eq.cv,attachment_kind.eq.unknown,attachment_type.eq.cv,attachment_type.is.null,parsing_status.eq.needs_review')
+        // Audio/video WhatsApp messages are stored but cannot be parsed as CVs; exclude them from CV Inbox.
+        .not('mime_type', 'ilike', 'audio/%')
+        .not('mime_type', 'ilike', 'video/%')
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
     if (since)
         query = query.gte('created_at', since);
     const { data, error, count } = await query;
@@ -290,6 +291,7 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
         // silently fail. Chunk the lookup and fall back across schema variants.
         for (const chunk of chunkArray(attachmentIds, 80)) {
             const collected = [];
+            // Variant A: inbox_attachment_id
             const resA = await db
                 .from('parsing_jobs')
                 .select('id,status,created_at,error_message,inbox_attachment_id')
@@ -297,6 +299,7 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
                 .order('created_at', { ascending: false });
             if (!resA.error && resA.data)
                 collected.push(...resA.data);
+            // Variant B: attachment_id
             const resB = await db
                 .from('parsing_jobs')
                 .select('id,status,created_at,error_message,attachment_id')
@@ -304,6 +307,7 @@ router.get('/items', (0, errorHandling_1.asyncHandler)(async (req, res) => {
                 .order('created_at', { ascending: false });
             if (!resB.error && resB.data)
                 collected.push(...resB.data);
+            // Build latest-by-attachment map (created_at desc ensured; keep first)
             for (const j of collected) {
                 const aid = j.inbox_attachment_id || j.attachment_id;
                 if (aid && !jobMap[aid]) {
@@ -417,7 +421,7 @@ router.get('/:id/attachments', (0, errorHandling_1.asyncHandler)(async (req, res
     res.json(attachments);
 }));
 router.post('/:id/attachments', (0, errorHandling_1.asyncHandler)(async (req, res) => {
-    const { file_name, mime_type, storage_bucket, storage_path, attachment_type, candidate_id, file_base64 } = req.body ?? {};
+    const { file_name, mime_type, storage_bucket, storage_path, attachment_type, candidate_id, linked_candidate_id, file_base64 } = req.body ?? {};
     if (!file_base64) {
         return res.status(400).json({ error: 'file_base64 is required' });
     }
@@ -430,7 +434,7 @@ router.post('/:id/attachments', (0, errorHandling_1.asyncHandler)(async (req, re
         attachmentType: attachment_type,
         storageBucket: storage_bucket,
         storagePath: storage_path,
-        candidateId: candidate_id,
+        linkedCandidateId: linked_candidate_id ?? candidate_id,
     });
     const shouldEnqueue = attachment?.attachment_kind === 'cv';
     let jobInfo = null;

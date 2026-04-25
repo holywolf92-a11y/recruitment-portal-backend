@@ -88,6 +88,7 @@ async function memCreateAttachment(input) {
         id,
         inbox_message_id: input.inboxMessageId,
         candidate_id: input.candidateId ?? null,
+        linked_candidate_id: input.linkedCandidateId ?? null,
         storage_bucket: input.storageBucket,
         storage_path: input.storagePath,
         file_name: input.fileName,

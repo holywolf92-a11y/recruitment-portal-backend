@@ -651,10 +651,7 @@ async function createCandidateFromParsedData(
         const existingPartnerCandidateId = await findSinglePartnerCandidateId(partnerSender.partnerUserId);
         if (existingPartnerCandidateId) {
           const db = supabaseAdminClient();
-          await db
-            .from('inbox_attachments')
-            .update({ candidate_id: existingPartnerCandidateId, linked_candidate_id: existingPartnerCandidateId })
-            .eq('id', attachmentId);
+          await assignInboxAttachmentCandidate(attachmentId, existingPartnerCandidateId);
 
           const { data: existingCandidate } = await db
             .from('candidates')
@@ -687,10 +684,7 @@ async function createCandidateFromParsedData(
     });
     if (preexistingId) {
       const db = supabaseAdminClient();
-      await db
-        .from('inbox_attachments')
-        .update({ candidate_id: preexistingId, linked_candidate_id: preexistingId })
-        .eq('id', attachmentId);
+      await assignInboxAttachmentCandidate(attachmentId, preexistingId);
 
       const { data: existingCandidate } = await db
         .from('candidates')
@@ -714,10 +708,7 @@ async function createCandidateFromParsedData(
         });
         if (fallbackId) {
           const db = supabaseAdminClient();
-          await db
-            .from('inbox_attachments')
-            .update({ candidate_id: fallbackId, linked_candidate_id: fallbackId })
-            .eq('id', attachmentId);
+          await assignInboxAttachmentCandidate(attachmentId, fallbackId);
 
           const { data: existingCandidate } = await db
             .from('candidates')
@@ -735,11 +726,7 @@ async function createCandidateFromParsedData(
     }
 
     // Link the attachment to the candidate
-    const db = supabaseAdminClient();
-    await db
-      .from('inbox_attachments')
-      .update({ candidate_id: newCandidate.id, linked_candidate_id: newCandidate.id })
-      .eq('id', attachmentId);
+    await assignInboxAttachmentCandidate(attachmentId, newCandidate.id);
 
     console.log(`[CVParser] Created candidate ${newCandidate.id} for attachment ${attachmentId}`);
     return newCandidate;
@@ -747,6 +734,38 @@ async function createCandidateFromParsedData(
     console.error(`[CVParser] Failed to create candidate from parsed data:`, err);
     // Don't throw - parsing was successful, just candidate creation failed
   }
+}
+
+async function assignInboxAttachmentCandidate(
+  attachmentId: string,
+  parsedCandidateId: string,
+  options?: { preserveLinkedCandidateId?: boolean }
+) {
+  const db = supabaseAdminClient();
+
+  if (options?.preserveLinkedCandidateId === false) {
+    await db
+      .from('inbox_attachments')
+      .update({ candidate_id: parsedCandidateId, linked_candidate_id: parsedCandidateId })
+      .eq('id', attachmentId);
+    return;
+  }
+
+  const { data: existing } = await db
+    .from('inbox_attachments')
+    .select('linked_candidate_id')
+    .eq('id', attachmentId)
+    .maybeSingle();
+
+  const nextLinkedCandidateId = existing?.linked_candidate_id || parsedCandidateId;
+
+  await db
+    .from('inbox_attachments')
+    .update({
+      candidate_id: parsedCandidateId,
+      linked_candidate_id: nextLinkedCandidateId,
+    })
+    .eq('id', attachmentId);
 }
 
 export function startCvParserWorker() {
@@ -818,15 +837,9 @@ export function startCvParserWorker() {
         }
       }
 
-      const { error: attachmentUpdateError } = await db
-        .from('inbox_attachments')
-        .update({
-          candidate_id: candidateId,
-          linked_candidate_id: candidateId,
-        })
-        .eq('id', attachmentId);
-
-      if (attachmentUpdateError) {
+      try {
+        await assignInboxAttachmentCandidate(attachmentId, candidateId);
+      } catch (attachmentUpdateError) {
         console.warn('[CVParser] Failed to synchronize inbox attachment candidate ownership (non-fatal):', attachmentUpdateError);
       }
     } catch (err) {
@@ -1276,7 +1289,7 @@ export function startCvParserWorker() {
         // The actual email date lives in inbox_messages.payload->>'internalDate' (Unix ms from Gmail API).
         const { data: attachmentMeta, error: attachmentMetaError } = await db
           .from('inbox_attachments')
-          .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, parsing_status, attachment_kind, attachment_type, inbox_message_id, inbox_messages(payload, source)')
+          .select('file_name, mime_type, storage_bucket, storage_path, sha256, candidate_id, linked_candidate_id, parsing_status, attachment_kind, attachment_type, inbox_message_id, inbox_messages(payload, source)')
           .eq('id', attachmentId)
           .maybeSingle();
         if (!force && attachmentMeta?.attachment_kind !== 'cv') {
@@ -1410,10 +1423,7 @@ export function startCvParserWorker() {
             console.log(
               `[CVParser] ⏭  Skipping attachment ${attachmentId} — duplicate file hash (sha256 match), already linked to candidate ${dupAttachment.candidate_id}`
             );
-            await db
-              .from('inbox_attachments')
-              .update({ candidate_id: dupAttachment.candidate_id })
-              .eq('id', attachmentId);
+            await assignInboxAttachmentCandidate(attachmentId, dupAttachment.candidate_id);
             await setJobAndAttachmentStatus('extracted', {
               finished_at: new Date().toISOString(),
               skipped_reason: 'duplicate_file_hash',
@@ -1641,11 +1651,12 @@ export function startCvParserWorker() {
             requireCorroborationForContactSignals,
           });
         }
-        if (!existingCandidateId && force && attachmentMeta?.candidate_id) {
+        const boundAttachmentCandidateId = attachmentMeta?.candidate_id || attachmentMeta?.linked_candidate_id || null;
+        if (!existingCandidateId && force && boundAttachmentCandidateId) {
           console.log(
-            `[CVParser] Progressive match returned no result; using attachment's linked candidate ${attachmentMeta.candidate_id} (force=true)`
+            `[CVParser] Progressive match returned no result; using attachment binding ${boundAttachmentCandidateId} (force=true)`
           );
-          existingCandidateId = attachmentMeta.candidate_id;
+          existingCandidateId = boundAttachmentCandidateId;
         }
 
         // ── Sibling-attachment race condition guard ────────────────────────────
@@ -1658,14 +1669,14 @@ export function startCvParserWorker() {
         if (!existingCandidateId && siblingInboxMessageId) {
           const { data: siblingAttachment } = await db
             .from('inbox_attachments')
-            .select('candidate_id')
+            .select('candidate_id, linked_candidate_id')
             .eq('inbox_message_id', siblingInboxMessageId)
-            .not('candidate_id', 'is', null)
             .neq('id', attachmentId)
             .limit(1)
             .maybeSingle();
-          if (siblingAttachment?.candidate_id) {
-            existingCandidateId = siblingAttachment.candidate_id;
+          const siblingCandidateId = siblingAttachment?.candidate_id || siblingAttachment?.linked_candidate_id || null;
+          if (siblingCandidateId) {
+            existingCandidateId = siblingCandidateId;
             console.log(
               `[CVParser] 🔗 Sibling-attachment match: using candidate ${existingCandidateId} ` +
               `from same inbox_message ${siblingInboxMessageId} (prevents race-condition duplicate)`
@@ -1725,10 +1736,7 @@ export function startCvParserWorker() {
           }
 
           // Link attachment to existing candidate
-          await db
-            .from('inbox_attachments')
-            .update({ candidate_id: existingCandidateId })
-            .eq('id', attachmentId);
+          await assignInboxAttachmentCandidate(attachmentId, existingCandidateId);
 
           // Persist Gmail thread identity (if this CV came via Gmail)
           await maybeAttachGmailThreadToCandidate(existingCandidateId, attachmentId);
@@ -1820,7 +1828,7 @@ export function startCvParserWorker() {
             });
             if (fallbackId) {
               console.log(`[CVParser] createCandidateFromParsedData returned null -- fallback matched existing candidate ${fallbackId}. Linking attachment.`);
-              await db.from('inbox_attachments').update({ candidate_id: fallbackId, linked_candidate_id: fallbackId }).eq('id', attachmentId);
+              await assignInboxAttachmentCandidate(attachmentId, fallbackId);
               existingCandidateId = fallbackId;
               const { data: fc } = await db.from('candidates').select('*').eq('id', fallbackId).maybeSingle();
               candidate = fc;

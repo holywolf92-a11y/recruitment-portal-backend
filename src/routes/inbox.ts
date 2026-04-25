@@ -525,7 +525,7 @@ router.get(
 router.post(
   '/:id/attachments',
   asyncHandler(async (req: Request, res: Response) => {
-    const { file_name, mime_type, storage_bucket, storage_path, attachment_type, candidate_id, file_base64 } = req.body ?? {};
+    const { file_name, mime_type, storage_bucket, storage_path, attachment_type, candidate_id, linked_candidate_id, file_base64 } = req.body ?? {};
     if (!file_base64) {
       return res.status(400).json({ error: 'file_base64 is required' });
     }
@@ -538,7 +538,7 @@ router.post(
       attachmentType: attachment_type,
       storageBucket: storage_bucket,
       storagePath: storage_path,
-      candidateId: candidate_id,
+      linkedCandidateId: linked_candidate_id ?? candidate_id,
     });
     
     const shouldEnqueue = attachment?.attachment_kind === 'cv';

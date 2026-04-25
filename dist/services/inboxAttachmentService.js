@@ -98,6 +98,7 @@ async function createAttachment(input) {
             .insert({
             inbox_message_id: input.inboxMessageId,
             candidate_id: input.candidateId ?? null,
+            linked_candidate_id: input.linkedCandidateId ?? null,
             storage_bucket: input.storageBucket,
             storage_path: finalStoragePath,
             file_name: input.fileName,
@@ -171,6 +172,7 @@ async function createAttachment(input) {
                 storagePath: input.storagePath,
                 sha256,
                 candidateId: input.candidateId,
+                linkedCandidateId: input.linkedCandidateId,
             });
         }
         // Otherwise treat as DB error to avoid incorrect 404 from memory fallback
@@ -300,6 +302,11 @@ async function enqueueCvParsingJobForAttachment(attachmentId, options) {
                 attachmentType: attachment?.attachment_type,
             });
             return { jobId: null, status: 'skipped_non_cv' };
+        }
+        // Skip re-parsing if already successfully extracted (prevents duplicate OpenAI calls)
+        if (!options?.force && attachment?.parsing_status === 'extracted') {
+            logger.info('Skipping CV parsing enqueue — attachment already extracted', { attachmentId });
+            return { jobId: null, status: 'skipped_already_extracted' };
         }
         const fileHash = attachment?.sha256 ?? null;
         const createdJobRow = await parsingJobs.createJob({ attachmentId, fileHash });

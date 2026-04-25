@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import multer from 'multer';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { supabaseAdminClient } from '../config/database';
@@ -7,6 +8,9 @@ import {
   formatDocumentResponse,
   listCandidateDocumentsByCandidate,
 } from '../services/candidateDocumentService';
+import { DocumentClassifier } from '../services/documentClassifier';
+import { createAttachment, enqueueCvParsingJobForAttachment } from '../services/inboxAttachmentService';
+import { createInboxMessage } from '../services/inboxService';
 import { updateFieldManually } from '../services/progressiveDataCompletionService';
 import { logProfileUpdated } from '../services/timelineService';
 
@@ -242,6 +246,58 @@ router.post('/documents', documentUpload.single('file'), async (req: Request, re
     const candidate = await getCandidateByToken(token);
     if (!candidate) {
       return res.status(404).json({ error: 'Onboarding profile not found' });
+    }
+
+    const requestedCv = ['cv', 'resume', 'cv_resume'].includes(documentType.toLowerCase());
+    const classification = DocumentClassifier.classify(
+      req.file.originalname,
+      requestedCv ? 'cv' : documentType,
+      req.file.mimetype,
+      req.file.buffer,
+    );
+
+    if (requestedCv || classification.attachmentKind === 'cv') {
+      const safeFileName = req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const inboxMessage = await createInboxMessage({
+        source: 'web',
+        externalMessageId: `onboarding:${candidate.id}:${randomUUID()}`,
+        payload: {
+          origin: 'candidate_onboarding_cv_upload',
+          candidate_id: candidate.id,
+          email_tracking_token: token,
+          document_type: documentType || null,
+          file_name: req.file.originalname,
+        },
+        status: 'received',
+        receivedAt: new Date().toISOString(),
+      });
+
+      const attachment = await createAttachment({
+        inboxMessageId: inboxMessage.id,
+        fileBuffer: req.file.buffer,
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        attachmentType: 'cv',
+        storageBucket: 'documents',
+        storagePath: `onboarding/${candidate.id}/${Date.now()}_${safeFileName}`,
+        linkedCandidateId: candidate.id,
+        messageSubject: 'Candidate onboarding CV upload',
+        messageSource: 'web',
+      });
+
+      const jobInfo = await enqueueCvParsingJobForAttachment(attachment.id, {
+        force: false,
+        expiresInSeconds: 3600,
+      });
+
+      return res.status(201).json({
+        success: true,
+        document: null,
+        request_id: jobInfo.jobId || attachment.id,
+        intake_attachment_id: attachment.id,
+        intake_status: jobInfo.status,
+        onboarding: await buildOnboardingPayload(await getCandidateByToken(token)),
+      });
     }
 
     const uploadResult = await uploadCandidateDocument({

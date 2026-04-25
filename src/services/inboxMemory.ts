@@ -14,6 +14,7 @@ interface Attachment {
   id: string;
   inbox_message_id: string;
   candidate_id?: string | null;
+  linked_candidate_id?: string | null;
   storage_bucket: string;
   storage_path: string;
   file_name: string;
@@ -108,6 +109,7 @@ export async function memCreateAttachment(input: {
   storagePath: string;
   sha256?: string;
   candidateId?: string;
+  linkedCandidateId?: string;
 }) {
   const msg = messages.get(input.inboxMessageId);
   if (!msg) throw new AppError('Inbox message not found', ErrorType.NOT_FOUND, 404);
@@ -116,6 +118,7 @@ export async function memCreateAttachment(input: {
     id,
     inbox_message_id: input.inboxMessageId,
     candidate_id: input.candidateId ?? null,
+    linked_candidate_id: input.linkedCandidateId ?? null,
     storage_bucket: input.storageBucket,
     storage_path: input.storagePath,
     file_name: input.fileName,

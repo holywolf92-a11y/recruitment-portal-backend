@@ -40,6 +40,60 @@ function sanitizeEmail(value) {
     const trimmed = String(value || '').trim().toLowerCase();
     return trimmed || null;
 }
+function normalizeNationalityLabel(value) {
+    const text = sanitizeText(value);
+    if (!text)
+        return null;
+    const normalized = text.toLowerCase();
+    const map = {
+        pakistan: 'Pakistan',
+        pakistani: 'Pakistan',
+        india: 'India',
+        indian: 'India',
+        bangladesh: 'Bangladesh',
+        bangladeshi: 'Bangladesh',
+        nepal: 'Nepal',
+        nepali: 'Nepal',
+        'sri lanka': 'Sri Lanka',
+        'sri lankan': 'Sri Lanka',
+        uae: 'UAE',
+        'united arab emirates': 'UAE',
+        'saudi arabia': 'Saudi Arabia',
+        saudi: 'Saudi Arabia',
+        qatar: 'Qatar',
+        kuwait: 'Kuwait',
+        oman: 'Oman',
+        bahrain: 'Bahrain',
+    };
+    return map[normalized] || text;
+}
+function deriveNationalityFromPartnerInput(args) {
+    const explicit = normalizeNationalityLabel(args.explicitNationality);
+    if (explicit)
+        return explicit;
+    const cnicDigits = String(args.normalizedCnic || '').replace(/\D/g, '');
+    if (cnicDigits.length === 13)
+        return 'Pakistan';
+    const passport = String(args.normalizedPassport || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    if (passport.startsWith('PA') || passport.startsWith('AB'))
+        return 'Pakistan';
+    if (passport.startsWith('IN'))
+        return 'India';
+    if (passport.startsWith('BD'))
+        return 'Bangladesh';
+    const phoneDigits = String(args.normalizedPhone || '').replace(/\D/g, '').replace(/^0+/, '');
+    if (phoneDigits.startsWith('92'))
+        return 'Pakistan';
+    if (phoneDigits.startsWith('91'))
+        return 'India';
+    if (phoneDigits.startsWith('880'))
+        return 'Bangladesh';
+    if (phoneDigits.startsWith('971'))
+        return 'UAE';
+    if (phoneDigits.startsWith('966'))
+        return 'Saudi Arabia';
+    return null;
+}
 async function findSingleCandidateByField(field, value, matchedBy) {
     const db = (0, database_1.supabaseAdminClient)();
     const { data, error } = await db
@@ -101,10 +155,57 @@ async function findMatchingCandidate(input) {
         normalizedEmail,
     };
 }
+/**
+ * Partner-specific variant: only deduplicates by CNIC or passport.
+ * Phone and email are skipped because partners pre-fill their own contact
+ * details for every candidate — using them for matching would collapse all
+ * partner candidates into a single record.
+ */
+async function findMatchingCandidateForPartner(input) {
+    const normalizedCnic = input.cnic ? (0, candidateService_1.normalizeCNIC)(input.cnic) : null;
+    const explicitPassport = sanitizeText(input.passport);
+    const inferredPassport = !explicitPassport && input.cnic && !normalizedCnic ? sanitizeText(input.cnic) : null;
+    const normalizedPassport = explicitPassport
+        ? (0, candidateService_1.normalizePassport)(explicitPassport)
+        : inferredPassport
+            ? (0, candidateService_1.normalizePassport)(inferredPassport)
+            : null;
+    const normalizedPhone = input.phone ? (0, candidateService_1.normalizePhoneE164)(input.phone) : null;
+    const normalizedEmail = sanitizeEmail(input.email);
+    if (normalizedCnic) {
+        const byCnic = await findSingleCandidateByField('cnic_normalized', normalizedCnic, 'cnic');
+        if (byCnic.candidate) {
+            return { ...byCnic, normalizedCnic, normalizedPassport, normalizedPhone, normalizedEmail };
+        }
+    }
+    if (normalizedPassport) {
+        const byPassport = await findSingleCandidateByField('passport_normalized', normalizedPassport, 'passport');
+        if (byPassport.candidate) {
+            return { ...byPassport, normalizedCnic, normalizedPassport, normalizedPhone, normalizedEmail };
+        }
+    }
+    // Deliberately skip phone/email matching for partner uploads
+    return {
+        candidate: null,
+        matchedBy: null,
+        normalizedCnic,
+        normalizedPassport,
+        normalizedPhone,
+        normalizedEmail,
+    };
+}
 async function upsertPartnerCandidate(input, partner) {
     const db = (0, database_1.supabaseAdminClient)();
     const partnerSource = buildPartnerCandidateSource(partner);
-    const match = await findMatchingCandidate(input);
+    // Use partner-specific matching: only CNIC/passport, never phone/email
+    // (partners pre-fill their own contact info, so phone/email cannot identify unique candidates)
+    const match = await findMatchingCandidateForPartner(input);
+    const derivedNationality = deriveNationalityFromPartnerInput({
+        explicitNationality: input.nationality,
+        normalizedCnic: match.normalizedCnic,
+        normalizedPassport: match.normalizedPassport,
+        normalizedPhone: match.normalizedPhone,
+    });
     if (!match.candidate) {
         const candidate = await (0, candidateService_1.createCandidate)({
             name: input.name.trim(),
@@ -115,7 +216,7 @@ async function upsertPartnerCandidate(input, partner) {
             passport: match.normalizedPassport || undefined,
             position: sanitizeText(input.position) || undefined,
             country_of_interest: sanitizeText(input.country_of_interest) || undefined,
-            nationality: sanitizeText(input.nationality) || undefined,
+            nationality: derivedNationality || undefined,
             address: sanitizeText(input.address) || undefined,
             status: 'Applied',
             source: 'Manual',
@@ -157,12 +258,27 @@ async function upsertPartnerCandidate(input, partner) {
             updated_by: partner.partnerId,
         };
     };
-    maybeFill('name', sanitizeText(input.name));
+    // Always use the partner-provided candidate name (overwrite existing)
+    const sanitizedName = sanitizeText(input.name);
+    if (sanitizedName) {
+        updateData['name'] = sanitizedName;
+        updatedFields.push('name');
+        fieldSources['name'] = { field: 'name', source: 'partner_portal', updated_at: now, updated_by: partner.partnerId };
+    }
     maybeFill('father_name', sanitizeText(input.father_name));
-    maybeFill('email', match.normalizedEmail);
-    maybeFill('phone', match.normalizedPhone);
+    // Always overwrite phone/email with partner's contact details (partner is the point of contact)
+    if (match.normalizedEmail) {
+        updateData['email'] = match.normalizedEmail;
+        updatedFields.push('email');
+        fieldSources['email'] = { field: 'email', source: 'partner_portal', updated_at: now, updated_by: partner.partnerId };
+    }
+    if (match.normalizedPhone) {
+        updateData['phone'] = match.normalizedPhone;
+        updatedFields.push('phone');
+        fieldSources['phone'] = { field: 'phone', source: 'partner_portal', updated_at: now, updated_by: partner.partnerId };
+    }
     maybeFill('address', sanitizeText(input.address));
-    maybeFill('nationality', sanitizeText(input.nationality));
+    maybeFill('nationality', derivedNationality);
     maybeFill('position', sanitizeText(input.position));
     maybeFill('country_of_interest', sanitizeText(input.country_of_interest));
     maybeFill('cnic_normalized', match.normalizedCnic);
@@ -229,7 +345,7 @@ async function ingestPartnerBulkAttachment(args) {
         attachmentType: 'cv',
         storageBucket: STORAGE_BUCKET,
         storagePath: `partner-bulk/${args.candidateId}/${Date.now()}_${sanitizeStoragePathSegment(args.fileName)}`,
-        candidateId: args.candidateId,
+        linkedCandidateId: args.candidateId,
         messageSubject: `Partner bulk upload ${args.partner.partnerName}`,
         messageSource: 'web',
     });
@@ -293,6 +409,18 @@ async function uploadPartnerManualDocument(args) {
     if (!candidate)
         throw new Error('Candidate not found');
     const resolved = resolveManualDocumentType(candidate, args.requestedType, args.fileName);
+    // CVs go through the inbox/parsing pipeline so text is extracted and candidate
+    // fields are populated automatically (phone/email remain the partner's contact
+    // details since they were already set on the record).
+    if (resolved.category === documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME) {
+        return await ingestPartnerBulkAttachment({
+            candidateId: args.candidateId,
+            partner: args.partner,
+            fileName: args.fileName,
+            mimeType: args.mimeType,
+            buffer: args.buffer,
+        });
+    }
     const storagePath = `candidates/${args.candidateId}/partner-manual/${Date.now()}_${sanitizeStoragePathSegment(args.fileName)}`;
     const upload = await db.storage.from(STORAGE_BUCKET).upload(storagePath, args.buffer, {
         contentType: args.mimeType || detectMimeType(args.fileName),

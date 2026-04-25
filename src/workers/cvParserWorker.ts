@@ -25,11 +25,120 @@ const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
 const STORAGE_BUCKET = 'documents';
 
 type PartnerSenderContext = {
-  partnerId: string;
+  partnerApplicationId: string;
+  partnerUserId: string | null;
   partnerName: string;
   partnerEmail?: string | null;
   partnerPhone?: string | null;
 };
+
+function normalizeEmailLower(value: unknown): string | null {
+  const s = String(value ?? '').trim().toLowerCase();
+  return s ? s : null;
+}
+
+function normalizePhoneComparable(value: unknown): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+
+  // Prefer strict E.164 normalization when possible.
+  const e164 = normalizePhoneE164(raw);
+  if (e164) return e164;
+
+  // Fallback: digits-only comparison.
+  const digits = raw.replace(/\D/g, '');
+  return digits || null;
+}
+
+function doesCvIdentityMatchPartner(combinedData: Record<string, any>, partner: PartnerSenderContext): boolean {
+  const cvEmail = normalizeEmailLower(combinedData?.email);
+  const partnerEmail = normalizeEmailLower(partner.partnerEmail);
+  if (cvEmail && partnerEmail && cvEmail === partnerEmail) return true;
+
+  const cvPhone = normalizePhoneComparable(combinedData?.phone);
+  const partnerPhone = normalizePhoneComparable(partner.partnerPhone);
+  if (cvPhone && partnerPhone && cvPhone === partnerPhone) return true;
+
+  return false;
+}
+
+async function maybeNotifyPartnerCandidateAlreadyExists(params: {
+  partnerSender: PartnerSenderContext;
+  whatsappSenderContact: string;
+  attachmentId: string;
+  candidateId: string;
+  candidateCode?: string | null;
+}) {
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const to = String(params.whatsappSenderContact || '').replace(/\D/g, '');
+  if (!phoneNumberId || !accessToken || !to) return;
+
+  try {
+    // Best-effort: tag the candidate to this partner so it appears on their dashboard.
+    // Do NOT override another partner's ownership.
+    if (params.partnerSender.partnerUserId) {
+      const db = supabaseAdminClient();
+      await db
+        .from('candidates')
+        .update({
+          partner_id: params.partnerSender.partnerUserId,
+          partner_name: params.partnerSender.partnerName,
+        })
+        .eq('id', params.candidateId)
+        .is('partner_id', null);
+    }
+  } catch (tagErr: any) {
+    console.warn('[CVParser] Failed to tag existing candidate to partner (non-fatal):', tagErr?.message || tagErr);
+  }
+
+  try {
+    // Dedupe: avoid spamming on retries / force reprocess.
+    const db = supabaseAdminClient();
+    const { data: existing } = await db
+      .from('whatsapp_messages')
+      .select('id')
+      .eq('direction', 'outbound')
+      .eq('raw->>kind', 'partner_candidate_already_exists')
+      .eq('raw->>inbox_attachment_id', params.attachmentId)
+      .limit(1);
+    if (Array.isArray(existing) && existing.length > 0) return;
+  } catch (dedupeErr: any) {
+    console.warn('[CVParser] Partner duplicate WhatsApp dedupe check failed (non-fatal):', dedupeErr?.message || dedupeErr);
+  }
+
+  const ref = params.candidateCode || params.candidateId;
+  const body = `✅ Candidate already exists in our system. We have linked this CV to the existing record (Ref: ${ref}). You can track updates in your partner dashboard.`;
+
+  try {
+    const sendRes = await sendMessage(phoneNumberId, accessToken, to, body);
+    try {
+      const { ensureConversationForPhone, recordOutboundMessage } = await import('../services/whatsappInboxService');
+      const conversation = await ensureConversationForPhone(to);
+      await recordOutboundMessage({
+        conversationId: conversation.id,
+        direction: 'outbound',
+        fromNumberId: phoneNumberId,
+        toPhoneNumber: to,
+        body,
+        metaMessageId: (sendRes as any)?.messages?.[0]?.id ?? undefined,
+        status: 'sent',
+        raw: {
+          kind: 'partner_candidate_already_exists',
+          inbox_attachment_id: params.attachmentId,
+          candidate_id: params.candidateId,
+          candidate_code: params.candidateCode ?? null,
+          partner_user_id: params.partnerSender.partnerUserId,
+          partner_application_id: params.partnerSender.partnerApplicationId,
+        },
+      });
+    } catch (recordErr: any) {
+      console.warn('[CVParser] Failed to record partner duplicate WhatsApp message (non-fatal):', recordErr?.message || recordErr);
+    }
+  } catch (sendErr: any) {
+    console.warn('[CVParser] Failed to send partner duplicate WhatsApp message (non-fatal):', sendErr?.message || sendErr);
+  }
+}
 
 function isVarcharOverflowError(err: any): boolean {
   const message = String(err?.message || err || '');
@@ -427,6 +536,7 @@ async function createCandidateFromParsedData(
   options?: {
     partnerSender?: PartnerSenderContext | null;
     trustSenderAsCandidate?: boolean;
+    createAsPartnerCandidate?: boolean;
   }
 ) {
   try {
@@ -525,18 +635,20 @@ async function createCandidateFromParsedData(
     };
 
     // Partner sender rule (WhatsApp only):
-    // If the sender is a verified partner and the message is NOT forwarded,
-    // trust the sender context. Always tag the candidate with partner metadata.
+    // If the sender is a verified partner, tag the candidate with partner metadata.
+    // Only treat it as the *partner's own candidate* when CV identity matches partner contact.
     const partnerSender = options?.partnerSender || null;
     if (messageSource === 'whatsapp' && partnerSender) {
-      (candidateData as any).partner_id = partnerSender.partnerId;
+      if (partnerSender.partnerUserId) {
+        (candidateData as any).partner_id = partnerSender.partnerUserId;
+      }
       (candidateData as any).partner_name = partnerSender.partnerName;
 
-      if (options?.trustSenderAsCandidate) {
+      if (options?.createAsPartnerCandidate && partnerSender.partnerUserId) {
         (candidateData as any).is_partner_candidate = true;
 
         // Dedicated partner-candidate: link by partner_id first.
-        const existingPartnerCandidateId = await findSinglePartnerCandidateId(partnerSender.partnerId);
+        const existingPartnerCandidateId = await findSinglePartnerCandidateId(partnerSender.partnerUserId);
         if (existingPartnerCandidateId) {
           const db = supabaseAdminClient();
           await db
@@ -656,7 +768,7 @@ export function startCvParserWorker() {
 
       const { data: partner } = await db
         .from('partner_applications')
-        .select('id, applicant_name, email, phone_number, status')
+        .select('id, user_id, applicant_name, email, phone_number, status')
         .or(phoneOr)
         .order('created_at', { ascending: false })
         .limit(1)
@@ -668,7 +780,8 @@ export function startCvParserWorker() {
       if (!approved) return null;
 
       return {
-        partnerId: String((partner as any).id),
+        partnerApplicationId: String((partner as any).id),
+        partnerUserId: (partner as any).user_id ? String((partner as any).user_id) : null,
         partnerName: String((partner as any).applicant_name || 'Partner'),
         partnerEmail: (partner as any).email || null,
         partnerPhone: (partner as any).phone_number || null,
@@ -1495,6 +1608,10 @@ export function startCvParserWorker() {
           ? await resolveApprovedPartnerSender(whatsappSenderContact)
           : null;
         const trustSenderAsCandidate = !!partnerSender && !isForwardedWhatsApp;
+        const createAsPartnerCandidate = !!partnerSender
+          && trustSenderAsCandidate
+          && !!partnerSender.partnerUserId
+          && doesCvIdentityMatchPartner(combinedData, partnerSender);
 
         // WhatsApp CVs are often forwarded by recruiters or agencies on behalf of
         // multiple candidates, so a shared phone/email is not strong enough to
@@ -1507,9 +1624,23 @@ export function startCvParserWorker() {
         // If force=true and the attachment is already linked to a candidate, use that
         // ID directly — progressive matching may fail (e.g. WhatsApp corroboration rules)
         // when the candidate was already identified by an earlier verification step.
-        let existingCandidateId = await findExistingCandidate(combinedData, {
-          requireCorroborationForContactSignals,
-        });
+        let existingCandidateId: string | null = null;
+
+        // Partner self-CV: prefer a dedicated partner-candidate record.
+        if (createAsPartnerCandidate && partnerSender?.partnerUserId) {
+          existingCandidateId = await findSinglePartnerCandidateId(partnerSender.partnerUserId);
+          if (existingCandidateId) {
+            console.log(
+              `[CVParser] Trusted partner self-CV: using existing partner candidate ${existingCandidateId} (partnerUserId=${partnerSender.partnerUserId})`
+            );
+          }
+        }
+
+        if (!existingCandidateId) {
+          existingCandidateId = await findExistingCandidate(combinedData, {
+            requireCorroborationForContactSignals,
+          });
+        }
         if (!existingCandidateId && force && attachmentMeta?.candidate_id) {
           console.log(
             `[CVParser] Progressive match returned no result; using attachment's linked candidate ${attachmentMeta.candidate_id} (force=true)`
@@ -1658,6 +1789,19 @@ export function startCvParserWorker() {
             candidateEmail: ((combinedData as any)?.email ?? (candidate as any)?.email) ?? null,
             missingDataEmailSent,
           });
+
+          // Partner submission UX: if a verified partner sent this CV and it matched an existing
+          // candidate, notify the partner and (if unowned) tag candidate to partner so it appears
+          // in their dashboard.
+          if (partnerSender && trustSenderAsCandidate && whatsappSenderContact) {
+            await maybeNotifyPartnerCandidateAlreadyExists({
+              partnerSender,
+              whatsappSenderContact,
+              attachmentId,
+              candidateId: existingCandidateId,
+              candidateCode: (candidate as any)?.candidate_code ?? null,
+            });
+          }
           
           console.log(`[CVParser] ✅ Enriched existing candidate ${existingCandidateId} with CV data`);
         } else {
@@ -1665,6 +1809,7 @@ export function startCvParserWorker() {
           candidate = await createCandidateFromParsedData(parsed, attachmentId, identityFields, inboxMsg?.source, {
             partnerSender,
             trustSenderAsCandidate,
+            createAsPartnerCandidate,
           });
           
           // If creation failed silently (e.g. duplicate email/CNIC), fall back to finding

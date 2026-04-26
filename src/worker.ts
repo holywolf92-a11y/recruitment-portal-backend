@@ -7,6 +7,10 @@ validateEnv();
 
 const logger = createLogger('WorkerService');
 
+function isHistoricalGmailBackfillEnabled(): boolean {
+  return process.env.RUN_GMAIL_HISTORICAL_BACKFILL === 'true';
+}
+
 async function main() {
   if (process.env.RUN_WORKER !== 'true') {
     logger.error('Worker service requires RUN_WORKER=true');
@@ -71,16 +75,19 @@ async function main() {
       startGmailPolling(1440).catch((err: any) => logger.error('Failed to start Gmail polling', err));
       startedWorkers.push('gmail-polling');
 
-      // Historical backfill from 2024-01-01 — Account 3 only
-      const { startGmailBackfill } = await import('./workers/gmailBackfillWorker');
-      const { createOAuth2ClientForAccount3, isAccount3Configured } = await import('./services/gmailService');
-      const since2024 = new Date('2024-01-01T00:00:00.000Z');
-      if (isAccount3Configured()) {
-        startGmailBackfill({ afterDate: since2024, account: 3, authClient: createOAuth2ClientForAccount3(), maxTotal: 50_000 })
-          .then(() => logger.info('Gmail account 3 (cv.falishaoep@gmail.com) historical backfill started (2024-present)'))
-          .catch((err: any) => logger.warn('Gmail account 3 backfill skipped (may already be running)', { msg: err?.message }));
+      if (isHistoricalGmailBackfillEnabled()) {
+        const { startGmailBackfill } = await import('./workers/gmailBackfillWorker');
+        const { createOAuth2ClientForAccount3, isAccount3Configured } = await import('./services/gmailService');
+        const since2024 = new Date('2024-01-01T00:00:00.000Z');
+        if (isAccount3Configured()) {
+          startGmailBackfill({ afterDate: since2024, account: 3, authClient: createOAuth2ClientForAccount3(), maxTotal: 50_000 })
+            .then(() => logger.info('Gmail account 3 (cv.falishaoep@gmail.com) historical backfill started (2024-present)'))
+            .catch((err: any) => logger.warn('Gmail account 3 backfill skipped (may already be running)', { msg: err?.message }));
+        } else {
+          logger.warn('GMAIL3_REFRESH_TOKEN not set — skipping historical backfill for cv.falishaoep@gmail.com');
+        }
       } else {
-        logger.warn('GMAIL3_REFRESH_TOKEN not set — skipping historical backfill for cv.falishaoep@gmail.com');
+        logger.info('Historical Gmail backfill disabled on worker boot');
       }
     } else {
       logger.warn('RUN_GMAIL_POLLING=true but GMAIL_CLIENT_ID / refresh token missing');

@@ -13,6 +13,10 @@ validateEnv();
 
 const logger = createLogger('Server');
 
+function isHistoricalGmailBackfillEnabled(): boolean {
+  return process.env.RUN_GMAIL_HISTORICAL_BACKFILL === 'true';
+}
+
 logger.info('Environment variables loaded', {
   supabaseUrl: process.env.SUPABASE_URL ? 'loaded' : 'missing',
   supabaseKey: process.env.SUPABASE_ANON_KEY ? 'loaded' : 'missing',
@@ -130,42 +134,42 @@ try {
           });
         }).catch((err) => logger.error('Failed to load Gmail polling worker', err));
 
-        // Auto-trigger historical backfill — Account 2 then Account 3 (chained, not concurrent).
-        // The backfill worker only allows one run at a time, so we must await Account 2 before starting Account 3.
-        // Idempotent — already-processed messages are skipped.
-        import('./workers/gmailBackfillWorker').then(async ({ startGmailBackfill, getBackfillState }) => {
-          const { createOAuth2ClientForAccount2, isAccount2Configured, createOAuth2ClientForAccount3, isAccount3Configured } =
-            await import('./services/gmailService');
+        if (isHistoricalGmailBackfillEnabled()) {
+          // Auto-trigger historical backfill only when explicitly enabled.
+          import('./workers/gmailBackfillWorker').then(async ({ startGmailBackfill, getBackfillState }) => {
+            const { createOAuth2ClientForAccount2, isAccount2Configured, createOAuth2ClientForAccount3, isAccount3Configured } =
+              await import('./services/gmailService');
 
-          // Account 2: backfill from last known poll date (2026-03-11)
-          if (isAccount2Configured()) {
-            const since20260311 = new Date('2026-03-11T00:00:00.000Z');
-            try {
-              await startGmailBackfill({ afterDate: since20260311, account: 2, authClient: createOAuth2ClientForAccount2(), maxTotal: 10_000 });
-              logger.info('Gmail account 2 (falishaoep4035@gmail.com) backfill started (from 2026-03-11)');
-              // Wait for Account 2 backfill to finish before starting Account 3
-              await new Promise<void>((resolve) => {
-                const check = setInterval(() => {
-                  if (!getBackfillState().running) { clearInterval(check); resolve(); }
-                }, 10_000);
-              });
-              logger.info('Gmail account 2 backfill finished — starting account 3');
-            } catch (err: any) {
-              logger.warn('Gmail account 2 backfill skipped', { msg: err?.message });
+            // Account 2: backfill from last known poll date (2026-03-11)
+            if (isAccount2Configured()) {
+              const since20260311 = new Date('2026-03-11T00:00:00.000Z');
+              try {
+                await startGmailBackfill({ afterDate: since20260311, account: 2, authClient: createOAuth2ClientForAccount2(), maxTotal: 10_000 });
+                logger.info('Gmail account 2 (falishaoep4035@gmail.com) backfill started (from 2026-03-11)');
+                await new Promise<void>((resolve) => {
+                  const check = setInterval(() => {
+                    if (!getBackfillState().running) { clearInterval(check); resolve(); }
+                  }, 10_000);
+                });
+                logger.info('Gmail account 2 backfill finished — starting account 3');
+              } catch (err: any) {
+                logger.warn('Gmail account 2 backfill skipped', { msg: err?.message });
+              }
+            } else {
+              logger.warn('GMAIL2_REFRESH_TOKEN not set — skipping backfill for falishaoep4035@gmail.com');
             }
-          } else {
-            logger.warn('GMAIL2_REFRESH_TOKEN not set — skipping backfill for falishaoep4035@gmail.com');
-          }
 
-          // Account 3: backfill from 2024-01-01 (runs after Account 2 completes)
-          if (isAccount3Configured()) {
-            startGmailBackfill({ afterDate: new Date('2024-01-01T00:00:00.000Z'), account: 3, authClient: createOAuth2ClientForAccount3(), maxTotal: 50_000 })
-              .then(() => logger.info('Gmail account 3 (cv.falishaoep@gmail.com) historical backfill started (2024-present)'))
-              .catch((err: any) => logger.warn('Gmail account 3 backfill skipped', { msg: err?.message }));
-          } else {
-            logger.warn('GMAIL3_REFRESH_TOKEN not set — skipping historical backfill for cv.falishaoep@gmail.com');
-          }
-        }).catch((err) => logger.error('Failed to load backfill worker for historical scan', err));
+            if (isAccount3Configured()) {
+              startGmailBackfill({ afterDate: new Date('2024-01-01T00:00:00.000Z'), account: 3, authClient: createOAuth2ClientForAccount3(), maxTotal: 50_000 })
+                .then(() => logger.info('Gmail account 3 (cv.falishaoep@gmail.com) historical backfill started (2024-present)'))
+                .catch((err: any) => logger.warn('Gmail account 3 backfill skipped', { msg: err?.message }));
+            } else {
+              logger.warn('GMAIL3_REFRESH_TOKEN not set — skipping historical backfill for cv.falishaoep@gmail.com');
+            }
+          }).catch((err) => logger.error('Failed to load backfill worker for historical scan', err));
+        } else {
+          logger.info('Historical Gmail backfill disabled on API boot');
+        }
       } else {
         logger.warn('RUN_GMAIL_POLLING=true but Gmail credentials are missing; polling disabled');
       }

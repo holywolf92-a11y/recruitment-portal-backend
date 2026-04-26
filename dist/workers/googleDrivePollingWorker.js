@@ -24,8 +24,22 @@ const database_1 = require("../config/database");
 const googleDriveService_1 = require("../services/googleDriveService");
 const logger = (0, errorHandling_1.createLogger)('GoogleDrivePollingWorker');
 let isDriveRunning = false;
-/** How far back to look on the very first poll — scan everything since Jan 1 2024. After that, only new files. */
-let lastPollTime = new Date('2024-01-01T00:00:00.000Z');
+function getInitialDrivePollTime() {
+    const configured = process.env.GOOGLE_DRIVE_INITIAL_POLL_AFTER;
+    if (configured) {
+        const parsed = new Date(configured);
+        if (!Number.isNaN(parsed.getTime())) {
+            return parsed;
+        }
+        logger.warn('Ignoring invalid GOOGLE_DRIVE_INITIAL_POLL_AFTER; defaulting to current time', {
+            value: configured,
+        });
+    }
+    // Safe default: do not backfill history on worker boot. Manual/explicit backfills
+    // should use triggerManualDrivePoll or set GOOGLE_DRIVE_INITIAL_POLL_AFTER.
+    return new Date();
+}
+let lastPollTime = getInitialDrivePollTime();
 function isDrivePollingEnabled() {
     return process.env.RUN_GOOGLE_DRIVE_POLLING === 'true';
 }
@@ -34,7 +48,10 @@ async function startGoogleDrivePolling(intervalMinutes = 10) {
         logger.warn('Google Drive not configured — set GOOGLE_DRIVE_REFRESH_TOKEN');
         return;
     }
-    logger.info('Starting Google Drive polling worker (scanning all Drive files)', { intervalMinutes });
+    logger.info('Starting Google Drive polling worker', {
+        intervalMinutes,
+        initialPollAfter: lastPollTime.toISOString(),
+    });
     // Initial poll
     await pollDriveFolders();
     const intervalMs = intervalMinutes * 60 * 1000;

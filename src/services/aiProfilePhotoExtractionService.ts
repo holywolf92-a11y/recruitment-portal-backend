@@ -118,8 +118,9 @@ async function locateProfilePhotoOnPage(args: {
 
   const prompt =
     'Return JSON only. Task: find the candidate\'s profile photo/headshot on this document page. ' +
-    'Look for a rectangular photo of a person\'s face (passport-size/headshot). ' +
-    'Ignore logos, stamps, seals, signatures, QR codes, barcodes, and icons. ' +
+    'Look for a real photo of a person\'s face used as a CV avatar or headshot. ' +
+    'The photo may be rectangular, square, circular, or oval-framed, and the person may be wearing a scarf, hijab, niqab opening, cap, or other normal head covering. ' +
+    'Ignore logos, stamps, seals, signatures, QR codes, barcodes, decorative icons, and contact glyphs. ' +
     'If multiple photos exist, pick the clearest headshot. ' +
     'Return bbox normalized to the input image size in [0,1] as {x,y,w,h}. ' +
     'If no headshot photo exists, set found=false and bbox fields to null.';
@@ -152,7 +153,8 @@ async function verifyCropLooksLikeHeadshot(args: {
 
   const prompt =
     'Return JSON only. Is this image a real human headshot/profile photo suitable for a candidate avatar? ' +
-    'Answer ok=true only if it clearly contains a person\'s face photo (not a logo, not an icon, not a stamp, not a QR).';
+    'Answer ok=true if it clearly contains a real person\'s face photo, including circular or oval CV avatars and photos where the person is wearing a scarf, hijab, or other head covering. ' +
+    'Reject logos, decorative icons, stamps, QR codes, and non-human graphics.';
 
   return openaiCreateJsonSchemaResponse<VerifyCropResult>({
     model: args.model,

@@ -258,7 +258,7 @@ async function pollGmail(
           for (const attachment of fullMessage.attachments) {
             if (!attachment.id) continue;
             // Filter unsupported MIME types consistently across all paths
-            if (!isAcceptedCvMime(attachment.mimeType)) {
+            if (!isAcceptedCvMime(attachment.mimeType, attachment.filename)) {
               logger.warn('Skipping unsupported MIME in reply attachment', {
                 filename: attachment.filename, mimeType: attachment.mimeType,
               });
@@ -486,7 +486,7 @@ async function pollGmail(
           if (!attachment.id) continue;
 
           // Reject unsupported file types (ZIP/RAR/EXE and anything we can't parse)
-          if (!isAcceptedCvMime(attachment.mimeType)) {
+          if (!isAcceptedCvMime(attachment.mimeType, attachment.filename)) {
             logger.warn('Skipping unsupported MIME type in Gmail attachment', {
               filename: attachment.filename,
               mimeType: attachment.mimeType,

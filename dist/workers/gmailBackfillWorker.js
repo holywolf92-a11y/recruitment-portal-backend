@@ -103,7 +103,7 @@ async function processOne(gmailMessageId, authClient, account = 1) {
             return 'skipped';
         }
         // Filter to only CV-relevant attachments
-        const cvAttachments = fullMessage.attachments.filter((a) => a.id && (0, gmailService_1.isAcceptedCvMime)(a.mimeType));
+        const cvAttachments = fullMessage.attachments.filter((a) => a.id && (0, gmailService_1.isAcceptedCvMime)(a.mimeType, a.filename));
         if (cvAttachments.length === 0) {
             logger.debug('No accepted-MIME attachments in message', {
                 messageId: gmailMessageId,

@@ -147,7 +147,7 @@ async function processOne(
 
     // Filter to only CV-relevant attachments
     const cvAttachments = fullMessage.attachments.filter((a) =>
-      a.id && isAcceptedCvMime(a.mimeType)
+      a.id && isAcceptedCvMime(a.mimeType, a.filename)
     );
 
     if (cvAttachments.length === 0) {

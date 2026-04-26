@@ -419,7 +419,7 @@ async function pollHostingerMailbox(trigger) {
                 if (!candidateMatch) {
                     messagesProcessed++;
                     messagesUnmatched++;
-                    const acceptedAttachments = message.attachments.filter((attachment) => (0, gmailService_1.isAcceptedCvMime)(attachment.mimeType));
+                    const acceptedAttachments = message.attachments.filter((attachment) => (0, gmailService_1.isAcceptedCvMime)(attachment.mimeType, attachment.filename));
                     if (acceptedAttachments.length > 0) {
                         let queuedAttachmentCount = 0;
                         let intakeErrorCount = 0;

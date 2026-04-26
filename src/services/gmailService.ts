@@ -122,24 +122,12 @@ export function buildAccount3Query(): string {
   return `(${labelClause}) ${GMAIL_CV_QUERY}`;
 }
 
-/** CV-relevant Gmail query — includes all document and image attachment types */
-export const GMAIL_CV_QUERY =
-  'has:attachment (filename:pdf OR filename:doc OR filename:docx OR ' +
-  'filename:jpg OR filename:jpeg OR filename:png OR filename:gif OR filename:webp OR ' +
-  'filename:bmp OR filename:txt)';
+/** CV-relevant Gmail query — CV intake is PDF-only */
+export const GMAIL_CV_QUERY = 'has:attachment filename:pdf';
 
-/** MIME types we accept for CV processing */
+/** MIME types we accept for CV intake */
 export const ACCEPTED_CV_MIMES = new Set([
   'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'text/plain',
-  'image/jpeg',
-  'image/jpg',
-  'image/png',
-  'image/gif',
-  'image/webp',
-  'image/bmp',
 ]);
 
 /** MIME types we explicitly reject */
@@ -154,13 +142,11 @@ export const REJECTED_MIMES = new Set([
   'application/x-msdownload',
 ]);
 
-export function isAcceptedCvMime(mimeType: string): boolean {
-  const m = mimeType.toLowerCase().split(';')[0].trim();
+export function isAcceptedCvMime(mimeType: string, fileName?: string | null): boolean {
+  const m = String(mimeType || '').toLowerCase().split(';')[0].trim();
+  const normalizedFileName = String(fileName || '').toLowerCase().trim();
   if (REJECTED_MIMES.has(m)) return false;
-  if (ACCEPTED_CV_MIMES.has(m)) return true;
-  // Accept any image/*
-  if (m.startsWith('image/')) return true;
-  return false;
+  return ACCEPTED_CV_MIMES.has(m) || normalizedFileName.endsWith('.pdf');
 }
 
 /**

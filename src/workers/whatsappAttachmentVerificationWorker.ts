@@ -200,6 +200,18 @@ export function startWhatsAppAttachmentVerificationWorker() {
       const base64Content = buffer.toString('base64');
       const fileName = String(attachment.file_name || `${attachmentId}.bin`);
       const mimeType = String(attachment.mime_type || 'application/octet-stream');
+      const isPdfUpload = mimeType.toLowerCase() === 'application/pdf' || fileName.toLowerCase().endsWith('.pdf');
+
+      if (!isPdfUpload) {
+        logger.warn('Skipping WhatsApp pre-verification for non-PDF attachment', {
+          attachmentId,
+          fileName,
+          mimeType,
+        });
+
+        await db.from('inbox_messages').update({ status: 'processed' }).eq('id', attachment.inbox_message_id);
+        return { status: 'skipped_non_pdf', reason: 'non_pdf_attachment' };
+      }
 
       const aiResult = await callAICategorizationService(base64Content, fileName, mimeType);
       if (!aiResult.success || aiResult.error) {

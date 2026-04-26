@@ -15,6 +15,11 @@ const documentClassifier_1 = require("./documentClassifier");
 const documentLinkQueue_1 = require("../queues/documentLinkQueue");
 const parsingJobsService_1 = require("./parsingJobsService");
 const logger = (0, errorHandling_1.createLogger)('InboxAttachmentService');
+function isPdfAttachmentForCvParsing(args) {
+    const mimeType = String(args.mimeType || '').toLowerCase().split(';')[0].trim();
+    const fileName = String(args.fileName || '').toLowerCase().trim();
+    return mimeType === 'application/pdf' || fileName.endsWith('.pdf');
+}
 async function createAttachment(input) {
     if (!input.inboxMessageId)
         throw new errorHandling_1.AppError('inboxMessageId is required', errorHandling_1.ErrorType.VALIDATION, 400);
@@ -302,6 +307,16 @@ async function enqueueCvParsingJobForAttachment(attachmentId, options) {
                 attachmentType: attachment?.attachment_type,
             });
             return { jobId: null, status: 'skipped_non_cv' };
+        }
+        if (!isPdfAttachmentForCvParsing({ mimeType: attachment?.mime_type, fileName: attachment?.file_name })) {
+            logger.warn('Skipping CV parsing enqueue for non-PDF attachment', {
+                attachmentId,
+                fileName: attachment?.file_name,
+                mimeType: attachment?.mime_type,
+                attachmentKind: attachment?.attachment_kind,
+                attachmentType: attachment?.attachment_type,
+            });
+            return { jobId: null, status: 'skipped_non_pdf' };
         }
         // Skip re-parsing if already successfully extracted (prevents duplicate OpenAI calls)
         if (!options?.force && attachment?.parsing_status === 'extracted') {

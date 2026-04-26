@@ -521,7 +521,7 @@ async function pollHostingerMailbox(trigger: 'worker' | 'manual' | 'recovery'): 
         if (!candidateMatch) {
           messagesProcessed++;
           messagesUnmatched++;
-          const acceptedAttachments = message.attachments.filter((attachment) => isAcceptedCvMime(attachment.mimeType));
+          const acceptedAttachments = message.attachments.filter((attachment) => isAcceptedCvMime(attachment.mimeType, attachment.filename));
 
           if (acceptedAttachments.length > 0) {
             let queuedAttachmentCount = 0;

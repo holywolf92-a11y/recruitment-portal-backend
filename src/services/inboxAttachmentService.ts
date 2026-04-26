@@ -9,6 +9,12 @@ import { ParsingJobsService } from './parsingJobsService';
 
 const logger = createLogger('InboxAttachmentService');
 
+function isPdfAttachmentForCvParsing(args: { mimeType?: string | null; fileName?: string | null }): boolean {
+  const mimeType = String(args.mimeType || '').toLowerCase().split(';')[0].trim();
+  const fileName = String(args.fileName || '').toLowerCase().trim();
+  return mimeType === 'application/pdf' || fileName.endsWith('.pdf');
+}
+
 export interface InboxAttachmentCreateInput {
   inboxMessageId: string;
   fileBuffer: Buffer;
@@ -358,6 +364,17 @@ export async function enqueueCvParsingJobForAttachment(
         attachmentType: attachment?.attachment_type,
       });
       return { jobId: null, status: 'skipped_non_cv' as const };
+    }
+
+    if (!isPdfAttachmentForCvParsing({ mimeType: attachment?.mime_type, fileName: attachment?.file_name })) {
+      logger.warn('Skipping CV parsing enqueue for non-PDF attachment', {
+        attachmentId,
+        fileName: attachment?.file_name,
+        mimeType: attachment?.mime_type,
+        attachmentKind: attachment?.attachment_kind,
+        attachmentType: attachment?.attachment_type,
+      });
+      return { jobId: null, status: 'skipped_non_pdf' as const };
     }
 
     // Skip re-parsing if already successfully extracted (prevents duplicate OpenAI calls)

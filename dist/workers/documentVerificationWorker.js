@@ -691,6 +691,17 @@ async function processDocumentVerification(job) {
                 finalCategory = 'certificate';
             }
         }
+        const normalizedStoredCategory = String(currentDocument?.category || '').toLowerCase();
+        const normalizedFinalCategory = String(finalCategory || '').toLowerCase();
+        const isManualCandidateUpload = !!candidateId && currentDocument?.source !== 'email';
+        if (isManualCandidateUpload &&
+            normalizedStoredCategory &&
+            isManualNonIdentityCategory(normalizedStoredCategory) &&
+            isManualNonIdentityCategory(normalizedFinalCategory) &&
+            normalizedStoredCategory !== normalizedFinalCategory) {
+            console.log(`[DocumentVerification] Preserving stored manual non-ID category ${normalizedStoredCategory} over AI non-ID category ${normalizedFinalCategory}`);
+            finalCategory = normalizedStoredCategory;
+        }
         let finalStatus = documentCategories_1.VERIFICATION_STATUS.VERIFIED;
         let reasonCode = ''; // Empty string for verified (no rejection code needed)
         let mismatchFields = [];
@@ -942,8 +953,6 @@ async function processDocumentVerification(job) {
             // If document was manually uploaded for a specific candidate AND category is correctly identified,
             // we can still verify it since the user explicitly linked it to that candidate
             const normalizedFinalCategory = String(finalCategory || '').toLowerCase();
-            const normalizedStoredCategory = String(currentDocument?.category || '').toLowerCase();
-            const isManualCandidateUpload = !!candidateId && currentDocument?.source !== 'email';
             const categoryMatchesStoredExpectation = !!normalizedStoredCategory && normalizedStoredCategory === normalizedFinalCategory;
             // Special handling for photos: Photos don't have identity fields, so auto-verify if manually uploaded
             if (aiResult.category === 'photos' || aiResult.category === 'photo') {

@@ -114,6 +114,31 @@ function hasProfilePhoto(candidate) {
         candidate?.profile_photo_url ||
         (candidate?.profile_photo_bucket && candidate?.profile_photo_path));
 }
+function isSingleCvPdfUpload(args) {
+    return args.mimeType === 'application/pdf' && args.expectedCategory === documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME;
+}
+async function maybeExtractProfilePhotoFromSingleCvUpload(args) {
+    const db = (0, database_1.supabaseAdminClient)();
+    const { data: candidatePhotoState } = await db
+        .from('candidates')
+        .select('profile_photo_bucket, profile_photo_path, profile_photo_url')
+        .eq('id', args.candidateId)
+        .maybeSingle();
+    if (hasProfilePhoto(candidatePhotoState)) {
+        return;
+    }
+    const aiResult = await (0, aiProfilePhotoExtractionService_1.extractProfilePhotoFromPdfUsingAI)({
+        candidateId: args.candidateId,
+        documentId: args.documentId,
+        maxPages: 10,
+    });
+    console.log('[UploadDocument] ✅ AI extracted profile photo from single CV PDF', {
+        candidateId: args.candidateId,
+        documentId: args.documentId,
+        pageUsed: aiResult.pageUsed,
+        confidence: aiResult.confidence,
+    });
+}
 /**
  * Format document response with rejection details for API
  * Includes rejection object for ALL document types when status is rejected_mismatch or failed
@@ -623,6 +648,14 @@ async function uploadCandidateDocument(data) {
                 console.error('[UploadDocument] Failed to enqueue AI job:', queueError);
                 // Don't fail the upload, but log the error
                 await logService.logError(requestId, `Failed to enqueue AI job: ${queueError.message}`, queueError.stack, document.id, data.candidate_id);
+            }
+            if (isSingleCvPdfUpload({ mimeType: data.mime_type, expectedCategory })) {
+                void maybeExtractProfilePhotoFromSingleCvUpload({
+                    candidateId: data.candidate_id,
+                    documentId: document.id,
+                }).catch((photoExtractionError) => {
+                    console.warn('[UploadDocument] Single CV profile photo extraction failed (non-fatal):', photoExtractionError?.message || photoExtractionError);
+                });
             }
         }
         else {

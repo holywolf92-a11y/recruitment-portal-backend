@@ -132,6 +132,33 @@ function deriveExpiryDateForCategory(category, extractedIdentity) {
     }
     return undefined;
 }
+function hasUsableExtractedIdentity(extractedIdentity) {
+    if (!extractedIdentity || typeof extractedIdentity !== 'object') {
+        return false;
+    }
+    return Object.values(extractedIdentity).some((value) => {
+        if (value === null || value === undefined) {
+            return false;
+        }
+        if (typeof value === 'string') {
+            return value.trim().length > 0;
+        }
+        return true;
+    });
+}
+function isManualNonIdentityCategory(category) {
+    const normalized = String(category || '').toLowerCase();
+    const nonIdentityCategories = [
+        documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME,
+        documentCategories_1.DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+        documentCategories_1.DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+        documentCategories_1.DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+        documentCategories_1.DOCUMENT_CATEGORIES.CERTIFICATES,
+        documentCategories_1.DOCUMENT_CATEGORIES.CONTRACTS,
+        documentCategories_1.DOCUMENT_CATEGORIES.OTHER_DOCUMENTS,
+    ];
+    return nonIdentityCategories.includes(normalized);
+}
 const CERTIFICATE_CORE_KEYWORDS = [
     'certificate',
     'cert',
@@ -652,6 +679,7 @@ async function processDocumentVerification(job) {
         // =============================================================================
         // STEP 5: Identity matching (if identity fields were extracted)
         // =============================================================================
+        const extractedIdentity = aiResult.extracted_identity || {};
         let matchResult = null;
         let finalCategory = aiResult.category;
         // Secondary classification validation: Detect certificate misclassified as CV
@@ -672,12 +700,12 @@ async function processDocumentVerification(job) {
         let retryPossible = false;
         let isOverridable = true;
         let requiredRole = 'admin';
-        if (aiResult.extracted_identity && Object.keys(aiResult.extracted_identity).length > 0) {
-            const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, aiResult.extracted_identity);
+        if (hasUsableExtractedIdentity(extractedIdentity)) {
+            const derivedExpiryDate = deriveExpiryDateForCategory(finalCategory, extractedIdentity);
             if (!allowCandidateReassignment) {
                 console.log(`[DocumentVerification] Preserving matched candidate for email-sourced document ${documentId}; skipping auto-reassignment`);
                 try {
-                    matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
+                    matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, extractedIdentity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
                 }
                 catch (matchError) {
                     if (matchError.message?.includes('Candidate not found')) {
@@ -728,11 +756,11 @@ async function processDocumentVerification(job) {
                 try {
                     // Try to find candidate using extracted identity (name, email, phone, passport, CNIC)
                     const matchCriteria = {
-                        cnic: aiResult.extracted_identity.cnic,
-                        email: aiResult.extracted_identity.email,
-                        phone: aiResult.extracted_identity.phone,
-                        name: aiResult.extracted_identity.name,
-                        fatherName: aiResult.extracted_identity.father_name,
+                        cnic: extractedIdentity.cnic,
+                        email: extractedIdentity.email,
+                        phone: extractedIdentity.phone,
+                        name: extractedIdentity.name,
+                        fatherName: extractedIdentity.father_name,
                     };
                     const candidateMatch = await candidateMatcher_1.CandidateMatcher.findCandidate(matchCriteria);
                     if (candidateMatch.candidateId && !candidateMatch.needsManualReview) {
@@ -747,7 +775,7 @@ async function processDocumentVerification(job) {
                         candidateId = candidateMatch.candidateId;
                         // Now run identity matching with the correct candidate ID
                         // Pass document category and confidence scores for detailed rejection
-                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined // errorStage - set later if needed
+                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, extractedIdentity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined // errorStage - set later if needed
                         );
                         console.log(`[DocumentVerification] Identity matching successful: ${matchResult.matched ? 'VERIFIED' : 'NEEDS_REVIEW'}`);
                     }
@@ -755,7 +783,7 @@ async function processDocumentVerification(job) {
                         // Could not find candidate by extracted identity - try using provided candidate_id as fallback
                         console.log(`[DocumentVerification] Could not find candidate by extracted identity, trying provided candidate_id ${candidateId}...`);
                         try {
-                            matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
+                            matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, extractedIdentity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
                         }
                         catch (matchError) {
                             // Provided candidate_id also doesn't exist - needs manual review
@@ -807,7 +835,7 @@ async function processDocumentVerification(job) {
                     // Auto-matching failed - try provided candidate_id as fallback
                     console.error(`[DocumentVerification] Auto-matching failed, trying provided candidate_id:`, autoMatchError);
                     try {
-                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, aiResult.extracted_identity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
+                        matchResult = await identityMatchingService_1.identityMatchingService.matchIdentity(candidateId, extractedIdentity, finalCategory, aiResult.confidence, aiResult.ocr_confidence, derivedExpiryDate, undefined);
                     }
                     catch (matchError) {
                         // Both failed - needs manual review
@@ -913,6 +941,10 @@ async function processDocumentVerification(job) {
             // No identity fields extracted from document
             // If document was manually uploaded for a specific candidate AND category is correctly identified,
             // we can still verify it since the user explicitly linked it to that candidate
+            const normalizedFinalCategory = String(finalCategory || '').toLowerCase();
+            const normalizedStoredCategory = String(currentDocument?.category || '').toLowerCase();
+            const isManualCandidateUpload = !!candidateId && currentDocument?.source !== 'email';
+            const categoryMatchesStoredExpectation = !!normalizedStoredCategory && normalizedStoredCategory === normalizedFinalCategory;
             // Special handling for photos: Photos don't have identity fields, so auto-verify if manually uploaded
             if (aiResult.category === 'photos' || aiResult.category === 'photo') {
                 if (candidateId && aiResult.confidence && aiResult.confidence >= documentCategories_1.AI_CONFIDENCE_THRESHOLD) {
@@ -940,6 +972,18 @@ async function processDocumentVerification(job) {
                         },
                     });
                 }
+            }
+            else if (isManualCandidateUpload &&
+                isManualNonIdentityCategory(normalizedFinalCategory) &&
+                categoryMatchesStoredExpectation) {
+                console.log(`[DocumentVerification] No identity fields extracted, but manual non-ID upload category matches stored expectation (${normalizedFinalCategory}). Verifying without manual review.`);
+                finalStatus = documentCategories_1.VERIFICATION_STATUS.VERIFIED;
+                reasonCode = '';
+                await documentVerificationLogService_1.documentVerificationLogService.logIdentityVerificationCompleted(requestId, documentId, candidateId, documentCategories_1.VERIFICATION_STATUS.VERIFIED, reasonCode, undefined, {
+                    notes: 'No identity fields extracted, but verified based on manual non-ID upload and stored category expectation',
+                    stored_category: normalizedStoredCategory,
+                    final_category: normalizedFinalCategory,
+                }, undefined);
             }
             else if (candidateId && aiResult.confidence && aiResult.confidence >= documentCategories_1.AI_CONFIDENCE_THRESHOLD) {
                 // Document category was correctly identified (high confidence) and candidate_id is provided

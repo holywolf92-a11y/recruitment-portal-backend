@@ -86,6 +86,43 @@ function hasProfilePhoto(candidate: any): boolean {
   );
 }
 
+function isSingleCvPdfUpload(args: {
+  mimeType: string;
+  expectedCategory?: DocumentCategory;
+}): boolean {
+  return args.mimeType === 'application/pdf' && args.expectedCategory === DOCUMENT_CATEGORIES.CV_RESUME;
+}
+
+async function maybeExtractProfilePhotoFromSingleCvUpload(args: {
+  candidateId: string;
+  documentId: string;
+}): Promise<void> {
+  const db = supabaseAdminClient();
+
+  const { data: candidatePhotoState } = await db
+    .from('candidates')
+    .select('profile_photo_bucket, profile_photo_path, profile_photo_url')
+    .eq('id', args.candidateId)
+    .maybeSingle();
+
+  if (hasProfilePhoto(candidatePhotoState)) {
+    return;
+  }
+
+  const aiResult = await extractProfilePhotoFromPdfUsingAI({
+    candidateId: args.candidateId,
+    documentId: args.documentId,
+    maxPages: 10,
+  });
+
+  console.log('[UploadDocument] ✅ AI extracted profile photo from single CV PDF', {
+    candidateId: args.candidateId,
+    documentId: args.documentId,
+    pageUsed: aiResult.pageUsed,
+    confidence: aiResult.confidence,
+  });
+}
+
 export interface CandidateDocument {
   id: string;
   candidate_id: string;
@@ -749,6 +786,18 @@ export async function uploadCandidateDocument(
           document.id,
           data.candidate_id
         );
+      }
+
+      if (isSingleCvPdfUpload({ mimeType: data.mime_type, expectedCategory })) {
+        void maybeExtractProfilePhotoFromSingleCvUpload({
+          candidateId: data.candidate_id,
+          documentId: document.id,
+        }).catch((photoExtractionError: any) => {
+          console.warn(
+            '[UploadDocument] Single CV profile photo extraction failed (non-fatal):',
+            photoExtractionError?.message || photoExtractionError,
+          );
+        });
       }
     } else {
       console.log(`[UploadDocument] ⏭️  Skipped AI verification for auto-verified photo ${document.id}`);

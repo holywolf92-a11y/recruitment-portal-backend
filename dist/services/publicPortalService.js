@@ -186,7 +186,7 @@ async function submitCandidatePublicIntake(input, cvFile) {
         source: 'Form',
         status: 'Applied',
         cv_received: !!cvFile,
-        needs_review: true,
+        needs_review: false,
         auto_extracted: false,
         skills: input.skills?.trim() || undefined,
         languages: input.languages?.trim() || undefined,

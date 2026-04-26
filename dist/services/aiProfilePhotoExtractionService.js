@@ -15,7 +15,10 @@ const fs_1 = require("fs");
 const os_1 = __importDefault(require("os"));
 const path_1 = __importDefault(require("path"));
 const url_1 = require("url");
+const crypto_1 = __importDefault(require("crypto"));
 const logger = (0, errorHandling_1.createLogger)('AIProfilePhotoExtraction');
+const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
+const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
 function isPdfDoc(d) {
     return (d?.mime_type || '').toLowerCase() === 'application/pdf' || (d?.file_name || '').toLowerCase().endsWith('.pdf');
 }
@@ -150,6 +153,61 @@ async function uploadExtractedPhoto(args) {
     }
     return { bucket, storagePath, signedUrl: signed.signedUrl };
 }
+async function extractPhotoWithPythonParser(pdfBuffer, attachmentId) {
+    try {
+        if (!PARSER_URL) {
+            logger.warn('PARSER_URL not configured, skipping Python parser fallback');
+            return null;
+        }
+        const payload = {
+            file_content: pdfBuffer.toString('base64'),
+            file_name: 'profile_photo_fallback.pdf',
+            mime_type: 'application/pdf',
+            attachment_id: attachmentId,
+        };
+        const body = Buffer.from(JSON.stringify(payload), 'utf8');
+        const signature = crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
+        const res = await fetch(`${PARSER_URL.replace(/\/$/, '')}/extract-photo`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-hmac-signature': signature,
+            },
+            body,
+        });
+        if (!res.ok) {
+            const text = await res.text();
+            logger.warn('Python parser photo fallback failed', {
+                status: res.status,
+                message: text.substring(0, 200),
+            });
+            return null;
+        }
+        const json = (await res.json());
+        const profilePhotoUrl = json?.profile_photo_url;
+        if (!profilePhotoUrl) {
+            logger.warn('Python parser fallback returned no profile_photo_url', { json });
+            return null;
+        }
+        const imgRes = await fetch(profilePhotoUrl);
+        if (!imgRes.ok) {
+            logger.warn('Failed to fetch parser fallback photo URL', { status: imgRes.status });
+            return null;
+        }
+        return Buffer.from(await imgRes.arrayBuffer());
+    }
+    catch (error) {
+        logger.warn('Python parser fallback errored', { error: error?.message || String(error) });
+        return null;
+    }
+}
+async function fetchPdfBuffer(pdfUrl) {
+    const res = await fetch(pdfUrl);
+    if (!res.ok) {
+        throw new Error(`Failed to download PDF for photo extraction fallback: ${res.status}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+}
 async function choosePdfSource(args) {
     if (args.documentId) {
         const doc = await (0, candidateDocumentService_1.getCandidateDocumentById)(args.documentId);
@@ -266,6 +324,46 @@ async function extractProfilePhotoFromPdfUsingAI(args) {
         }
     }
     if (!best) {
+        logger.warn('No usable headshot found via page scan, trying Python parser fallback', {
+            candidateId: args.candidateId,
+            documentId,
+            ms: Date.now() - startedAt,
+        });
+        const pdfBuffer = await fetchPdfBuffer(pdfSignedUrl);
+        const parserPhoto = await extractPhotoWithPythonParser(pdfBuffer, documentId || (0, uuid_1.v4)());
+        if (parserPhoto) {
+            const uploaded = await uploadExtractedPhoto({ candidateId: args.candidateId, jpeg: parserPhoto });
+            const db = (0, database_1.supabaseAdminClient)();
+            const { error: updateErr } = await db
+                .from('candidates')
+                .update({
+                profile_photo_bucket: uploaded.bucket,
+                profile_photo_path: uploaded.storagePath,
+                profile_photo_url: uploaded.signedUrl,
+                photo_received: true,
+                photo_received_at: new Date().toISOString(),
+            })
+                .eq('id', args.candidateId);
+            if (updateErr) {
+                throw new Error(`Failed to update candidate profile photo fields: ${updateErr.message}`);
+            }
+            logger.info('Success via Python parser fallback', {
+                candidateId: args.candidateId,
+                documentId,
+                storagePath: uploaded.storagePath,
+                ms: Date.now() - startedAt,
+            });
+            return {
+                candidateId: args.candidateId,
+                documentId,
+                pageUsed: 0,
+                confidence: 0.75,
+                storageBucket: uploaded.bucket,
+                storagePath: uploaded.storagePath,
+                signedUrl: uploaded.signedUrl,
+                note: 'Photo extracted via Python parser fallback after page scan missed the embedded avatar.',
+            };
+        }
         logger.warn('No usable headshot found', { candidateId: args.candidateId, documentId, ms: Date.now() - startedAt });
         throw new Error('AI could not find a usable headshot in the PDF pages searched');
     }

@@ -6,14 +6,9 @@ import { sendText } from './whatsappInteractiveService';
 import { upsertAppUserProfile } from './userService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
 import { whatsappSocialLinksQueue } from '../config/queue';
+import { SOCIAL_LINKS } from '../config/socialLinks';
 
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
-const LINKEDIN_URL = process.env.WHATSAPP_BOT_LINKEDIN_URL || 'https://www.linkedin.com/company/falishaenterprises';
-const FACEBOOK_URL = process.env.WHATSAPP_BOT_FACEBOOK_URL || 'https://www.facebook.com/falishaenterprises.pk/';
-const INSTAGRAM_URL = process.env.WHATSAPP_BOT_INSTAGRAM_URL || 'https://www.instagram.com/falisha.manpower';
-const TIKTOK_URL = process.env.WHATSAPP_BOT_TIKTOK_URL || 'https://www.tiktok.com/@falishamanpower';
-const YOUTUBE_URL = process.env.WHATSAPP_BOT_YOUTUBE_URL || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
-const WA_CHANNEL_URL = process.env.WHATSAPP_BOT_CHANNEL_URL || '';
 
 type CandidatePublicIntakeInput = {
   fullName: string;
@@ -70,12 +65,13 @@ function generateTemporaryPassword(): string {
 
 function buildSocialLinks() {
   return {
-    linkedin: LINKEDIN_URL,
-    facebook: FACEBOOK_URL,
-    instagram: INSTAGRAM_URL,
-    tiktok: TIKTOK_URL,
-    youtube: YOUTUBE_URL,
-    whatsappChannel: WA_CHANNEL_URL || null,
+    linkedin: SOCIAL_LINKS.linkedin,
+    facebook: SOCIAL_LINKS.facebook,
+    instagram: SOCIAL_LINKS.instagram,
+    tiktok: SOCIAL_LINKS.tiktok,
+    x: SOCIAL_LINKS.x,
+    youtube: SOCIAL_LINKS.youtube,
+    whatsappChannel: SOCIAL_LINKS.whatsappChannel || null,
   };
 }
 

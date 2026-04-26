@@ -14,13 +14,8 @@ const whatsappInteractiveService_1 = require("./whatsappInteractiveService");
 const userService_1 = require("./userService");
 const publicUrl_1 = require("../utils/publicUrl");
 const queue_1 = require("../config/queue");
+const socialLinks_1 = require("../config/socialLinks");
 const FRONTEND_URL = (0, publicUrl_1.resolveFrontendUrl)(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
-const LINKEDIN_URL = process.env.WHATSAPP_BOT_LINKEDIN_URL || 'https://www.linkedin.com/company/falishaenterprises';
-const FACEBOOK_URL = process.env.WHATSAPP_BOT_FACEBOOK_URL || 'https://www.facebook.com/falishaenterprises.pk/';
-const INSTAGRAM_URL = process.env.WHATSAPP_BOT_INSTAGRAM_URL || 'https://www.instagram.com/falisha.manpower';
-const TIKTOK_URL = process.env.WHATSAPP_BOT_TIKTOK_URL || 'https://www.tiktok.com/@falishamanpower';
-const YOUTUBE_URL = process.env.WHATSAPP_BOT_YOUTUBE_URL || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
-const WA_CHANNEL_URL = process.env.WHATSAPP_BOT_CHANNEL_URL || '';
 function generateTrackingToken() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
     const prefix = chars[Math.floor(Math.random() * chars.length)] + chars[Math.floor(Math.random() * chars.length)];
@@ -32,12 +27,13 @@ function generateTemporaryPassword() {
 }
 function buildSocialLinks() {
     return {
-        linkedin: LINKEDIN_URL,
-        facebook: FACEBOOK_URL,
-        instagram: INSTAGRAM_URL,
-        tiktok: TIKTOK_URL,
-        youtube: YOUTUBE_URL,
-        whatsappChannel: WA_CHANNEL_URL || null,
+        linkedin: socialLinks_1.SOCIAL_LINKS.linkedin,
+        facebook: socialLinks_1.SOCIAL_LINKS.facebook,
+        instagram: socialLinks_1.SOCIAL_LINKS.instagram,
+        tiktok: socialLinks_1.SOCIAL_LINKS.tiktok,
+        x: socialLinks_1.SOCIAL_LINKS.x,
+        youtube: socialLinks_1.SOCIAL_LINKS.youtube,
+        whatsappChannel: socialLinks_1.SOCIAL_LINKS.whatsappChannel || null,
     };
 }
 function buildSocialLinksMessage() {

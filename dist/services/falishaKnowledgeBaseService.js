@@ -4,6 +4,7 @@ exports.getFalishaKnowledgeBase = getFalishaKnowledgeBase;
 exports.retrieveFalishaKnowledge = retrieveFalishaKnowledge;
 exports.assessFalishaKnowledgeSupport = assessFalishaKnowledgeSupport;
 exports.buildFalishaKnowledgeContext = buildFalishaKnowledgeContext;
+const socialLinks_1 = require("../config/socialLinks");
 const KNOWLEDGE_SOURCES = [
     {
         id: 'public_urls',
@@ -78,14 +79,15 @@ const FALISHA_KNOWLEDGE_BASE = {
             title: 'Falisha social media channels',
             audience: ['all'],
             intents: ['social_links'],
-            tags: ['social', 'linkedin', 'facebook', 'instagram', 'tiktok', 'youtube', 'channel'],
+            tags: ['social', 'linkedin', 'facebook', 'instagram', 'tiktok', 'x', 'twitter', 'youtube', 'channel'],
             facts: [
-                'LinkedIn: https://www.linkedin.com/company/falishaenterprises',
-                'Facebook: https://www.facebook.com/falishaenterprises.pk/',
-                'Instagram: https://www.instagram.com/falisha.manpower',
-                'TikTok: https://www.tiktok.com/@falishamanpower',
-                'YouTube: https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj',
-                'WhatsApp Channel is optional and controlled by WHATSAPP_BOT_CHANNEL_URL.',
+                `LinkedIn: ${socialLinks_1.SOCIAL_LINKS.linkedin}`,
+                `Facebook: ${socialLinks_1.SOCIAL_LINKS.facebook}`,
+                `Instagram: ${socialLinks_1.SOCIAL_LINKS.instagram}`,
+                `TikTok: ${socialLinks_1.SOCIAL_LINKS.tiktok}`,
+                `X: ${socialLinks_1.SOCIAL_LINKS.x}`,
+                `YouTube: ${socialLinks_1.SOCIAL_LINKS.youtube}`,
+                `WhatsApp Channel: ${socialLinks_1.SOCIAL_LINKS.whatsappChannel}`,
             ],
             sourceIds: ['public_portal'],
         },

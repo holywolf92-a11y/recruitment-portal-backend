@@ -10,15 +10,10 @@ const candidateService_1 = require("./candidateService");
 const publicUrl_1 = require("../utils/publicUrl");
 const whatsappIntentService_1 = require("./whatsappIntentService");
 const falishaKnowledgeBaseService_1 = require("./falishaKnowledgeBaseService");
+const socialLinks_1 = require("../config/socialLinks");
 const logger = (0, errorHandling_1.createLogger)('WhatsAppAIService');
 const FRONTEND_URL = (0, publicUrl_1.resolveFrontendUrl)(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
 const JOBS_URL = process.env.WHATSAPP_BOT_JOBS_URL || `${FRONTEND_URL}/jobs`;
-const LINKEDIN_URL = process.env.WHATSAPP_BOT_LINKEDIN_URL || 'https://www.linkedin.com/company/falishaenterprises';
-const FACEBOOK_URL = process.env.WHATSAPP_BOT_FACEBOOK_URL || 'https://www.facebook.com/falishaenterprises.pk/';
-const INSTAGRAM_URL = process.env.WHATSAPP_BOT_INSTAGRAM_URL || 'https://www.instagram.com/falisha.manpower';
-const TIKTOK_URL = process.env.WHATSAPP_BOT_TIKTOK_URL || 'https://www.tiktok.com/@falishamanpower';
-const YOUTUBE_URL = process.env.WHATSAPP_BOT_YOUTUBE_URL || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
-const WA_CHANNEL_URL = process.env.WHATSAPP_BOT_CHANNEL_URL || '';
 const SUPPORT_EMAIL = 'support@falishajobs.com';
 const SUPPORT_PHONE = '+923303333335';
 function normalizeText(value) {
@@ -28,12 +23,13 @@ function buildSocialLinksReply() {
     return [
         '🌐 *Stay connected with Falisha Manpower:*',
         '',
-        `💼 LinkedIn: ${LINKEDIN_URL}`,
-        `📘 Facebook: ${FACEBOOK_URL}`,
-        `📸 Instagram: ${INSTAGRAM_URL}`,
-        `🎵 TikTok: ${TIKTOK_URL}`,
-        `▶️ YouTube: ${YOUTUBE_URL}`,
-        ...(WA_CHANNEL_URL ? [`💬 WhatsApp Channel: ${WA_CHANNEL_URL}`] : []),
+        `💼 LinkedIn: ${socialLinks_1.SOCIAL_LINKS.linkedin}`,
+        `📘 Facebook: ${socialLinks_1.SOCIAL_LINKS.facebook}`,
+        `📸 Instagram: ${socialLinks_1.SOCIAL_LINKS.instagram}`,
+        `🎵 TikTok: ${socialLinks_1.SOCIAL_LINKS.tiktok}`,
+        `𝕏 X: ${socialLinks_1.SOCIAL_LINKS.x}`,
+        `▶️ YouTube: ${socialLinks_1.SOCIAL_LINKS.youtube}`,
+        ...(socialLinks_1.SOCIAL_LINKS.whatsappChannel ? [`💬 WhatsApp Channel: ${socialLinks_1.SOCIAL_LINKS.whatsappChannel}`] : []),
         '',
         '_Follow us for job updates, success stories, and more!_',
     ].join('\n');

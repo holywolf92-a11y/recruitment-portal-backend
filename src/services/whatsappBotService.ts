@@ -24,6 +24,7 @@ import { sendText, sendButtons, sendList, WaButton, WaListSection } from './what
 import { recordOutboundMessage } from './whatsappInboxService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
 import { upsertAppUserProfile } from './userService';
+import { SOCIAL_LINKS } from '../config/socialLinks';
 import crypto from 'crypto';
 
 const logger = createLogger('WhatsAppBot');
@@ -31,12 +32,6 @@ const MAIN_MENU_DEBOUNCE_MS = 45_000;
 
 // ─── Config (set in Railway env) ─────────────────────────────────────────────
 const JOBS_URL        = process.env.WHATSAPP_BOT_JOBS_URL        || 'https://falishajobs.up.railway.app/jobs';
-const LINKEDIN_URL    = process.env.WHATSAPP_BOT_LINKEDIN_URL    || 'https://www.linkedin.com/company/falishaenterprises';
-const FACEBOOK_URL    = process.env.WHATSAPP_BOT_FACEBOOK_URL    || 'https://www.facebook.com/falishaenterprises.pk/';
-const INSTAGRAM_URL   = process.env.WHATSAPP_BOT_INSTAGRAM_URL   || 'https://www.instagram.com/falisha.manpower';
-const TIKTOK_URL      = process.env.WHATSAPP_BOT_TIKTOK_URL      || 'https://www.tiktok.com/@falishamanpower';
-const YOUTUBE_URL     = process.env.WHATSAPP_BOT_YOUTUBE_URL     || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
-const WA_CHANNEL_URL  = process.env.WHATSAPP_BOT_CHANNEL_URL     || '';
 const BOT_ACTOR_ID = 'whatsapp-bot';
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL);
 const CANDIDATE_REQUIRED_FIELDS = [
@@ -351,12 +346,13 @@ function buildSocialLinksMessage(): string {
   return [
     '🌐 *Stay connected with Falisha Manpower:*',
     '',
-    `💼 LinkedIn: ${LINKEDIN_URL}`,
-    `📘 Facebook: ${FACEBOOK_URL}`,
-    `📸 Instagram: ${INSTAGRAM_URL}`,
-    `🎵 TikTok: ${TIKTOK_URL}`,
-    `▶️ YouTube: ${YOUTUBE_URL}`,
-    ...(WA_CHANNEL_URL ? [`WhatsApp Channel: ${WA_CHANNEL_URL}`] : []),
+    `💼 LinkedIn: ${SOCIAL_LINKS.linkedin}`,
+    `📘 Facebook: ${SOCIAL_LINKS.facebook}`,
+    `📸 Instagram: ${SOCIAL_LINKS.instagram}`,
+    `🎵 TikTok: ${SOCIAL_LINKS.tiktok}`,
+    `𝕏 X: ${SOCIAL_LINKS.x}`,
+    `▶️ YouTube: ${SOCIAL_LINKS.youtube}`,
+    ...(SOCIAL_LINKS.whatsappChannel ? [`WhatsApp Channel: ${SOCIAL_LINKS.whatsappChannel}`] : []),
     '',
     '_Follow us for job updates, success stories, and more!_',
   ].join('\n');
@@ -1349,12 +1345,13 @@ async function handleSocialFlow(
   const links: string[] = [
     '📣 *Follow Falisha Manpower for daily job updates:*',
     '',
-    `💼 LinkedIn:\n${LINKEDIN_URL}`,
-    `👍 Facebook:\n${FACEBOOK_URL}`,
-    `📸 Instagram:\n${INSTAGRAM_URL}`,
-    `🎵 TikTok:\n${TIKTOK_URL}`,
-    `▶️ YouTube:\n${YOUTUBE_URL}`,
-    ...(WA_CHANNEL_URL  ? [`💬 WhatsApp Channel:\n${WA_CHANNEL_URL}`] : []),
+    `💼 LinkedIn:\n${SOCIAL_LINKS.linkedin}`,
+    `👍 Facebook:\n${SOCIAL_LINKS.facebook}`,
+    `📸 Instagram:\n${SOCIAL_LINKS.instagram}`,
+    `🎵 TikTok:\n${SOCIAL_LINKS.tiktok}`,
+    `𝕏 X:\n${SOCIAL_LINKS.x}`,
+    `▶️ YouTube:\n${SOCIAL_LINKS.youtube}`,
+    ...(SOCIAL_LINKS.whatsappChannel ? [`💬 WhatsApp Channel:\n${SOCIAL_LINKS.whatsappChannel}`] : []),
     '',
     'Follow to get the latest jobs every day! ✅',
   ];

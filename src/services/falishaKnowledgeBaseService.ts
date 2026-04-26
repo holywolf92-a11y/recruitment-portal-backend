@@ -1,3 +1,5 @@
+import { SOCIAL_LINKS } from '../config/socialLinks';
+
 export type KnowledgeAudience = 'all' | 'candidate' | 'employer' | 'partner';
 
 export type KnowledgeIntent =
@@ -119,14 +121,15 @@ const FALISHA_KNOWLEDGE_BASE: KnowledgeBase = {
       title: 'Falisha social media channels',
       audience: ['all'],
       intents: ['social_links'],
-      tags: ['social', 'linkedin', 'facebook', 'instagram', 'tiktok', 'youtube', 'channel'],
+      tags: ['social', 'linkedin', 'facebook', 'instagram', 'tiktok', 'x', 'twitter', 'youtube', 'channel'],
       facts: [
-        'LinkedIn: https://www.linkedin.com/company/falishaenterprises',
-        'Facebook: https://www.facebook.com/falishaenterprises.pk/',
-        'Instagram: https://www.instagram.com/falisha.manpower',
-        'TikTok: https://www.tiktok.com/@falishamanpower',
-        'YouTube: https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj',
-        'WhatsApp Channel is optional and controlled by WHATSAPP_BOT_CHANNEL_URL.',
+        `LinkedIn: ${SOCIAL_LINKS.linkedin}`,
+        `Facebook: ${SOCIAL_LINKS.facebook}`,
+        `Instagram: ${SOCIAL_LINKS.instagram}`,
+        `TikTok: ${SOCIAL_LINKS.tiktok}`,
+        `X: ${SOCIAL_LINKS.x}`,
+        `YouTube: ${SOCIAL_LINKS.youtube}`,
+        `WhatsApp Channel: ${SOCIAL_LINKS.whatsappChannel}`,
       ],
       sourceIds: ['public_portal'],
     },

@@ -5,10 +5,11 @@
 // Fire-and-forget — failures are logged but never bubble up to the caller.
 
 import { createLogger } from '../utils/errorHandling';
+import { SOCIAL_LINKS } from '../config/socialLinks';
 
 const logger = createLogger('LinkedInFollowUpService');
 
-const LINKEDIN_PAGE_URL = 'https://www.linkedin.com/company/falishaenterprises';
+const LINKEDIN_PAGE_URL = SOCIAL_LINKS.linkedin;
 
 function buildEmail(candidateName: string | null): { subject: string; html: string; text: string } {
   const greeting = candidateName ? `Dear ${candidateName}` : 'Dear Candidate';

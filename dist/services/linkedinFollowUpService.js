@@ -40,8 +40,9 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendLinkedInFollowUp = sendLinkedInFollowUp;
 const errorHandling_1 = require("../utils/errorHandling");
+const socialLinks_1 = require("../config/socialLinks");
 const logger = (0, errorHandling_1.createLogger)('LinkedInFollowUpService');
-const LINKEDIN_PAGE_URL = 'https://www.linkedin.com/company/falishaenterprises';
+const LINKEDIN_PAGE_URL = socialLinks_1.SOCIAL_LINKS.linkedin;
 function buildEmail(candidateName) {
     const greeting = candidateName ? `Dear ${candidateName}` : 'Dear Candidate';
     const subject = 'Thank you for your response — Stay connected with Falisha';

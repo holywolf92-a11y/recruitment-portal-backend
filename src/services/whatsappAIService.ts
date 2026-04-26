@@ -4,16 +4,11 @@ import { normalizePhoneE164 } from './candidateService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
 import { classifyWhatsAppIntent, getEscalationMatrixEntry, getIntentMatrixEntry, resolveIntentAction, type WhatsAppIntentId } from './whatsappIntentService';
 import { assessFalishaKnowledgeSupport, buildFalishaKnowledgeContext, type KnowledgeSupportLevel } from './falishaKnowledgeBaseService';
+import { SOCIAL_LINKS } from '../config/socialLinks';
 
 const logger = createLogger('WhatsAppAIService');
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
 const JOBS_URL = process.env.WHATSAPP_BOT_JOBS_URL || `${FRONTEND_URL}/jobs`;
-const LINKEDIN_URL = process.env.WHATSAPP_BOT_LINKEDIN_URL || 'https://www.linkedin.com/company/falishaenterprises';
-const FACEBOOK_URL = process.env.WHATSAPP_BOT_FACEBOOK_URL || 'https://www.facebook.com/falishaenterprises.pk/';
-const INSTAGRAM_URL = process.env.WHATSAPP_BOT_INSTAGRAM_URL || 'https://www.instagram.com/falisha.manpower';
-const TIKTOK_URL = process.env.WHATSAPP_BOT_TIKTOK_URL || 'https://www.tiktok.com/@falishamanpower';
-const YOUTUBE_URL = process.env.WHATSAPP_BOT_YOUTUBE_URL || 'https://youtube.com/@falishamanpower897?si=-sKB5_wZdoICyLbj';
-const WA_CHANNEL_URL = process.env.WHATSAPP_BOT_CHANNEL_URL || '';
 const SUPPORT_EMAIL = 'support@falishajobs.com';
 const SUPPORT_PHONE = '+923303333335';
 
@@ -58,12 +53,13 @@ function buildSocialLinksReply(): string {
   return [
     '🌐 *Stay connected with Falisha Manpower:*',
     '',
-    `💼 LinkedIn: ${LINKEDIN_URL}`,
-    `📘 Facebook: ${FACEBOOK_URL}`,
-    `📸 Instagram: ${INSTAGRAM_URL}`,
-    `🎵 TikTok: ${TIKTOK_URL}`,
-    `▶️ YouTube: ${YOUTUBE_URL}`,
-    ...(WA_CHANNEL_URL ? [`💬 WhatsApp Channel: ${WA_CHANNEL_URL}`] : []),
+    `💼 LinkedIn: ${SOCIAL_LINKS.linkedin}`,
+    `📘 Facebook: ${SOCIAL_LINKS.facebook}`,
+    `📸 Instagram: ${SOCIAL_LINKS.instagram}`,
+    `🎵 TikTok: ${SOCIAL_LINKS.tiktok}`,
+    `𝕏 X: ${SOCIAL_LINKS.x}`,
+    `▶️ YouTube: ${SOCIAL_LINKS.youtube}`,
+    ...(SOCIAL_LINKS.whatsappChannel ? [`💬 WhatsApp Channel: ${SOCIAL_LINKS.whatsappChannel}`] : []),
     '',
     '_Follow us for job updates, success stories, and more!_',
   ].join('\n');

@@ -14,6 +14,70 @@ import { shouldSkipSplitAndCategorizeForSingleCvUpload } from '../utils/singleCv
 
 const STORAGE_BUCKET = 'documents';
 
+function resolveExpectedUploadType(documentType?: string): {
+  expectedCategory?: DocumentCategory;
+  expectedDocType: string;
+  uploadDocType: string;
+} {
+  const uploadDocType = (documentType || '').toLowerCase().replace(/\s+/g, '_');
+  const uploadCategoryMap: Record<string, DocumentCategory> = {
+    passport: DOCUMENT_CATEGORIES.PASSPORT,
+    cnic: DOCUMENT_CATEGORIES.CNIC,
+    driving_license: DOCUMENT_CATEGORIES.DRIVING_LICENSE,
+    police_character_certificate: DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
+    educational_documents: DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+    degree: DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+    diploma: DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
+    experience_certificate: DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+    experience: DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
+    navttc: DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+    navttc_report: DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
+    certificate: DOCUMENT_CATEGORIES.CERTIFICATES,
+    photo: DOCUMENT_CATEGORIES.PHOTOS,
+    medical: DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
+    cv: DOCUMENT_CATEGORIES.CV_RESUME,
+    resume: DOCUMENT_CATEGORIES.CV_RESUME,
+  };
+  const uploadDocTypeMap: Record<string, string> = {
+    passport: 'passport',
+    cnic: 'cnic',
+    driving_license: 'driving_license',
+    police_character_certificate: 'police_character_certificate',
+    certificate: 'certificate',
+    photo: 'photo',
+    medical: 'medical',
+    cv: 'other',
+    resume: 'other',
+  };
+
+  return {
+    expectedCategory: uploadCategoryMap[uploadDocType],
+    expectedDocType: uploadDocTypeMap[uploadDocType] || 'other',
+    uploadDocType,
+  };
+}
+
+function shouldRetryExhaustiveSplit(args: {
+  mimeType: string;
+  expectedCategory?: DocumentCategory;
+  splitDocuments: SplitDoc[];
+}): boolean {
+  if (args.mimeType !== 'application/pdf') {
+    return false;
+  }
+
+  if (args.expectedCategory !== DOCUMENT_CATEGORIES.CV_RESUME) {
+    return false;
+  }
+
+  if (args.splitDocuments.length !== 1) {
+    return false;
+  }
+
+  const onlyDoc = args.splitDocuments[0];
+  return (onlyDoc.pages?.length || 0) > 1;
+}
+
 function hasProfilePhoto(candidate: any): boolean {
   return !!(
     candidate?.profile_photo_path ||
@@ -243,6 +307,8 @@ export async function uploadCandidateDocument(
     // Generate unique request ID for tracing
     console.log(`[UploadDocument] Starting upload for candidate ${data.candidate_id}, request_id: ${requestId}`);
 
+    const { expectedCategory, expectedDocType } = resolveExpectedUploadType(data.document_type);
+
     // Log upload started (now safe because candidate exists)
     await logService.logUploadStarted(
       requestId,
@@ -272,7 +338,7 @@ export async function uploadCandidateDocument(
 
         // Call split-and-categorize
         const base64 = data.buffer.toString('base64');
-        const splitResult = await callSplitAndCategorize(
+        let splitResult = await callSplitAndCategorize(
           base64,
           data.file_name,
           data.mime_type,
@@ -280,8 +346,28 @@ export async function uploadCandidateDocument(
           false // useTextract
         );
 
+        if (shouldRetryExhaustiveSplit({
+          mimeType: data.mime_type,
+          expectedCategory,
+          splitDocuments: splitResult.documents || [],
+        })) {
+          console.log('[UploadDocument] Multi-page CV upload collapsed to a single split result. Retrying split in exhaustive page-scan mode.');
+          const exhaustiveResult = await callSplitAndCategorize(
+            base64,
+            data.file_name,
+            data.mime_type,
+            undefined,
+            false,
+            { exhaustivePageScan: true },
+          );
+
+          if (exhaustiveResult.documents?.length) {
+            splitResult = exhaustiveResult;
+          }
+        }
+
         // If split returned multiple documents, create candidate_documents for each
-        if (splitResult.documents && splitResult.documents.length > 1) {
+        if (splitResult.documents && splitResult.documents.length > 0) {
           console.log(`[UploadDocument] Split returned ${splitResult.documents.length} documents, creating candidate_documents records`);
           
           const createdDocuments: CandidateDocument[] = [];
@@ -535,9 +621,6 @@ export async function uploadCandidateDocument(
               request_id: requestId,
             };
           }
-        } else if (splitResult.documents && splitResult.documents.length === 1) {
-          console.log(`[UploadDocument] Split returned 1 document, continuing with single-document flow`);
-          // Fall through to single-document flow below
         } else {
           console.log(`[UploadDocument] Split returned 0 documents, falling back to single-document flow`);
           // Fall through to single-document flow below
@@ -581,39 +664,6 @@ export async function uploadCandidateDocument(
     console.log(`[UploadDocument] File uploaded to storage: ${storagePath}`);
 
     // Map frontend document_type (passport, cnic, cv, etc.) to DB category and document_type for "expected type" validation
-    const uploadDocType = (data.document_type || '').toLowerCase().replace(/\s+/g, '_');
-    const uploadCategoryMap: Record<string, DocumentCategory> = {
-      passport: DOCUMENT_CATEGORIES.PASSPORT,
-      cnic: DOCUMENT_CATEGORIES.CNIC,
-      driving_license: DOCUMENT_CATEGORIES.DRIVING_LICENSE,
-      police_character_certificate: DOCUMENT_CATEGORIES.POLICE_CHARACTER_CERTIFICATE,
-      educational_documents: DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-      degree: DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-      diploma: DOCUMENT_CATEGORIES.EDUCATIONAL_DOCUMENTS,
-      experience_certificate: DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
-      experience: DOCUMENT_CATEGORIES.EXPERIENCE_CERTIFICATES,
-      navttc: DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
-      navttc_report: DOCUMENT_CATEGORIES.NAVTTC_REPORTS,
-      certificate: DOCUMENT_CATEGORIES.CERTIFICATES,
-      photo: DOCUMENT_CATEGORIES.PHOTOS,
-      medical: DOCUMENT_CATEGORIES.MEDICAL_REPORTS,
-      cv: DOCUMENT_CATEGORIES.CV_RESUME,
-      resume: DOCUMENT_CATEGORIES.CV_RESUME,
-    };
-    const uploadDocTypeMap: Record<string, string> = {
-      passport: 'passport',
-      cnic: 'cnic',
-      driving_license: 'driving_license',
-      police_character_certificate: 'police_character_certificate',
-      certificate: 'certificate',
-      photo: 'photo',
-      medical: 'medical',
-      cv: 'other', // DB may use 'other' for cv when single upload; category holds cv_resume
-      resume: 'other',
-    };
-    const expectedCategory = uploadCategoryMap[uploadDocType];
-    const expectedDocType = uploadDocTypeMap[uploadDocType] || 'other';
-
     const isImagePhotoUpload = expectedCategory === DOCUMENT_CATEGORIES.PHOTOS && (data.mime_type || '').toLowerCase().startsWith('image/');
 
     // Create candidate_documents record with status = PENDING_AI; store expected type when provided

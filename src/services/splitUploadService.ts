@@ -118,6 +118,11 @@ export interface SplitAndCategorizeResponse {
   documents: SplitDoc[];
 }
 
+export interface SplitAndCategorizeOptions {
+  useTextract?: boolean;
+  exhaustivePageScan?: boolean;
+}
+
 /**
  * Preserve original upload: store raw file as-is at original_uploads/upload_<uuid>.pdf (immutable).
  * Uses actual mimeType for Content-Type when storing.
@@ -153,14 +158,16 @@ export async function callSplitAndCategorize(
   fileName: string,
   mimeType: string,
   candidateData?: Record<string, unknown>,
-  useTextract?: boolean
+  useTextract?: boolean,
+  options?: SplitAndCategorizeOptions,
 ): Promise<SplitAndCategorizeResponse> {
   const payload = {
     file_content: fileContentBase64,
     file_name: fileName,
     mime_type: mimeType,
     candidate_data: candidateData ?? null,
-    use_textract: useTextract ?? false,
+    use_textract: options?.useTextract ?? useTextract ?? false,
+    exhaustive_page_scan: options?.exhaustivePageScan ?? false,
   };
   const body = Buffer.from(JSON.stringify(payload), 'utf8');
   const sig = hmacSignature(body);

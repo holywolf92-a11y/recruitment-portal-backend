@@ -126,13 +126,14 @@ function hmacSignature(body) {
 /**
  * Call POST /split-and-categorize on Python parser. HMAC auth.
  */
-async function callSplitAndCategorize(fileContentBase64, fileName, mimeType, candidateData, useTextract) {
+async function callSplitAndCategorize(fileContentBase64, fileName, mimeType, candidateData, useTextract, options) {
     const payload = {
         file_content: fileContentBase64,
         file_name: fileName,
         mime_type: mimeType,
         candidate_data: candidateData ?? null,
-        use_textract: useTextract ?? false,
+        use_textract: options?.useTextract ?? useTextract ?? false,
+        exhaustive_page_scan: options?.exhaustivePageScan ?? false,
     };
     const body = Buffer.from(JSON.stringify(payload), 'utf8');
     const sig = hmacSignature(body);

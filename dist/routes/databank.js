@@ -152,6 +152,28 @@ async function getFolderManifest() {
 async function saveFolderManifest(folders) {
     await writeJsonBlob(DATABANK_MANIFEST_PATH, { folders });
 }
+function findFolderById(folders, folderId) {
+    if (!folderId) {
+        return null;
+    }
+    return folders.find((folder) => folder.id === folderId) || null;
+}
+function collectDescendantFolderIds(folders, rootFolderId) {
+    const collected = [];
+    const pending = [rootFolderId];
+    while (pending.length > 0) {
+        const currentFolderId = pending.pop();
+        if (collected.includes(currentFolderId)) {
+            continue;
+        }
+        collected.push(currentFolderId);
+        const childFolderIds = folders
+            .filter((folder) => folder.parent_id === currentFolderId)
+            .map((folder) => folder.id);
+        pending.push(...childFolderIds);
+    }
+    return collected;
+}
 async function listFolderObjects(folderId) {
     const db = (0, database_1.supabaseAdminClient)();
     const folderPrefix = getFolderPrefix(folderId);
@@ -222,14 +244,19 @@ router.get('/folders', (0, errorHandling_1.asyncHandler)(async (_req, res) => {
 router.post('/folders', (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const name = ensureFolderName(req.body?.name);
     const folders = await getFolderManifest();
-    const duplicate = folders.find((folder) => folder.name.toLowerCase() === name.toLowerCase());
+    const requestedParentId = req.body?.parent_id == null ? null : String(req.body.parent_id).trim() || null;
+    const parentFolder = findFolderById(folders, requestedParentId);
+    if (requestedParentId && !parentFolder) {
+        throw new errorHandling_1.AppError('Parent databank folder not found', errorHandling_1.ErrorType.NOT_FOUND, 404);
+    }
+    const duplicate = folders.find((folder) => folder.parent_id === requestedParentId && folder.name.toLowerCase() === name.toLowerCase());
     if (duplicate) {
-        throw new errorHandling_1.AppError('A databank folder with that name already exists', errorHandling_1.ErrorType.DUPLICATE, 409);
+        throw new errorHandling_1.AppError('A databank folder with that name already exists in this location', errorHandling_1.ErrorType.DUPLICATE, 409);
     }
     const folder = {
         id: crypto_1.default.randomUUID(),
         name,
-        parent_id: null,
+        parent_id: requestedParentId,
         created_by: req.user?.id || 'unknown',
         created_at: new Date().toISOString(),
     };
@@ -252,10 +279,14 @@ router.delete('/folders/:id', (0, errorHandling_1.asyncHandler)(async (req, res)
     if (!folder) {
         throw new errorHandling_1.AppError('Databank folder not found', errorHandling_1.ErrorType.NOT_FOUND, 404);
     }
-    const objects = await listFolderObjects(folderId);
-    const allPaths = objects.map((item) => `${getFolderPrefix(folderId)}/${item.name}`);
-    if (!allPaths.includes(getKeepFilePath(folderId))) {
-        allPaths.push(getKeepFilePath(folderId));
+    const folderIdsToDelete = collectDescendantFolderIds(folders, folderId);
+    const allPaths = [];
+    for (const currentFolderId of folderIdsToDelete) {
+        const objects = await listFolderObjects(currentFolderId);
+        allPaths.push(...objects.map((item) => `${getFolderPrefix(currentFolderId)}/${item.name}`));
+        if (!allPaths.includes(getKeepFilePath(currentFolderId))) {
+            allPaths.push(getKeepFilePath(currentFolderId));
+        }
     }
     const db = (0, database_1.supabaseAdminClient)();
     if (allPaths.length > 0) {
@@ -264,7 +295,7 @@ router.delete('/folders/:id', (0, errorHandling_1.asyncHandler)(async (req, res)
             throw new errorHandling_1.AppError(`Failed to delete databank folder contents: ${error.message}`, errorHandling_1.ErrorType.DATABASE, 500);
         }
     }
-    await saveFolderManifest(folders.filter((entry) => entry.id !== folderId));
+    await saveFolderManifest(folders.filter((entry) => !folderIdsToDelete.includes(entry.id)));
     res.json({ success: true });
 }));
 router.get('/folders/:folderId/files', (0, errorHandling_1.asyncHandler)(async (req, res) => {

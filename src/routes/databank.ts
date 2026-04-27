@@ -182,6 +182,33 @@ async function saveFolderManifest(folders: DatabankFolderRecord[]): Promise<void
   await writeJsonBlob(DATABANK_MANIFEST_PATH, { folders });
 }
 
+function findFolderById(folders: DatabankFolderRecord[], folderId: string | null | undefined): DatabankFolderRecord | null {
+  if (!folderId) {
+    return null;
+  }
+  return folders.find((folder) => folder.id === folderId) || null;
+}
+
+function collectDescendantFolderIds(folders: DatabankFolderRecord[], rootFolderId: string): string[] {
+  const collected: string[] = [];
+  const pending = [rootFolderId];
+
+  while (pending.length > 0) {
+    const currentFolderId = pending.pop()!;
+    if (collected.includes(currentFolderId)) {
+      continue;
+    }
+
+    collected.push(currentFolderId);
+    const childFolderIds = folders
+      .filter((folder) => folder.parent_id === currentFolderId)
+      .map((folder) => folder.id);
+    pending.push(...childFolderIds);
+  }
+
+  return collected;
+}
+
 async function listFolderObjects(folderId: string): Promise<any[]> {
   const db = supabaseAdminClient();
   const folderPrefix = getFolderPrefix(folderId);
@@ -267,15 +294,23 @@ router.post(
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const name = ensureFolderName(req.body?.name);
     const folders = await getFolderManifest();
-    const duplicate = folders.find((folder) => folder.name.toLowerCase() === name.toLowerCase());
+    const requestedParentId = req.body?.parent_id == null ? null : String(req.body.parent_id).trim() || null;
+    const parentFolder = findFolderById(folders, requestedParentId);
+    if (requestedParentId && !parentFolder) {
+      throw new AppError('Parent databank folder not found', ErrorType.NOT_FOUND, 404);
+    }
+
+    const duplicate = folders.find(
+      (folder) => folder.parent_id === requestedParentId && folder.name.toLowerCase() === name.toLowerCase(),
+    );
     if (duplicate) {
-      throw new AppError('A databank folder with that name already exists', ErrorType.DUPLICATE, 409);
+      throw new AppError('A databank folder with that name already exists in this location', ErrorType.DUPLICATE, 409);
     }
 
     const folder: DatabankFolderRecord = {
       id: crypto.randomUUID(),
       name,
-      parent_id: null,
+      parent_id: requestedParentId,
       created_by: req.user?.id || 'unknown',
       created_at: new Date().toISOString(),
     };
@@ -306,10 +341,15 @@ router.delete(
       throw new AppError('Databank folder not found', ErrorType.NOT_FOUND, 404);
     }
 
-    const objects = await listFolderObjects(folderId);
-    const allPaths = objects.map((item) => `${getFolderPrefix(folderId)}/${item.name}`);
-    if (!allPaths.includes(getKeepFilePath(folderId))) {
-      allPaths.push(getKeepFilePath(folderId));
+    const folderIdsToDelete = collectDescendantFolderIds(folders, folderId);
+    const allPaths: string[] = [];
+
+    for (const currentFolderId of folderIdsToDelete) {
+      const objects = await listFolderObjects(currentFolderId);
+      allPaths.push(...objects.map((item) => `${getFolderPrefix(currentFolderId)}/${item.name}`));
+      if (!allPaths.includes(getKeepFilePath(currentFolderId))) {
+        allPaths.push(getKeepFilePath(currentFolderId));
+      }
     }
 
     const db = supabaseAdminClient();
@@ -320,7 +360,7 @@ router.delete(
       }
     }
 
-    await saveFolderManifest(folders.filter((entry) => entry.id !== folderId));
+    await saveFolderManifest(folders.filter((entry) => !folderIdsToDelete.includes(entry.id)));
     res.json({ success: true });
   })
 );

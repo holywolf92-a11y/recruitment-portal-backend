@@ -148,7 +148,30 @@ async function writeJsonBlob(path: string, payload: unknown): Promise<void> {
   }
 }
 
+async function storageObjectExists(path: string): Promise<boolean> {
+  const db = supabaseAdminClient();
+  const lastSlashIndex = path.lastIndexOf('/');
+  const prefix = lastSlashIndex >= 0 ? path.slice(0, lastSlashIndex) : '';
+  const fileName = lastSlashIndex >= 0 ? path.slice(lastSlashIndex + 1) : path;
+
+  const { data, error } = await db.storage.from(DATABANK_BUCKET).list(prefix, {
+    limit: 100,
+    search: fileName,
+  });
+
+  if (error) {
+    throw new AppError(`Failed to inspect storage object ${path}: ${error.message}`, ErrorType.DATABASE, 500);
+  }
+
+  return (data || []).some((item) => item.name === fileName);
+}
+
 async function getFolderManifest(): Promise<DatabankFolderRecord[]> {
+  const manifestExists = await storageObjectExists(DATABANK_MANIFEST_PATH);
+  if (!manifestExists) {
+    return [];
+  }
+
   const manifest = await readJsonBlob(DATABANK_MANIFEST_PATH);
   if (!manifest) return [];
   if (!Array.isArray(manifest.folders)) return [];

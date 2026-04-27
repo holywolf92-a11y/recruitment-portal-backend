@@ -49,7 +49,7 @@
 4. **Manual Deploy (if needed):**
    ```bash
    cd recruitment-portal-backend
-   railway up
+   git push origin main
    ```
 
 ## Expected Behavior

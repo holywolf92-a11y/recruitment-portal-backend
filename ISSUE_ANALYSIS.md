@@ -37,7 +37,7 @@ But Railway logs show **NO** `PDF detected` messages, meaning this code isn't ru
 ## What Needs to Happen
 
 1. **Railway must deploy commit `9c4d17e`**
-   - We triggered `railway up` but need to verify it completed
+   - We pushed the change, but need to verify the GitHub-linked Railway deployment completed
    - Check build logs: https://railway.com/project/54e09ca0-5643-4b5e-a172-8704293ae095/service/7c9d5772-56f3-41a2-b2a8-a94952c39ffb
 
 2. **After deployment, verify:**
@@ -49,7 +49,7 @@ But Railway logs show **NO** `PDF detected` messages, meaning this code isn't ru
 
 - ✅ Environment variables set (`PYTHON_CV_PARSER_URL`, `PYTHON_HMAC_SECRET`)
 - ✅ Code pushed to GitHub (`9c4d17e`)
-- ✅ Deployment triggered (`railway up`)
+- ✅ Deployment triggered from GitHub push
 - ⏳ **Waiting for Railway to complete deployment**
 
 ## Next Steps

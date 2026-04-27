@@ -26,7 +26,7 @@
   - Railway Backend (`glorious-flexibility` project) env var: `SUPABASE_SERVICE_ROLE_KEY`
   - Railway Python Parser env var: `SUPABASE_SERVICE_ROLE_KEY`
   - `.env.example` (keep it safe)
-- Restart services: `railway up` in backend & python-parser folders
+- Redeploy by pushing backend and python-parser changes to GitHub so Railway rolls the new credentials out
 
 **OPENAI** (HIGH PRIORITY):
 - Log into: https://platform.openai.com/api-keys

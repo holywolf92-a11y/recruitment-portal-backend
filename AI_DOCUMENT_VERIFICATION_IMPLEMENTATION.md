@@ -365,15 +365,13 @@ error_message          TEXT
 ### Backend
 ```bash
 cd backend
-git push  # Push to backend remote
-railway up --detach  # Deploy to Railway
+git push  # Push to backend remote and let Railway deploy from GitHub
 ```
 
 ### Python Parser
 ```bash
 cd python-parser
-git push  # Push to python-parser remote
-railway up --detach --service recruitment-portal-python-parser
+git push  # Push to python-parser remote and let Railway deploy from GitHub
 ```
 
 ### Verification

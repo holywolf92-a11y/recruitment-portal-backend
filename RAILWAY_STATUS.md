@@ -16,7 +16,7 @@
 - ✅ `RUN_HOSTINGER_POLLING` / `HOSTINGER_POLL_INTERVAL_MINUTES` can be used to enable background mailbox polling with an explicit cadence
 
 ## 🚀 Deployment Triggered
-- **Action:** `railway up --detach` executed
+- **Action:** GitHub push triggered Railway deployment
 - **Public URL:** https://glorious-flexibility-production.up.railway.app
 - **Status:** Connected to the live production backend
 

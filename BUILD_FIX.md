@@ -44,4 +44,4 @@ const category = categoryMap[splitDoc.doc_type] || DOCUMENT_CATEGORIES.OTHER_DOC
 4. **Verify split integration** creates multiple documents
 
 ## Note
-Git push failed (permission issue), but Railway `railway up` deploys local code directly, so the fix is being deployed.
+Current deployment policy: this repo is GitHub-linked in Railway, so deployment should happen from `git push` rather than a manual Railway CLI upload.

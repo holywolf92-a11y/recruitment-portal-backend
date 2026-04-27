@@ -68,7 +68,7 @@ If you can link Railway CLI to backend project:
 ```bash
 cd d:\falisha\recruitment-portal-backend
 railway link  # Select "glorious-flexibility" project, then "glorious-flexibility" service
-railway up --detach
+git push origin main
 ```
 
 ## 📋 What to Check in Railway Dashboard

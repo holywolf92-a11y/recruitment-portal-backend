@@ -108,10 +108,17 @@ async function dispatchWelcomeCredentials(user: {
   email: string;
   phone?: string | null;
   role: string;
-}, password: string) {
+}, password: string): Promise<{
+  email: { attempted: boolean; sent: boolean; error?: string | null };
+  whatsapp: { attempted: boolean; sent: boolean; to?: string | null; error?: string | null };
+}> {
   const portalUrl = process.env.FRONTEND_URL || 'https://falishajobs.up.railway.app';
   const displayName = user.name || user.email;
   const roleLabel = user.role.charAt(0).toUpperCase() + user.role.slice(1);
+  const delivery = {
+    email: { attempted: true, sent: false, error: null as string | null },
+    whatsapp: { attempted: !!user.phone, sent: false, to: null as string | null, error: null as string | null },
+  };
 
   const emailHtml = `
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
@@ -129,31 +136,45 @@ async function dispatchWelcomeCredentials(user: {
   `;
 
   try {
-    await emailService.sendEmail({
+    const emailResult = await emailService.sendEmailDetailed({
       to: user.email,
       subject: 'Your Falisha Jobs Portal Login Credentials',
       html: emailHtml,
       text: `Welcome to Falisha Jobs Portal!\n\nLogin URL: ${portalUrl}\nEmail: ${user.email}\nPassword: ${password}\n\nPlease change your password after first sign-in.`,
     });
-    console.log(`[Auth] ✅ Credentials email sent to ${user.email}`);
+    delivery.email.sent = emailResult.sent;
+    if (emailResult.sent) {
+      console.log(`[Auth] ✅ Credentials email sent to ${user.email}`);
+    } else {
+      delivery.email.error = `Email provider ${emailResult.provider} did not confirm delivery`;
+      console.error(`[Auth] ⚠️ Credentials email was not sent to ${user.email}: ${delivery.email.error}`);
+    }
   } catch (err: any) {
-    console.error(`[Auth] ⚠️ Failed to send credentials email to ${user.email}:`, err?.message);
+    delivery.email.error = err?.message || 'Unknown email delivery error';
+    console.error(`[Auth] ⚠️ Failed to send credentials email to ${user.email}:`, delivery.email.error);
   }
 
   if (user.phone) {
     const waPhone = toWhatsAppPhone(user.phone);
+    delivery.whatsapp.to = waPhone;
     const waText = `Welcome to Falisha Jobs Portal! 🎉\n\nHi ${displayName}, your ${roleLabel} account is ready.\n\n🔗 Login: ${portalUrl}\n📧 Email: ${user.email}\n🔑 Password: ${password}\n\nPlease change your password after first login.`;
     const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
     const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
     if (phoneNumberId && accessToken && waPhone) {
       try {
         await sendMessage(phoneNumberId, accessToken, waPhone, waText);
+        delivery.whatsapp.sent = true;
         console.log(`[Auth] ✅ Credentials WhatsApp sent to ${waPhone}`);
       } catch (err: any) {
-        console.error(`[Auth] ⚠️ Failed to send credentials WhatsApp to ${waPhone}:`, err?.message);
+        delivery.whatsapp.error = err?.message || 'Unknown WhatsApp delivery error';
+        console.error(`[Auth] ⚠️ Failed to send credentials WhatsApp to ${waPhone}:`, delivery.whatsapp.error);
       }
+    } else {
+      delivery.whatsapp.error = 'WhatsApp credentials are not configured';
     }
   }
+
+  return delivery;
 }
 
 router.get('/me', authenticate, async (req: AuthRequest, res) => {
@@ -1036,18 +1057,25 @@ router.post('/users', authenticate, async (req: AuthRequest, res) => {
 
     // Fire-and-forget credential notification for external-facing roles only
     // (admin and worker accounts are internal staff — no auto-send)
+    let credentialDelivery:
+      | { email: { attempted: boolean; sent: boolean; error?: string | null }; whatsapp: { attempted: boolean; sent: boolean; to?: string | null; error?: string | null } }
+      | null = null;
+
     if (['candidate', 'partner', 'employer'].includes(normalizedRole)) {
-      dispatchWelcomeCredentials({
+      credentialDelivery = await dispatchWelcomeCredentials({
         name: createName,
         email: createEmail,
         phone: createPhone,
         role: normalizedRole,
-      }, password).catch((err: any) => console.error('[Auth] dispatchWelcomeCredentials failed:', err?.message));
+      }, password);
     }
 
     return res.status(201).json({
-      message: 'User created successfully',
+      message: credentialDelivery?.email?.sent === false
+        ? 'User created successfully, but credentials email was not delivered'
+        : 'User created successfully',
       user: userRecord,
+      credentialDelivery,
     });
   } catch (error: any) {
     console.error('Error creating user:', error);
@@ -1080,19 +1108,24 @@ router.post('/users/:userId/send-credentials', authenticate, async (req: AuthReq
       return res.status(400).json({ error: resetError.message || 'Failed to reset password' });
     }
 
-    await dispatchWelcomeCredentials({
+    const credentialDelivery = await dispatchWelcomeCredentials({
       name: existingUser.name,
       email: existingUser.email,
       phone: existingUser.phone,
       role: existingUser.role,
     }, tempPassword);
 
-    return res.json({
-      message: 'Credentials sent successfully',
+    const responseStatus = credentialDelivery.email.sent || credentialDelivery.whatsapp.sent ? 200 : 502;
+
+    return res.status(responseStatus).json({
+      message: credentialDelivery.email.sent || credentialDelivery.whatsapp.sent
+        ? 'Credentials delivery attempted'
+        : 'Failed to deliver credentials',
       sentTo: {
         email: existingUser.email,
         whatsapp: existingUser.phone ? toWhatsAppPhone(existingUser.phone) : null,
       },
+      credentialDelivery,
     });
   } catch (error: any) {
     console.error('Error sending credentials:', error);

@@ -1385,7 +1385,6 @@ async function buildEmployerPackageViaPython(
     .select('id, category, storage_bucket, storage_path, file_name, mime_type, display_name')
     .eq('candidate_id', candidateId)
     .neq('category', DOCUMENT_CATEGORIES.CV_RESUME)
-    .is('deleted_at', null)
     .order('category')
     .order('created_at', { ascending: false });
 

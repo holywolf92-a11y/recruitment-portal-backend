@@ -24,8 +24,8 @@ export interface CVTemplateConfig {
  * This ensures all users get the updated design without manual cache clearing.
  */
 export const CV_TEMPLATE_CONFIG: CVTemplateConfig = {
-  version: 'v3.4.0',
-  description: 'Employer Package: sanitized CV (all embedded pages intact) + only separately-uploaded documents appended',
+  version: 'v3.4.1',
+  description: 'Employer Package: fix deleted_at filter (column does not exist) - correctly appends passport/CNIC docs',
   lastUpdated: '2026-04-30',
 };
 

@@ -591,11 +591,13 @@ async function getDailyStats(filters, userId) {
 async function getCandidateDashboardStats(userId) {
     const db = (0, database_1.supabaseAdminClient)();
     const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const [totalCandidatesRes, pendingReviewRes, deployedRes, newThisWeekRes,] = await Promise.all([
+    const [totalCandidatesRes, pendingReviewRes, deployedRes, newThisWeekRes, partnersRes, employersRes,] = await Promise.all([
         db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').limit(0),
         db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('needs_review', true).limit(0),
         db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('status', 'Deployed').limit(0),
         db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').gte('created_at', weekAgoIso).limit(0),
+        db.from('users').select('id', { count: 'exact' }).eq('role', 'partner').limit(0),
+        db.from('users').select('id', { count: 'exact' }).eq('role', 'employer').limit(0),
     ]);
     // Paginate through all candidates to get distinct professions — Supabase max_rows caps single queries at 1000
     const distinctProfessions = new Set();
@@ -625,6 +627,8 @@ async function getCandidateDashboardStats(userId) {
         pendingReview: pendingReviewRes.count ?? 0,
         deployed: deployedRes.count ?? 0,
         newThisWeek: newThisWeekRes.count ?? 0,
+        totalPartners: partnersRes.count ?? 0,
+        totalEmployers: employersRes.count ?? 0,
     };
 }
 /** Export candidates to CSV or Excel. Returns buffer and filename. */

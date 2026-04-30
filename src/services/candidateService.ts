@@ -707,6 +707,8 @@ export interface CandidateDashboardStats {
   pendingReview: number;
   deployed: number;
   newThisWeek: number;
+  totalPartners: number;
+  totalEmployers: number;
 }
 
 /** Daily summary for Excel-style report cards. Respects same filters as list (date range, folder, search). */
@@ -780,11 +782,15 @@ export async function getCandidateDashboardStats(userId: string): Promise<Candid
     pendingReviewRes,
     deployedRes,
     newThisWeekRes,
+    partnersRes,
+    employersRes,
   ] = await Promise.all([
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').limit(0),
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('needs_review', true).limit(0),
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').eq('status', 'Deployed').limit(0),
     db.from('candidates').select('id', { count: 'exact' }).neq('status', 'Deleted').gte('created_at', weekAgoIso).limit(0),
+    db.from('users').select('id', { count: 'exact' }).eq('role', 'partner').limit(0),
+    db.from('users').select('id', { count: 'exact' }).eq('role', 'employer').limit(0),
   ]);
 
   // Paginate through all candidates to get distinct professions — Supabase max_rows caps single queries at 1000
@@ -813,6 +819,8 @@ export async function getCandidateDashboardStats(userId: string): Promise<Candid
     pendingReview: pendingReviewRes.count ?? 0,
     deployed: deployedRes.count ?? 0,
     newThisWeek: newThisWeekRes.count ?? 0,
+    totalPartners: partnersRes.count ?? 0,
+    totalEmployers: employersRes.count ?? 0,
   };
 }
 

@@ -24,9 +24,9 @@ export interface CVTemplateConfig {
  * This ensures all users get the updated design without manual cache clearing.
  */
 export const CV_TEMPLATE_CONFIG: CVTemplateConfig = {
-  version: 'v3.1.0',
-  description: 'Employer CV enrichment layer with inferred role, synthesized summaries/experience, structured skills, and single-page footer layout',
-  lastUpdated: '2026-03-25',
+  version: 'v3.2.0',
+  description: 'Employer-safe CV: sanitize original PDF (redact candidate contacts, add Falisha banner/footer) instead of AI-generated HTML',
+  lastUpdated: '2026-04-30',
 };
 
 /**

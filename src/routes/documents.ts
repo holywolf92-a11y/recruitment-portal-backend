@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { createLogger, asyncHandler } from '../utils/errorHandling';
 import { supabaseAdminClient } from '../config/database';
-// import { authenticate } from '../middleware/auth';
+import { authenticate } from '../middleware/auth';
 // Old document controllers removed - using unified candidate-documents system
 import {
   uploadCandidateDocumentController,
@@ -203,7 +203,8 @@ const handleMulterError = (err: any, req: any, res: any, next: any) => {
 };
 
 // Split-and-categorize upload: preserve original -> parser -> create docs (create candidate if none)
-router.post('/split-upload', upload.single('file'), handleMulterError, asyncHandler(splitUploadController));
+// Requires authentication: this endpoint creates candidates and documents and must not be called unauthenticated.
+router.post('/split-upload', authenticate, upload.single('file'), handleMulterError, asyncHandler(splitUploadController));
 
 // Upload endpoint with extended timeout for large files
 router.post('/candidate-documents',

@@ -303,7 +303,7 @@ export async function overrideCandidateDocumentController(req: Request, res: Res
  */
 export async function splitUploadController(req: Request, res: Response) {
   try {
-    const userId = (req as any).user?.id || 'system';
+    const userId = (req as any).user.id;
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }

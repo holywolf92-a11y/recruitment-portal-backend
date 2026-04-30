@@ -254,7 +254,7 @@ async function overrideCandidateDocumentController(req, res) {
  */
 async function splitUploadController(req, res) {
     try {
-        const userId = req.user?.id || 'system';
+        const userId = req.user.id;
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }

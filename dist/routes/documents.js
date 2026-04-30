@@ -7,7 +7,7 @@ const express_1 = require("express");
 const multer_1 = __importDefault(require("multer"));
 const errorHandling_1 = require("../utils/errorHandling");
 const database_1 = require("../config/database");
-// import { authenticate } from '../middleware/auth';
+const auth_1 = require("../middleware/auth");
 // Old document controllers removed - using unified candidate-documents system
 const documentController_1 = require("../controllers/documentController");
 const quickApproveController_1 = require("../controllers/quickApproveController");
@@ -173,7 +173,8 @@ const handleMulterError = (err, req, res, next) => {
     next();
 };
 // Split-and-categorize upload: preserve original -> parser -> create docs (create candidate if none)
-router.post('/split-upload', upload.single('file'), handleMulterError, (0, errorHandling_1.asyncHandler)(documentController_1.splitUploadController));
+// Requires authentication: this endpoint creates candidates and documents and must not be called unauthenticated.
+router.post('/split-upload', auth_1.authenticate, upload.single('file'), handleMulterError, (0, errorHandling_1.asyncHandler)(documentController_1.splitUploadController));
 // Upload endpoint with extended timeout for large files
 router.post('/candidate-documents', (req, res, next) => {
     req.setTimeout(300000, () => {

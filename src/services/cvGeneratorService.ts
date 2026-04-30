@@ -1213,10 +1213,13 @@ async function saveCVMetadata(
  * Fetch the candidate's original uploaded CV from Supabase Storage and call the
  * Python parser /sanitize-cv endpoint to produce a redacted, employer-safe PDF.
  *
- * Returns the sanitized PDF as a Buffer, or null if no original CV was found
- * or if the sanitization request failed (caller should fall back to HTML generation).
+ * Returns { buffer, storagePath } where buffer is the sanitized PDF and storagePath
+ * is the storage key of the original CV file (used to filter out co-located documents).
+ * Returns null if no original CV was found or sanitization failed.
  */
-async function sanitizeOriginalCvViaPython(candidateId: string): Promise<Buffer | null> {
+async function sanitizeOriginalCvViaPython(
+  candidateId: string
+): Promise<{ buffer: Buffer; storagePath: string } | null> {
   const db = supabaseAdminClient();
 
   // 1. Find the original CV document (prefer candidate_documents, fall back to inbox_attachments)
@@ -1333,7 +1336,7 @@ async function sanitizeOriginalCvViaPython(candidateId: string): Promise<Buffer 
     `redacted=${result.redacted_count} confidence=${result.confidence_score}`
   );
 
-  return Buffer.from(result.sanitized_content, 'base64');
+  return { buffer: Buffer.from(result.sanitized_content, 'base64'), storagePath: storagePath! };
 }
 
 // Document category priority order for employer package
@@ -1366,13 +1369,17 @@ async function buildEmployerPackageViaPython(
   const db = supabaseAdminClient();
 
   // Step 1: Sanitize the original CV
-  const sanitizedCv = await sanitizeOriginalCvViaPython(candidateId);
-  if (!sanitizedCv) {
+  const sanitizeResult = await sanitizeOriginalCvViaPython(candidateId);
+  if (!sanitizeResult) {
     console.log(`[EmployerPackage] No sanitized CV for candidate ${candidateId}, falling back`);
     return null;
   }
+  const sanitizedCv = sanitizeResult.buffer;
+  const cvStoragePath = sanitizeResult.storagePath;
 
-  // Step 2: Fetch all candidate documents except cv_resume
+  // Step 2: Fetch all candidate documents except cv_resume.
+  // Exclude any doc that shares the same storage file as the original CV — those pages
+  // are already embedded inside the sanitized CV and don't need to be appended again.
   const { data: allDocs } = await db
     .from('candidate_documents')
     .select('id, category, storage_bucket, storage_path, file_name, mime_type, display_name')
@@ -1382,7 +1389,16 @@ async function buildEmployerPackageViaPython(
     .order('category')
     .order('created_at', { ascending: false });
 
-  const candidateDocs = allDocs || [];
+  // Only keep docs that are genuinely separate files (different storage path from the CV)
+  const candidateDocs = (allDocs || []).filter(
+    (doc: any) => doc.storage_path && doc.storage_path !== cvStoragePath
+  );
+
+  console.log(
+    `[EmployerPackage] ${allDocs?.length ?? 0} total extra docs, ` +
+    `${(allDocs?.length ?? 0) - candidateDocs.length} skipped (same file as CV), ` +
+    `${candidateDocs.length} separate docs to append`
+  );
 
   // Step 3: Download each document and prepare payload
   interface DocForPackage {
@@ -1562,11 +1578,11 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
         fileSize = packagePdf.length;
       } else {
         // Fallback 1: just the sanitized CV
-        const sanitized = await sanitizeOriginalCvViaPython(options.candidateId);
-        if (sanitized) {
-          console.log(`[CVGenerator] Sanitized original CV via Python (${sanitized.length} bytes)`);
-          pdfBuffer = sanitized;
-          fileSize = sanitized.length;
+        const sanitizeRes = await sanitizeOriginalCvViaPython(options.candidateId);
+        if (sanitizeRes) {
+          console.log(`[CVGenerator] Sanitized original CV via Python (${sanitizeRes.buffer.length} bytes)`);
+          pdfBuffer = sanitizeRes.buffer;
+          fileSize = sanitizeRes.buffer.length;
         } else {
           // Fallback 2: generate HTML-based CV (original behaviour)
           console.log(`[CVGenerator] No original CV found or sanitization failed — falling back to HTML generation`);

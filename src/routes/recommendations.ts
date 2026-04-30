@@ -216,7 +216,7 @@ router.get('/job/:jobId/candidates', async (req: Request, res: Response) => {
 
     let query = db
       .from('candidates')
-      .select('id, name, position, skills, experience_years, country_of_interest, profile_photo_url, candidate_code, professional_summary')
+      .select('id, name, position, skills, experience_years, country_of_interest, profile_photo_url, candidate_code, professional_summary, phone, email')
       .order('created_at', { ascending: false })
       .limit(150);
 

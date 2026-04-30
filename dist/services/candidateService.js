@@ -336,11 +336,11 @@ async function listCandidates(filters = {}, userId) {
     let query = db.from('candidates').select(LIST_FIELDS, { count: 'exact' });
     const normalizedSearch = (filters.search || '').trim();
     const normalizedSearchLower = normalizedSearch.toLowerCase();
-    const genderSearch = normalizedSearchLower === 'female'
+    const genderSearch = (normalizedSearchLower === 'female' || normalizedSearchLower === 'females')
         ? 'Female'
-        : normalizedSearchLower === 'male'
+        : (normalizedSearchLower === 'male' || normalizedSearchLower === 'males')
             ? 'Male'
-            : normalizedSearchLower === 'other'
+            : (normalizedSearchLower === 'other' || normalizedSearchLower === 'others')
                 ? 'Other'
                 : null;
     // By default, exclude deleted candidates (unless explicitly filtering for them)
@@ -353,7 +353,7 @@ async function listCandidates(filters = {}, userId) {
             query = query.eq('gender', genderSearch);
         }
         else {
-            query = query.or(`name.ilike.%${normalizedSearch}%,email.ilike.%${normalizedSearch}%,candidate_code.ilike.%${normalizedSearch}%,phone.ilike.%${normalizedSearch}%,passport_normalized.ilike.%${normalizedSearch}%,cnic_normalized.ilike.%${normalizedSearch}%,position.ilike.%${normalizedSearch}%,partner_name.ilike.%${normalizedSearch}%,skills.ilike.%${normalizedSearch}%`);
+            query = query.or(`name.ilike.%${normalizedSearch}%,email.ilike.%${normalizedSearch}%,candidate_code.ilike.%${normalizedSearch}%,phone.ilike.%${normalizedSearch}%,passport_normalized.ilike.%${normalizedSearch}%,cnic_normalized.ilike.%${normalizedSearch}%,position.ilike.%${normalizedSearch}%,partner_name.ilike.%${normalizedSearch}%,skills.ilike.%${normalizedSearch}%,nationality.ilike.%${normalizedSearch}%,gender.ilike.%${normalizedSearch}%,country_of_interest.ilike.%${normalizedSearch}%`);
         }
     }
     // Apply status filter
@@ -531,11 +531,11 @@ async function getDailyStats(filters, userId) {
     const db = (0, database_1.supabaseAdminClient)();
     const normalizedSearch = (filters.search || '').trim();
     const normalizedSearchLower = normalizedSearch.toLowerCase();
-    const genderSearch = normalizedSearchLower === 'female'
+    const genderSearch = (normalizedSearchLower === 'female' || normalizedSearchLower === 'females')
         ? 'Female'
-        : normalizedSearchLower === 'male'
+        : (normalizedSearchLower === 'male' || normalizedSearchLower === 'males')
             ? 'Male'
-            : normalizedSearchLower === 'other'
+            : (normalizedSearchLower === 'other' || normalizedSearchLower === 'others')
                 ? 'Other'
                 : null;
     function buildBaseQuery(options) {

@@ -453,11 +453,11 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
   let query = db.from('candidates').select(LIST_FIELDS, { count: 'exact' });
   const normalizedSearch = (filters.search || '').trim();
   const normalizedSearchLower = normalizedSearch.toLowerCase();
-  const genderSearch = normalizedSearchLower === 'female'
+  const genderSearch = (normalizedSearchLower === 'female' || normalizedSearchLower === 'females')
     ? 'Female'
-    : normalizedSearchLower === 'male'
+    : (normalizedSearchLower === 'male' || normalizedSearchLower === 'males')
       ? 'Male'
-      : normalizedSearchLower === 'other'
+      : (normalizedSearchLower === 'other' || normalizedSearchLower === 'others')
         ? 'Other'
         : null;
 
@@ -472,7 +472,7 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
       query = query.eq('gender', genderSearch);
     } else {
       query = query.or(
-        `name.ilike.%${normalizedSearch}%,email.ilike.%${normalizedSearch}%,candidate_code.ilike.%${normalizedSearch}%,phone.ilike.%${normalizedSearch}%,passport_normalized.ilike.%${normalizedSearch}%,cnic_normalized.ilike.%${normalizedSearch}%,position.ilike.%${normalizedSearch}%,partner_name.ilike.%${normalizedSearch}%,skills.ilike.%${normalizedSearch}%`
+        `name.ilike.%${normalizedSearch}%,email.ilike.%${normalizedSearch}%,candidate_code.ilike.%${normalizedSearch}%,phone.ilike.%${normalizedSearch}%,passport_normalized.ilike.%${normalizedSearch}%,cnic_normalized.ilike.%${normalizedSearch}%,position.ilike.%${normalizedSearch}%,partner_name.ilike.%${normalizedSearch}%,skills.ilike.%${normalizedSearch}%,nationality.ilike.%${normalizedSearch}%,gender.ilike.%${normalizedSearch}%,country_of_interest.ilike.%${normalizedSearch}%`
       );
     }
   }
@@ -716,11 +716,11 @@ export async function getDailyStats(filters: DailyStatsFilters, userId: string):
   const db = supabaseAdminClient();
   const normalizedSearch = (filters.search || '').trim();
   const normalizedSearchLower = normalizedSearch.toLowerCase();
-  const genderSearch = normalizedSearchLower === 'female'
+  const genderSearch = (normalizedSearchLower === 'female' || normalizedSearchLower === 'females')
     ? 'Female'
-    : normalizedSearchLower === 'male'
+    : (normalizedSearchLower === 'male' || normalizedSearchLower === 'males')
       ? 'Male'
-      : normalizedSearchLower === 'other'
+      : (normalizedSearchLower === 'other' || normalizedSearchLower === 'others')
         ? 'Other'
         : null;
 

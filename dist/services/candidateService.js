@@ -101,12 +101,13 @@ async function generateCandidateCode() {
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const year = String(now.getFullYear()).slice(-2);
     const prefix = `FL-${month}-${year}-`;
-    for (let attempt = 0; attempt < 10; attempt++) {
+    // Allow up to 20 attempts to handle concurrent inserts gracefully
+    for (let attempt = 0; attempt < 20; attempt++) {
         const { data: existingCandidates } = await db
             .from('candidates')
             .select('candidate_code')
             .like('candidate_code', `${prefix}%`)
-            .limit(5000);
+            .limit(10000);
         let maxSequence = 0;
         for (const row of existingCandidates || []) {
             const code = row?.candidate_code;
@@ -114,7 +115,8 @@ async function generateCandidateCode() {
             if (!match)
                 continue;
             const parsed = Number.parseInt(match[1], 10);
-            if (Number.isFinite(parsed) && parsed > maxSequence) {
+            // Skip any timestamp-based artifacts (valid sequential codes are < 1,000,000)
+            if (Number.isFinite(parsed) && parsed < 1000000 && parsed > maxSequence) {
                 maxSequence = parsed;
             }
         }
@@ -128,7 +130,9 @@ async function generateCandidateCode() {
             return candidateCode;
         }
     }
-    return `${prefix}${Date.now()}`;
+    // Never fall back to a timestamp — throw so the caller surfaces the error
+    // rather than silently producing a malformed candidate code.
+    throw new Error(`Failed to generate a unique candidate code for prefix ${prefix} after 20 attempts`);
 }
 // Check for duplicates based on CNIC or passport
 async function checkForDuplicates(cnic, passport, excludeId) {

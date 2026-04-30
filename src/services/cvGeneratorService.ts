@@ -1382,7 +1382,7 @@ async function buildEmployerPackageViaPython(
   // are already embedded inside the sanitized CV and don't need to be appended again.
   const { data: allDocs } = await db
     .from('candidate_documents')
-    .select('id, category, storage_bucket, storage_path, file_name, mime_type, display_name')
+    .select('id, category, storage_bucket, storage_path, file_name, mime_type')
     .eq('candidate_id', candidateId)
     .neq('category', DOCUMENT_CATEGORIES.CV_RESUME)
     .order('category')

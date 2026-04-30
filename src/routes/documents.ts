@@ -9,6 +9,7 @@ import {
   getCandidateDocumentController,
   listCandidateDocumentsControllerNew,
   getCandidateDocumentDownloadUrlController,
+  getCandidateCvUrlController,
   deleteCandidateDocumentController,
   reprocessCandidateDocumentController,
   overrideCandidateDocumentController,
@@ -244,6 +245,9 @@ router.post('/fix-approved-photos', fixApprovedPhotos);
 
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', listCandidateDocumentsControllerNew);
+
+// Get signed URL for candidate's original CV (checks candidate_documents + inbox_attachments)
+router.get('/candidates/:candidateId/cv-url', asyncHandler(getCandidateCvUrlController));
 
 // Extract photo from PDF profile photo and save as image
 router.post('/candidates/:candidateId/extract-photo', asyncHandler(extractPhotoFromPdfController));

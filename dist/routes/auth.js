@@ -45,8 +45,7 @@ const userService_1 = require("../services/userService");
 const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
 const database_1 = require("../config/database");
 const partnerCandidateService_1 = require("../services/partnerCandidateService");
-const emailService_1 = require("../services/emailService");
-const whatsappService_1 = require("../services/whatsappService");
+const portalAccessService_1 = require("../services/portalAccessService");
 const bulkUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 const router = (0, express_1.Router)();
 const VALID_STATUSES = ['Active', 'Inactive', 'Suspended'];
@@ -114,60 +113,6 @@ async function withSignedProfilePhoto(candidate) {
         }
     }
     return enrichedCandidate;
-}
-/** Normalize a phone number to WhatsApp format: digits only, no leading '+'. */
-function toWhatsAppPhone(phone) {
-    return phone.replace(/\D/g, '');
-}
-/**
- * Send welcome credentials to a newly created (or password-reset) user via
- * email and, if a phone number is present, via WhatsApp.
- */
-async function dispatchWelcomeCredentials(user, password) {
-    const portalUrl = process.env.FRONTEND_URL || 'https://falishajobs.up.railway.app';
-    const displayName = user.name || user.email;
-    const roleLabel = user.role.charAt(0).toUpperCase() + user.role.slice(1);
-    const emailHtml = `
-    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-      <h2 style="color:#1d4ed8">Welcome to Falisha Jobs Portal</h2>
-      <p>Hi <strong>${displayName}</strong>,</p>
-      <p>Your <strong>${roleLabel}</strong> account has been created. Here are your login credentials:</p>
-      <table style="border-collapse:collapse;width:100%;margin:16px 0">
-        <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold;width:120px">Login URL</td><td style="padding:8px"><a href="${portalUrl}">${portalUrl}</a></td></tr>
-        <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Email</td><td style="padding:8px">${user.email}</td></tr>
-        <tr><td style="padding:8px;background:#f3f4f6;font-weight:bold">Password</td><td style="padding:8px"><strong>${password}</strong></td></tr>
-      </table>
-      <p style="color:#6b7280;font-size:13px">Please log in and change your password after your first sign-in.</p>
-      <p>Regards,<br/>Falisha Jobs Team</p>
-    </div>
-  `;
-    try {
-        await emailService_1.emailService.sendEmail({
-            to: user.email,
-            subject: 'Your Falisha Jobs Portal Login Credentials',
-            html: emailHtml,
-            text: `Welcome to Falisha Jobs Portal!\n\nLogin URL: ${portalUrl}\nEmail: ${user.email}\nPassword: ${password}\n\nPlease change your password after first sign-in.`,
-        });
-        console.log(`[Auth] ✅ Credentials email sent to ${user.email}`);
-    }
-    catch (err) {
-        console.error(`[Auth] ⚠️ Failed to send credentials email to ${user.email}:`, err?.message);
-    }
-    if (user.phone) {
-        const waPhone = toWhatsAppPhone(user.phone);
-        const waText = `Welcome to Falisha Jobs Portal! 🎉\n\nHi ${displayName}, your ${roleLabel} account is ready.\n\n🔗 Login: ${portalUrl}\n📧 Email: ${user.email}\n🔑 Password: ${password}\n\nPlease change your password after first login.`;
-        const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-        const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-        if (phoneNumberId && accessToken && waPhone) {
-            try {
-                await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, waPhone, waText);
-                console.log(`[Auth] ✅ Credentials WhatsApp sent to ${waPhone}`);
-            }
-            catch (err) {
-                console.error(`[Auth] ⚠️ Failed to send credentials WhatsApp to ${waPhone}:`, err?.message);
-            }
-        }
-    }
 }
 router.get('/me', auth_1.authenticate, async (req, res) => {
     const user = req.user;
@@ -944,17 +889,21 @@ router.post('/users', auth_1.authenticate, async (req, res) => {
         }
         // Fire-and-forget credential notification for external-facing roles only
         // (admin and worker accounts are internal staff — no auto-send)
+        let credentialDelivery = null;
         if (['candidate', 'partner', 'employer'].includes(normalizedRole)) {
-            dispatchWelcomeCredentials({
+            credentialDelivery = await (0, portalAccessService_1.dispatchPortalAccessLink)({
                 name: createName,
                 email: createEmail,
                 phone: createPhone,
                 role: normalizedRole,
-            }, password).catch((err) => console.error('[Auth] dispatchWelcomeCredentials failed:', err?.message));
+            });
         }
         return res.status(201).json({
-            message: 'User created successfully',
+            message: credentialDelivery?.email?.sent === false
+                ? 'User created successfully, but credentials email was not delivered'
+                : 'User created successfully',
             user: userRecord,
+            credentialDelivery,
         });
     }
     catch (error) {
@@ -976,26 +925,23 @@ router.post('/users/:userId/send-credentials', auth_1.authenticate, async (req, 
         if (!['candidate', 'partner', 'employer'].includes(existingUser.role)) {
             return res.status(400).json({ error: 'Credentials can only be sent for candidate, partner, and employer accounts' });
         }
-        const tempPassword = 'Falisha@' + Math.random().toString(36).slice(2, 8).toUpperCase();
-        const supabase = (0, database_1.supabaseAdminClient)();
-        const { error: resetError } = await supabase.auth.admin.updateUserById(userId, {
-            password: tempPassword,
-        });
-        if (resetError) {
-            return res.status(400).json({ error: resetError.message || 'Failed to reset password' });
-        }
-        await dispatchWelcomeCredentials({
+        const credentialDelivery = await (0, portalAccessService_1.dispatchPortalAccessLink)({
             name: existingUser.name,
             email: existingUser.email,
             phone: existingUser.phone,
             role: existingUser.role,
-        }, tempPassword);
-        return res.json({
-            message: 'Credentials sent successfully',
+        });
+        const responseStatus = credentialDelivery.email.sent || credentialDelivery.whatsapp.sent ? 200 : 502;
+        return res.status(responseStatus).json({
+            message: credentialDelivery.email.sent || credentialDelivery.whatsapp.sent
+                ? 'Credentials delivery attempted'
+                : 'Failed to deliver credentials',
             sentTo: {
                 email: existingUser.email,
-                whatsapp: existingUser.phone ? toWhatsAppPhone(existingUser.phone) : null,
+                whatsapp: existingUser.phone ? existingUser.phone.replace(/\D/g, '') : null,
             },
+            autoLoginUrl: credentialDelivery.autoLoginUrl,
+            credentialDelivery,
         });
     }
     catch (error) {

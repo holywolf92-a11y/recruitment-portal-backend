@@ -1,9 +1,8 @@
-import crypto from 'crypto';
 import { supabaseAdminClient } from '../config/database';
 import { createCandidate, normalizePhoneE164, type CreateCandidateData } from './candidateService';
 import { uploadCandidateDocument } from './candidateDocumentService';
 import { sendText } from './whatsappInteractiveService';
-import { upsertAppUserProfile } from './userService';
+import { dispatchPortalAccessLink, ensurePortalAccount } from './portalAccessService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
 import { whatsappSocialLinksQueue } from '../config/queue';
 import { SOCIAL_LINKS } from '../config/socialLinks';
@@ -57,10 +56,6 @@ function generateTrackingToken(): string {
   const prefix = chars[Math.floor(Math.random() * chars.length)] + chars[Math.floor(Math.random() * chars.length)];
   const numbers = Math.floor(100000 + Math.random() * 900000);
   return `${prefix}${numbers}`;
-}
-
-function generateTemporaryPassword(): string {
-  return `Falisha!${crypto.randomBytes(4).toString('hex')}`;
 }
 
 function buildSocialLinks() {
@@ -125,21 +120,6 @@ function toWhatsAppRecipient(phone?: string | null) {
   return digits || null;
 }
 
-async function findExistingAuthUserByEmail(email?: string | null) {
-  const normalizedEmail = String(email || '').trim().toLowerCase();
-  if (!normalizedEmail) {
-    return null;
-  }
-
-  const supabase = supabaseAdminClient();
-  const { data, error } = await supabase.auth.admin.listUsers();
-  if (error) {
-    throw error;
-  }
-
-  return data.users.find((user) => String(user.email || '').trim().toLowerCase() === normalizedEmail) || null;
-}
-
 async function ensureCandidateOnboardingLink(candidateId: string): Promise<string | null> {
   const db = supabaseAdminClient();
   const { data: candidate, error } = await db
@@ -182,70 +162,6 @@ async function sendWhatsAppLines(phone: string | undefined, lines: string[]) {
   }
 
   return true;
-}
-
-async function ensurePortalAccount(args: {
-  email: string;
-  role: 'partner' | 'employer';
-  name?: string | null;
-  phone?: string | null;
-  companyName?: string | null;
-  partnerApplicationId?: string | null;
-  employerLeadId?: string | null;
-}) {
-  const supabase = supabaseAdminClient();
-  const existingAuthUser = await findExistingAuthUserByEmail(args.email);
-  const password = existingAuthUser ? null : generateTemporaryPassword();
-
-  const authUser = existingAuthUser || (await (async () => {
-    const { data: created, error } = await supabase.auth.admin.createUser({
-      email: args.email,
-      password: password!,
-      email_confirm: true,
-      user_metadata: {
-        name: args.name || args.companyName || null,
-        phone: args.phone || null,
-        role: args.role,
-        company_name: args.companyName || null,
-      },
-    });
-
-    if (error) {
-      throw error;
-    }
-
-    return created.user;
-  })());
-
-  await upsertAppUserProfile({
-    id: authUser.id,
-    email: authUser.email || args.email,
-    role: args.role,
-    name: args.name || args.companyName || null,
-    phone: args.phone || null,
-    status: 'Active',
-  });
-
-  if (args.partnerApplicationId) {
-    await supabase
-      .from('partner_applications')
-      .update({ user_id: authUser.id, updated_at: new Date().toISOString() })
-      .eq('id', args.partnerApplicationId);
-  }
-
-  if (args.employerLeadId) {
-    await supabase
-      .from('employer_leads')
-      .update({ user_id: authUser.id, updated_at: new Date().toISOString() })
-      .eq('id', args.employerLeadId);
-  }
-
-  return {
-    created: !existingAuthUser,
-    password,
-    userId: authUser.id,
-    dashboardUrl: `${FRONTEND_URL}/${args.role}/dashboard`,
-  };
 }
 
 export async function submitCandidatePublicIntake(input: CandidatePublicIntakeInput, cvFile?: Express.Multer.File | null) {
@@ -342,17 +258,13 @@ export async function submitEmployerPublicIntake(input: EmployerPublicIntakeInpu
 
   const socialLinks = buildSocialLinks();
 
-  // Immediate: portal access + credentials
-  const immediateLines = [
-    `✅ *Welcome, ${input.contactName.trim().split(' ')[0]}!* Your Falisha employer portal is ready.`,
-    '',
-    `🔗 *Dashboard:* ${account.dashboardUrl}`,
-    `📧 *Login Email:* ${input.email.trim().toLowerCase()}`,
-    account.password
-      ? `🔑 *Temporary Password:* ${account.password}\n_Please change this after your first login._`
-      : '🔓 Use your existing password to log in.',
-  ];
-  const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
+  const accessDelivery = await dispatchPortalAccessLink({
+    name: input.contactName.trim(),
+    email: input.email.trim().toLowerCase(),
+    phone: input.phone.trim(),
+    role: 'employer',
+    autoLoginUrl: account.autoLoginUrl,
+  });
 
   return {
     leadId: data.id,
@@ -361,7 +273,9 @@ export async function submitEmployerPublicIntake(input: EmployerPublicIntakeInpu
     password: account.password,
     createdNewAccount: account.created,
     socialLinks,
-    whatsappNotified,
+    whatsappNotified: accessDelivery.whatsapp.sent,
+    emailNotified: accessDelivery.email.sent,
+    autoLoginUrl: accessDelivery.autoLoginUrl,
   };
 }
 
@@ -399,17 +313,13 @@ export async function submitPartnerPublicIntake(input: PartnerPublicIntakeInput)
 
   const socialLinks = buildSocialLinks();
 
-  // Immediate: portal access + credentials
-  const immediateLines = [
-    `✅ *Welcome, ${input.applicantName.trim().split(' ')[0]}!* Your Falisha partner portal is ready.`,
-    '',
-    `🔗 *Dashboard:* ${account.dashboardUrl}`,
-    `📧 *Login Email:* ${input.email.trim().toLowerCase()}`,
-    account.password
-      ? `🔑 *Temporary Password:* ${account.password}\n_Please change this after your first login._`
-      : '🔓 Use your existing password to log in.',
-  ];
-  const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
+  const accessDelivery = await dispatchPortalAccessLink({
+    name: input.applicantName.trim(),
+    email: input.email.trim().toLowerCase(),
+    phone: input.phone.trim(),
+    role: 'partner',
+    autoLoginUrl: account.autoLoginUrl,
+  });
 
   return {
     applicationId: data.id,
@@ -418,6 +328,8 @@ export async function submitPartnerPublicIntake(input: PartnerPublicIntakeInput)
     password: account.password,
     createdNewAccount: account.created,
     socialLinks,
-    whatsappNotified,
+    whatsappNotified: accessDelivery.whatsapp.sent,
+    emailNotified: accessDelivery.email.sent,
+    autoLoginUrl: accessDelivery.autoLoginUrl,
   };
 }

@@ -23,9 +23,8 @@ import { getBotState, setBotState, patchBotData, resetBotState, BotState } from 
 import { sendText, sendButtons, sendList, WaButton, WaListSection } from './whatsappInteractiveService';
 import { recordOutboundMessage } from './whatsappInboxService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
-import { upsertAppUserProfile } from './userService';
+import { dispatchPortalAccessLink, ensurePortalAccount } from './portalAccessService';
 import { SOCIAL_LINKS } from '../config/socialLinks';
-import crypto from 'crypto';
 
 const logger = createLogger('WhatsAppBot');
 const MAIN_MENU_DEBOUNCE_MS = 45_000;
@@ -322,10 +321,6 @@ function buildMissingCandidateFieldsMessage(missingLabels: string[], invalidEmai
   lines.push('');
   lines.push('Reply with only the missing items, or resend all 5 details in one message.');
   return lines.join('\n');
-}
-
-function generateTemporaryPassword(): string {
-  return `Falisha!${crypto.randomBytes(4).toString('hex')}`;
 }
 
 async function promptStep(
@@ -673,81 +668,6 @@ async function upsertWhatsAppCandidate(state: BotState, data: Record<string, any
   }
 
   return candidateId;
-}
-
-async function findExistingAuthUserByEmail(email?: string | null) {
-  const normalizedEmail = String(email || '').trim().toLowerCase();
-  if (!normalizedEmail) {
-    return null;
-  }
-
-  const supabase = supabaseAdminClient();
-  const { data, error } = await supabase.auth.admin.listUsers();
-  if (error) {
-    throw error;
-  }
-
-  return data.users.find((user) => String(user.email || '').trim().toLowerCase() === normalizedEmail) || null;
-}
-
-async function ensurePartnerPortalAccount(data: Record<string, any>, partnerApplicationId?: string | null) {
-  const email = String(data.email || '').trim().toLowerCase();
-  if (!email) {
-    return { created: false, userId: null, password: null, dashboardUrl: `${FRONTEND_URL}/partner/dashboard` };
-  }
-
-  const supabase = supabaseAdminClient();
-  const existingAuthUser = await findExistingAuthUserByEmail(email);
-  const password = existingAuthUser ? null : generateTemporaryPassword();
-
-  const authUser = existingAuthUser || (await (async () => {
-    const { data: created, error } = await supabase.auth.admin.createUser({
-      email,
-      password: password!,
-      email_confirm: true,
-      user_metadata: {
-        name: data.name || null,
-        phone: data.contact || null,
-        role: 'partner',
-      },
-    });
-    if (error) {
-      throw error;
-    }
-    return created.user;
-  })());
-
-  await upsertAppUserProfile({
-    id: authUser.id,
-    email: authUser.email || email,
-    role: 'partner',
-    name: data.name || null,
-    phone: data.contact || null,
-    status: 'Active',
-  });
-
-  if (partnerApplicationId) {
-    const { error: linkError } = await supabase
-      .from('partner_applications')
-      .update({ user_id: authUser.id, updated_at: new Date().toISOString() })
-      .eq('id', partnerApplicationId)
-      .is('user_id', null);
-
-    if (linkError) {
-      logger.warn('Failed to link partner application to auth user (non-fatal)', {
-        partnerApplicationId,
-        userId: authUser.id,
-        error: linkError.message,
-      });
-    }
-  }
-
-  return {
-    created: !existingAuthUser,
-    userId: authUser.id,
-    password,
-    dashboardUrl: `${FRONTEND_URL}/partner/dashboard`,
-  };
 }
 
 async function saveFormSubmission(args: {
@@ -1164,7 +1084,14 @@ async function finalizePartnerFlow(
   data: Record<string, any>,
 ): Promise<void> {
   const partnerApplicationId = await savePartnerApplication(state.phoneNumber, state.conversationId, data);
-  const partnerAccount = await ensurePartnerPortalAccount(data, partnerApplicationId);
+  const partnerAccount = await ensurePortalAccount({
+    email: String(data.email || '').trim().toLowerCase(),
+    role: 'partner',
+    name: data.name || null,
+    phone: data.contact || null,
+    companyName: data.name || null,
+    partnerApplicationId,
+  });
   await saveFormSubmission({
     phoneNumber: state.phoneNumber,
     conversationId: state.conversationId,
@@ -1188,33 +1115,15 @@ async function finalizePartnerFlow(
       `District: ${data.district}`,
       `CNIC: ${data.cnic}`,
       `CNIC Upload: ${data.cnic_picture_received ? 'Received' : 'Pending'}`,
-      '',
-      `Partner Dashboard: ${partnerAccount.dashboardUrl}`,
-      ...(partnerAccount.password
-        ? [
-            `Login Email: ${data.email}`,
-            `Temporary Password: ${partnerAccount.password}`,
-          ]
-        : [
-            `Login Email: ${data.email}`,
-            'An existing partner account was found, so your previous login remains active.',
-          ]),
     ].join('\n'),
   );
-  await tx(
-    phoneNumberId,
-    accessToken,
-    state.phoneNumber,
-    state.conversationId,
-    [
-      'Your partner/agent account is ready.',
-      `Dashboard: ${partnerAccount.dashboardUrl}`,
-      `Email: ${data.email}`,
-      ...(partnerAccount.password ? [`Temporary Password: ${partnerAccount.password}`] : ['Use your existing password to log in.']),
-      '',
-      'After login you can access the partner dashboard and submit candidates.',
-    ].join('\n'),
-  );
+  await dispatchPortalAccessLink({
+    name: data.name || null,
+    email: String(data.email || '').trim().toLowerCase(),
+    phone: state.phoneNumber,
+    role: 'partner',
+    autoLoginUrl: partnerAccount.autoLoginUrl,
+  });
   // Schedule social links 15 minutes after partner submission
   try {
     await whatsappSocialLinksQueue.add(

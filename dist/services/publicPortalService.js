@@ -1,17 +1,13 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.submitCandidatePublicIntake = submitCandidatePublicIntake;
 exports.submitEmployerPublicIntake = submitEmployerPublicIntake;
 exports.submitPartnerPublicIntake = submitPartnerPublicIntake;
-const crypto_1 = __importDefault(require("crypto"));
 const database_1 = require("../config/database");
 const candidateService_1 = require("./candidateService");
 const candidateDocumentService_1 = require("./candidateDocumentService");
 const whatsappInteractiveService_1 = require("./whatsappInteractiveService");
-const userService_1 = require("./userService");
+const portalAccessService_1 = require("./portalAccessService");
 const publicUrl_1 = require("../utils/publicUrl");
 const queue_1 = require("../config/queue");
 const socialLinks_1 = require("../config/socialLinks");
@@ -21,9 +17,6 @@ function generateTrackingToken() {
     const prefix = chars[Math.floor(Math.random() * chars.length)] + chars[Math.floor(Math.random() * chars.length)];
     const numbers = Math.floor(100000 + Math.random() * 900000);
     return `${prefix}${numbers}`;
-}
-function generateTemporaryPassword() {
-    return `Falisha!${crypto_1.default.randomBytes(4).toString('hex')}`;
 }
 function buildSocialLinks() {
     return {
@@ -78,18 +71,6 @@ function toWhatsAppRecipient(phone) {
     const digits = normalized.replace(/\D/g, '');
     return digits || null;
 }
-async function findExistingAuthUserByEmail(email) {
-    const normalizedEmail = String(email || '').trim().toLowerCase();
-    if (!normalizedEmail) {
-        return null;
-    }
-    const supabase = (0, database_1.supabaseAdminClient)();
-    const { data, error } = await supabase.auth.admin.listUsers();
-    if (error) {
-        throw error;
-    }
-    return data.users.find((user) => String(user.email || '').trim().toLowerCase() === normalizedEmail) || null;
-}
 async function ensureCandidateOnboardingLink(candidateId) {
     const db = (0, database_1.supabaseAdminClient)();
     const { data: candidate, error } = await db
@@ -124,54 +105,6 @@ async function sendWhatsAppLines(phone, lines) {
         await (0, whatsappInteractiveService_1.sendText)(phoneNumberId, accessToken, recipient, line);
     }
     return true;
-}
-async function ensurePortalAccount(args) {
-    const supabase = (0, database_1.supabaseAdminClient)();
-    const existingAuthUser = await findExistingAuthUserByEmail(args.email);
-    const password = existingAuthUser ? null : generateTemporaryPassword();
-    const authUser = existingAuthUser || (await (async () => {
-        const { data: created, error } = await supabase.auth.admin.createUser({
-            email: args.email,
-            password: password,
-            email_confirm: true,
-            user_metadata: {
-                name: args.name || args.companyName || null,
-                phone: args.phone || null,
-                role: args.role,
-                company_name: args.companyName || null,
-            },
-        });
-        if (error) {
-            throw error;
-        }
-        return created.user;
-    })());
-    await (0, userService_1.upsertAppUserProfile)({
-        id: authUser.id,
-        email: authUser.email || args.email,
-        role: args.role,
-        name: args.name || args.companyName || null,
-        phone: args.phone || null,
-        status: 'Active',
-    });
-    if (args.partnerApplicationId) {
-        await supabase
-            .from('partner_applications')
-            .update({ user_id: authUser.id, updated_at: new Date().toISOString() })
-            .eq('id', args.partnerApplicationId);
-    }
-    if (args.employerLeadId) {
-        await supabase
-            .from('employer_leads')
-            .update({ user_id: authUser.id, updated_at: new Date().toISOString() })
-            .eq('id', args.employerLeadId);
-    }
-    return {
-        created: !existingAuthUser,
-        password,
-        userId: authUser.id,
-        dashboardUrl: `${FRONTEND_URL}/${args.role}/dashboard`,
-    };
 }
 async function submitCandidatePublicIntake(input, cvFile) {
     const additionalInfo = buildCandidateAdditionalInfo(input);
@@ -247,7 +180,7 @@ async function submitEmployerPublicIntake(input) {
     if (error) {
         throw error;
     }
-    const account = await ensurePortalAccount({
+    const account = await (0, portalAccessService_1.ensurePortalAccount)({
         email: input.email.trim().toLowerCase(),
         role: 'employer',
         name: input.contactName.trim(),
@@ -256,17 +189,13 @@ async function submitEmployerPublicIntake(input) {
         employerLeadId: data.id,
     });
     const socialLinks = buildSocialLinks();
-    // Immediate: portal access + credentials
-    const immediateLines = [
-        `✅ *Welcome, ${input.contactName.trim().split(' ')[0]}!* Your Falisha employer portal is ready.`,
-        '',
-        `🔗 *Dashboard:* ${account.dashboardUrl}`,
-        `📧 *Login Email:* ${input.email.trim().toLowerCase()}`,
-        account.password
-            ? `🔑 *Temporary Password:* ${account.password}\n_Please change this after your first login._`
-            : '🔓 Use your existing password to log in.',
-    ];
-    const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
+    const accessDelivery = await (0, portalAccessService_1.dispatchPortalAccessLink)({
+        name: input.contactName.trim(),
+        email: input.email.trim().toLowerCase(),
+        phone: input.phone.trim(),
+        role: 'employer',
+        autoLoginUrl: account.autoLoginUrl,
+    });
     return {
         leadId: data.id,
         dashboardUrl: account.dashboardUrl,
@@ -274,7 +203,9 @@ async function submitEmployerPublicIntake(input) {
         password: account.password,
         createdNewAccount: account.created,
         socialLinks,
-        whatsappNotified,
+        whatsappNotified: accessDelivery.whatsapp.sent,
+        emailNotified: accessDelivery.email.sent,
+        autoLoginUrl: accessDelivery.autoLoginUrl,
     };
 }
 async function submitPartnerPublicIntake(input) {
@@ -298,7 +229,7 @@ async function submitPartnerPublicIntake(input) {
     if (error) {
         throw error;
     }
-    const account = await ensurePortalAccount({
+    const account = await (0, portalAccessService_1.ensurePortalAccount)({
         email: input.email.trim().toLowerCase(),
         role: 'partner',
         name: input.applicantName.trim(),
@@ -307,17 +238,13 @@ async function submitPartnerPublicIntake(input) {
         partnerApplicationId: data.id,
     });
     const socialLinks = buildSocialLinks();
-    // Immediate: portal access + credentials
-    const immediateLines = [
-        `✅ *Welcome, ${input.applicantName.trim().split(' ')[0]}!* Your Falisha partner portal is ready.`,
-        '',
-        `🔗 *Dashboard:* ${account.dashboardUrl}`,
-        `📧 *Login Email:* ${input.email.trim().toLowerCase()}`,
-        account.password
-            ? `🔑 *Temporary Password:* ${account.password}\n_Please change this after your first login._`
-            : '🔓 Use your existing password to log in.',
-    ];
-    const whatsappNotified = await sendWhatsAppLines(input.phone, immediateLines).catch(() => false);
+    const accessDelivery = await (0, portalAccessService_1.dispatchPortalAccessLink)({
+        name: input.applicantName.trim(),
+        email: input.email.trim().toLowerCase(),
+        phone: input.phone.trim(),
+        role: 'partner',
+        autoLoginUrl: account.autoLoginUrl,
+    });
     return {
         applicationId: data.id,
         dashboardUrl: account.dashboardUrl,
@@ -325,6 +252,8 @@ async function submitPartnerPublicIntake(input) {
         password: account.password,
         createdNewAccount: account.created,
         socialLinks,
-        whatsappNotified,
+        whatsappNotified: accessDelivery.whatsapp.sent,
+        emailNotified: accessDelivery.email.sent,
+        autoLoginUrl: accessDelivery.autoLoginUrl,
     };
 }

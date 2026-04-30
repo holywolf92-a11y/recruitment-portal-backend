@@ -8,6 +8,7 @@ import { listCandidateDocumentsByCandidate } from './candidateDocumentService';
 import crypto from 'crypto';
 import { getTemplateVersion } from '../config/cvTemplateConfig';
 import { DOCUMENT_CATEGORIES } from '../config/documentCategories';
+import { fetchParser, getPreferredParserBaseUrl } from '../utils/parserService';
 
 const STORAGE_BUCKET = 'documents';
 
@@ -1184,6 +1185,133 @@ async function saveCVMetadata(
 }
 
 /**
+ * Fetch the candidate's original uploaded CV from Supabase Storage and call the
+ * Python parser /sanitize-cv endpoint to produce a redacted, employer-safe PDF.
+ *
+ * Returns the sanitized PDF as a Buffer, or null if no original CV was found
+ * or if the sanitization request failed (caller should fall back to HTML generation).
+ */
+async function sanitizeOriginalCvViaPython(candidateId: string): Promise<Buffer | null> {
+  const db = supabaseAdminClient();
+
+  // 1. Find the original CV document (prefer candidate_documents, fall back to inbox_attachments)
+  let storageBucket: string | null = null;
+  let storagePath: string | null = null;
+  let fileName = 'cv.pdf';
+  let mimeType = 'application/pdf';
+
+  const { data: cvDocs } = await db
+    .from('candidate_documents')
+    .select('storage_bucket, storage_path, file_name, mime_type')
+    .eq('candidate_id', candidateId)
+    .eq('category', DOCUMENT_CATEGORIES.CV_RESUME)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (cvDocs && cvDocs.length > 0) {
+    const doc = cvDocs[0] as any;
+    storageBucket = doc.storage_bucket || 'documents';
+    storagePath = doc.storage_path;
+    fileName = doc.file_name || 'cv.pdf';
+    mimeType = doc.mime_type || 'application/pdf';
+  }
+
+  if (!storagePath) {
+    // Try inbox_attachments as fallback
+    const { data: inboxDocs } = await db
+      .from('inbox_attachments')
+      .select('storage_bucket, storage_path, file_name, mime_type')
+      .or(`candidate_id.eq.${candidateId},linked_candidate_id.eq.${candidateId}`)
+      .or('attachment_kind.ilike.cv,document_type.ilike.cv,mime_type.eq.application/pdf')
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (inboxDocs && inboxDocs.length > 0) {
+      const doc = inboxDocs[0] as any;
+      storageBucket = doc.storage_bucket || 'documents';
+      storagePath = doc.storage_path;
+      fileName = doc.file_name || 'cv.pdf';
+      mimeType = doc.mime_type || 'application/pdf';
+    }
+  }
+
+  if (!storagePath) {
+    console.log(`[CVGenerator] No original CV found for candidate ${candidateId}, will use HTML fallback`);
+    return null;
+  }
+
+  // 2. Download the original PDF bytes from storage
+  const { data: fileData, error: downloadError } = await db.storage
+    .from(storageBucket || 'documents')
+    .download(storagePath);
+
+  if (downloadError || !fileData) {
+    console.warn(`[CVGenerator] Failed to download original CV from ${storagePath}: ${downloadError?.message}`);
+    return null;
+  }
+
+  const arrayBuffer = await (fileData as Blob).arrayBuffer();
+  const fileBytes = Buffer.from(arrayBuffer);
+
+  // 3. Call Python /sanitize-cv
+  const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
+  if (!HMAC_SECRET) {
+    console.warn('[CVGenerator] PYTHON_HMAC_SECRET not set, cannot call sanitize-cv');
+    return null;
+  }
+
+  const payload = JSON.stringify({
+    file_content: fileBytes.toString('base64'),
+    file_name: fileName,
+    mime_type: mimeType,
+    candidate_id: candidateId,
+  });
+
+  const hmacSig = crypto.createHmac('sha256', HMAC_SECRET).update(payload).digest('hex');
+
+  let response: Response;
+  try {
+    response = await fetchParser('/sanitize-cv', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-hmac-signature': hmacSig,
+      },
+      body: payload,
+    });
+  } catch (fetchErr: any) {
+    console.warn(`[CVGenerator] /sanitize-cv request failed: ${fetchErr.message}`);
+    return null;
+  }
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    console.warn(`[CVGenerator] /sanitize-cv returned HTTP ${response.status}: ${errBody.slice(0, 200)}`);
+    return null;
+  }
+
+  let result: any;
+  try {
+    result = await response.json();
+  } catch {
+    console.warn('[CVGenerator] /sanitize-cv response was not valid JSON');
+    return null;
+  }
+
+  if (!result?.success || !result?.sanitized_content) {
+    console.warn(`[CVGenerator] /sanitize-cv returned failure: ${result?.error || 'no sanitized_content'}`);
+    return null;
+  }
+
+  console.log(
+    `[CVGenerator] /sanitize-cv success: method=${result.method} status=${result.status} ` +
+    `redacted=${result.redacted_count} confidence=${result.confidence_score}`
+  );
+
+  return Buffer.from(result.sanitized_content, 'base64');
+}
+
+/**
  * Generate a single CV for a candidate
  */
 export async function generateCV(options: CVGenerationOptions): Promise<CVGenerationResponse> {
@@ -1232,22 +1360,33 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
       console.log(`[CVGenerator] Profile photo signed URL generated`);
     }
 
-    // 5. Generate HTML based on format
-    console.log(`[CVGenerator] Step 5/9: Generating HTML template...`);
-    let html: string;
-    if (options.format === 'employer-safe') {
-      const parsedCv = await fetchLatestParsedCVFromParsingJobs(documents);
-      html = generateEmployerSafeCVHTML(candidate, documents, parsedCv);
-    } else {
-      // For internal/standard format, include contact info (to be implemented)
-      html = generateEmployerSafeCVHTML(candidate, documents); // Placeholder
-    }
-    console.log(`[CVGenerator] HTML generated, length: ${html.length} chars`);
+    // 5. For employer-safe: try to sanitize the original uploaded CV first
+    console.log(`[CVGenerator] Step 5/9: Generating PDF...`);
+    let pdfBuffer: Buffer;
+    let fileSize: number;
 
-    // 6. Generate PDF
-    console.log(`[CVGenerator] Step 6/9: Generating PDF from HTML...`);
-    const pdfBuffer = await generatePDFFromHTML(html);
-    const fileSize = pdfBuffer.length;
+    if (options.format === 'employer-safe') {
+      const sanitized = await sanitizeOriginalCvViaPython(options.candidateId);
+      if (sanitized) {
+        console.log(`[CVGenerator] Sanitized original CV via Python (${sanitized.length} bytes)`);
+        pdfBuffer = sanitized;
+        fileSize = sanitized.length;
+      } else {
+        // Fallback: generate HTML-based CV (original behaviour)
+        console.log(`[CVGenerator] No original CV found or sanitization failed — falling back to HTML generation`);
+        const parsedCv = await fetchLatestParsedCVFromParsingJobs(documents);
+        const html = generateEmployerSafeCVHTML(candidate, documents, parsedCv);
+        console.log(`[CVGenerator] HTML generated, length: ${html.length} chars`);
+        pdfBuffer = await generatePDFFromHTML(html);
+        fileSize = pdfBuffer.length;
+      }
+    } else {
+      // internal / standard: generate from HTML template
+      const html = generateEmployerSafeCVHTML(candidate, documents);
+      console.log(`[CVGenerator] HTML generated, length: ${html.length} chars`);
+      pdfBuffer = await generatePDFFromHTML(html);
+      fileSize = pdfBuffer.length;
+    }
     console.log(`[CVGenerator] PDF generated, size: ${fileSize} bytes`);
 
     // 7. Upload to storage

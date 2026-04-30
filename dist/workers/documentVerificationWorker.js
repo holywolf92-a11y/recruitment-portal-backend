@@ -48,7 +48,8 @@ const candidateMatcher_1 = require("../services/candidateMatcher");
 const documentCategories_1 = require("../config/documentCategories");
 const documentRejectionService_1 = require("../services/documentRejectionService");
 const professionInferenceService_1 = require("../services/professionInferenceService");
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
+const parserService_1 = require("../utils/parserService");
+const PY_URL = (0, parserService_1.getPreferredParserBaseUrl)();
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 if (!HMAC_SECRET && process.env.NODE_ENV === 'production') {
     throw new Error('PYTHON_HMAC_SECRET environment variable is required for document verification worker in production');
@@ -374,7 +375,7 @@ async function callAICategorizationService(fileContent, fileName, mimeType) {
             console.error(`[AI Categorization] ERROR: JSON.stringify corrupted base64! Original length: ${fileContent.length}, Parsed length: ${parsed.file_content.length}`);
         }
         const signature = signHmac(requestBody);
-        const response = await fetch(`${PY_URL}/categorize-document`, {
+        const response = await (0, parserService_1.fetchParser)('/categorize-document', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

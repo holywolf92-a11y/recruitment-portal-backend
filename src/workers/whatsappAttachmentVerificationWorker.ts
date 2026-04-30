@@ -7,10 +7,10 @@ import { CandidateMatcher } from '../services/candidateMatcher';
 import { createCandidate } from '../services/candidateService';
 import { DocumentClassifier, DocumentType } from '../services/documentClassifier';
 import { documentVerificationQueue } from '../config/queue';
+import { fetchParser } from '../utils/parserService';
 
 const logger = createLogger('WhatsAppAttachmentVerificationWorker');
 
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 
 export interface WhatsAppAttachmentVerificationJobData {
@@ -57,7 +57,7 @@ async function callAICategorizationService(
 
   const signature = signHmac(requestBody);
 
-  const res = await fetch(`${PY_URL.replace(/\/$/, '')}/categorize-document`, {
+  const res = await fetchParser('/categorize-document', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

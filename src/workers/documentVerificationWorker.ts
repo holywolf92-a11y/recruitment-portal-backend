@@ -18,8 +18,9 @@ import {
 } from '../config/documentCategories';
 import { DocumentRejectionService, RejectionContext } from '../services/documentRejectionService';
 import { inferProfessionFromExperienceCertificate } from '../services/professionInferenceService';
+import { fetchParser, getPreferredParserBaseUrl } from '../utils/parserService';
 
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
+const PY_URL = getPreferredParserBaseUrl();
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 
 if (!HMAC_SECRET && process.env.NODE_ENV === 'production') {
@@ -439,7 +440,7 @@ async function callAICategorizationService(
 
     const signature = signHmac(requestBody);
 
-    const response = await fetch(`${PY_URL}/categorize-document`, {
+    const response = await fetchParser('/categorize-document', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

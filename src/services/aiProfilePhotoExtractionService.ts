@@ -9,9 +9,9 @@ import os from 'os';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import crypto from 'crypto';
+import { fetchParser } from '../utils/parserService';
 
 const logger = createLogger('AIProfilePhotoExtraction');
-const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
 
 function isPdfDoc(d: any): boolean {
@@ -198,11 +198,6 @@ async function uploadExtractedPhoto(args: { candidateId: string; jpeg: Buffer })
 
 async function extractPhotoWithPythonParser(pdfBuffer: Buffer, attachmentId: string): Promise<Buffer | null> {
   try {
-    if (!PARSER_URL) {
-      logger.warn('PARSER_URL not configured, skipping Python parser fallback');
-      return null;
-    }
-
     const payload = {
       file_content: pdfBuffer.toString('base64'),
       file_name: 'profile_photo_fallback.pdf',
@@ -212,7 +207,7 @@ async function extractPhotoWithPythonParser(pdfBuffer: Buffer, attachmentId: str
 
     const body = Buffer.from(JSON.stringify(payload), 'utf8');
     const signature = crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
-    const res = await fetch(`${PARSER_URL.replace(/\/$/, '')}/extract-photo`, {
+    const res = await fetchParser('/extract-photo', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

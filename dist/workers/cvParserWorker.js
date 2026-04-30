@@ -59,7 +59,8 @@ const professionInferenceService_1 = require("../services/professionInferenceSer
 const emailService_1 = require("../services/emailService");
 const singleCvHeuristics_1 = require("../utils/singleCvHeuristics");
 const profilePhotoStorage_1 = require("../utils/profilePhotoStorage");
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
+const parserService_1 = require("../utils/parserService");
+const PY_URL = (0, parserService_1.getPreferredParserBaseUrl)();
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
 const STORAGE_BUCKET = 'documents';
 function normalizeEmailLower(value) {
@@ -1285,7 +1286,7 @@ function startCvParserWorker() {
             // Prefer the URL-based parser route when it exists, but fall back to the
             // base64 endpoint for deployments that only expose /parse.
             let parsed;
-            const res = await fetch(`${PY_URL}/parse-cv`, {
+            const res = await (0, parserService_1.fetchParser)('/parse-cv', {
                 method: 'POST',
                 headers: {
                     'content-type': 'application/json',
@@ -1310,7 +1311,7 @@ function startCvParserWorker() {
                     file_name: fileName,
                     mime_type: mimeType,
                 });
-                const fallbackRes = await fetch(`${PY_URL}/parse`, {
+                const fallbackRes = await (0, parserService_1.fetchParser)('/parse', {
                     method: 'POST',
                     headers: {
                         'content-type': 'application/json',

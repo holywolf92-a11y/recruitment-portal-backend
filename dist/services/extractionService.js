@@ -4,6 +4,7 @@ exports.extractCandidateData = extractCandidateData;
 exports.updateExtraction = updateExtraction;
 exports.getExtractionHistory = getExtractionHistory;
 const database_1 = require("../config/database");
+const parserService_1 = require("../utils/parserService");
 /**
  * Extract candidate data from CV using Python parser
  */
@@ -58,7 +59,6 @@ async function extractCandidateData(candidateId, cvUrl, userId) {
  */
 async function callPythonParser(cvUrl) {
     try {
-        const PY_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app';
         const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
         const crypto = require('crypto');
         const sign = (body) => crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
@@ -87,7 +87,7 @@ async function callPythonParser(cvUrl) {
         const payload = JSON.stringify({ file_url: extractUrl });
         // Call Python parser service via HTTP.
         // Fall back to /parse for deployments that do not expose /parse-cv.
-        const response = await fetch(`${PY_URL}/parse-cv`, {
+        const response = await (0, parserService_1.fetchParser)('/parse-cv', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -126,7 +126,7 @@ async function callPythonParser(cvUrl) {
                 file_name: fileName,
                 mime_type: mimeType,
             });
-            const fallbackResponse = await fetch(`${PY_URL}/parse`, {
+            const fallbackResponse = await (0, parserService_1.fetchParser)('/parse', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

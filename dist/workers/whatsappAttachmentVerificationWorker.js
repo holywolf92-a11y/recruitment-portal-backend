@@ -46,8 +46,8 @@ const candidateMatcher_1 = require("../services/candidateMatcher");
 const candidateService_1 = require("../services/candidateService");
 const documentClassifier_1 = require("../services/documentClassifier");
 const queue_1 = require("../config/queue");
+const parserService_1 = require("../utils/parserService");
 const logger = (0, errorHandling_1.createLogger)('WhatsAppAttachmentVerificationWorker');
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app');
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || 'dev-hmac-secret';
 function signHmac(body) {
     return crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
@@ -60,7 +60,7 @@ async function callAICategorizationService(fileContentBase64, fileName, mimeType
         operation: 'categorize_document',
     });
     const signature = signHmac(requestBody);
-    const res = await fetch(`${PY_URL.replace(/\/$/, '')}/categorize-document`, {
+    const res = await (0, parserService_1.fetchParser)('/categorize-document', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',

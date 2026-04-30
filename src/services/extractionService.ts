@@ -1,4 +1,5 @@
 import { supabaseAdminClient } from '../config/database';
+import { fetchParser } from '../utils/parserService';
 
 interface ExtractionData {
   nationality?: string;
@@ -83,7 +84,6 @@ export async function extractCandidateData(
  */
 async function callPythonParser(cvUrl: string): Promise<{ success: boolean; data?: ExtractionData; error?: string }> {
   try {
-    const PY_URL = process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app';
     const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
     const crypto = require('crypto');
     const sign = (body: string) =>
@@ -118,7 +118,7 @@ async function callPythonParser(cvUrl: string): Promise<{ success: boolean; data
 
     // Call Python parser service via HTTP.
     // Fall back to /parse for deployments that do not expose /parse-cv.
-    const response = await fetch(`${PY_URL}/parse-cv`, {
+    const response = await fetchParser('/parse-cv', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -162,7 +162,7 @@ async function callPythonParser(cvUrl: string): Promise<{ success: boolean; data
         mime_type: mimeType,
       });
 
-      const fallbackResponse = await fetch(`${PY_URL}/parse`, {
+      const fallbackResponse = await fetchParser('/parse', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

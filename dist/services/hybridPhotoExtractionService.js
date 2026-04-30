@@ -17,9 +17,9 @@ const database_1 = require("../config/database");
 const crypto_1 = __importDefault(require("crypto"));
 const errorHandling_1 = require("../utils/errorHandling");
 const aiProfilePhotoExtractionService_1 = require("./aiProfilePhotoExtractionService");
+const parserService_1 = require("../utils/parserService");
 const logger = (0, errorHandling_1.createLogger)('HybridPhotoExtraction');
 // Deployment test marker - 2026-02-05
-const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
 const STORAGE_BUCKET = 'documents';
 const DISABLE_AI_PHOTO_EXTRACTION = process.env.DISABLE_AI_PHOTO_EXTRACTION === 'true';
@@ -31,10 +31,6 @@ const DISABLE_AI_PHOTO_EXTRACTION = process.env.DISABLE_AI_PHOTO_EXTRACTION === 
  */
 async function extractPhotoPythonParser(pdfBuffer, attachmentId) {
     try {
-        if (!PARSER_URL) {
-            logger.warn('PARSER_URL not configured, skipping Python parser extraction');
-            return null;
-        }
         const fileContentBase64 = pdfBuffer.toString('base64');
         const payload = {
             file_content: fileContentBase64,
@@ -44,8 +40,7 @@ async function extractPhotoPythonParser(pdfBuffer, attachmentId) {
         };
         const body = Buffer.from(JSON.stringify(payload), 'utf8');
         const sig = crypto_1.default.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
-        const baseUrl = PARSER_URL.replace(/\/$/, '');
-        const res = await fetch(`${baseUrl}/extract-photo`, {
+        const res = await (0, parserService_1.fetchParser)('/extract-photo', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

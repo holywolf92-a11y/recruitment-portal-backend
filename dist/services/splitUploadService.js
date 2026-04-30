@@ -29,9 +29,9 @@ const progressiveDataCompletionService_1 = require("./progressiveDataCompletionS
 const hybridPhotoExtractionService_1 = require("./hybridPhotoExtractionService");
 const candidateMatcher_1 = require("./candidateMatcher");
 const emailService_1 = require("./emailService");
+const parserService_1 = require("../utils/parserService");
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
-const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
 /**
  * Mandatory doc_type -> storage folder mapping.
@@ -137,7 +137,7 @@ async function callSplitAndCategorize(fileContentBase64, fileName, mimeType, can
     };
     const body = Buffer.from(JSON.stringify(payload), 'utf8');
     const sig = hmacSignature(body);
-    const res = await fetch(`${PARSER_URL.replace(/\/$/, '')}/split-and-categorize`, {
+    const res = await (0, parserService_1.fetchParser)('/split-and-categorize', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',

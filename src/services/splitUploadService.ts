@@ -18,11 +18,11 @@ import { isGovernmentEmail } from './progressiveDataCompletionService';
 import { extractProfilePhotoHybrid, uploadExtractedPhotoToCandidatePhotos } from './hybridPhotoExtractionService';
 import { CandidateMatcher } from './candidateMatcher';
 import { emailService } from './emailService';
+import { fetchParser } from '../utils/parserService';
 
 const STORAGE_BUCKET = 'documents';
 const ORIGINAL_PREFIX = 'original_uploads';
 
-const PARSER_URL = process.env.PYTHON_CV_PARSER_URL || process.env.PARSER_URL || 'http://127.0.0.1:8000';
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET || '';
 
 /**
@@ -172,7 +172,7 @@ export async function callSplitAndCategorize(
   const body = Buffer.from(JSON.stringify(payload), 'utf8');
   const sig = hmacSignature(body);
 
-  const res = await fetch(`${PARSER_URL.replace(/\/$/, '')}/split-and-categorize`, {
+  const res = await fetchParser('/split-and-categorize', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

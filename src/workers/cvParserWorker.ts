@@ -20,8 +20,9 @@ import { inferProfessionFromCvData } from '../services/professionInferenceServic
 import { emailService } from '../services/emailService';
 import { shouldSkipSplitAndCategorizeForSingleCvUpload } from '../utils/singleCvHeuristics';
 import { deriveProfilePhotoStorageRef } from '../utils/profilePhotoStorage';
+import { fetchParser, getPreferredParserBaseUrl } from '../utils/parserService';
 
-const PY_URL = (process.env.PYTHON_CV_PARSER_URL || 'https://recruitment-python-parser-production.up.railway.app') as string;
+const PY_URL = getPreferredParserBaseUrl();
 const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET as string;
 const STORAGE_BUCKET = 'documents';
 
@@ -1448,7 +1449,7 @@ export function startCvParserWorker() {
         // Prefer the URL-based parser route when it exists, but fall back to the
         // base64 endpoint for deployments that only expose /parse.
         let parsed: any;
-        const res = await fetch(`${PY_URL}/parse-cv`, {
+        const res = await fetchParser('/parse-cv', {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -1476,7 +1477,7 @@ export function startCvParserWorker() {
             mime_type: mimeType,
           });
 
-          const fallbackRes = await fetch(`${PY_URL}/parse`, {
+          const fallbackRes = await fetchParser('/parse', {
             method: 'POST',
             headers: {
               'content-type': 'application/json',

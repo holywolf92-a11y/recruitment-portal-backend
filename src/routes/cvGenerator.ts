@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 // import { authenticate } from '../middleware/auth';
 import {
   downloadCVController,
+  forwardCVByEmailController,
   generateBulkCVsController,
   generateSingleCVController,
   getCVStatusController,
@@ -64,5 +65,9 @@ router.get('/:candidateId/status', getCVStatusController);
 // Generate bulk CVs
 // POST /api/cv-generator/bulk
 router.post('/bulk', generateBulkCVsController);
+
+// Forward CV by email
+// POST /api/cv-generator/:candidateId/forward-email
+router.post('/:candidateId/forward-email', forwardCVByEmailController);
 
 export default router;

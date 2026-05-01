@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { generateBulkCVs, generateSingleCV, generateCV, BulkCVRequest, CVGenerationOptions } from '../services/cvGeneratorService';
 import { asyncHandler } from '../utils/errorHandling';
+import { emailService } from '../services/emailService';
 
 /**
  * Generate a single CV for a candidate
@@ -141,4 +142,65 @@ export const getCVStatusController = asyncHandler(async (req: Request, res: Resp
     file_size: cached.file_size,
     access_count: cached.access_count,
   });
+});
+
+/**
+ * Forward a candidate's employer-safe CV to any email address
+ * POST /api/cv-generator/:candidateId/forward-email
+ * Body: { to: string, subject?: string, body?: string }
+ */
+export const forwardCVByEmailController = asyncHandler(async (req: Request, res: Response) => {
+  const userId = (req as any).user?.id || 'system';
+  const { candidateId } = req.params;
+  const { to, subject, body } = req.body as { to?: string; subject?: string; body?: string };
+
+  if (!candidateId) {
+    return res.status(400).json({ error: 'Candidate ID is required' });
+  }
+
+  if (!to || typeof to !== 'string' || !to.includes('@')) {
+    return res.status(400).json({ error: 'A valid recipient email address is required' });
+  }
+
+  // Generate (or retrieve cached) employer-safe CV
+  const cvResult = await generateCV({
+    candidateId,
+    format: 'employer-safe',
+    forceRegenerate: false,
+    userId,
+  });
+
+  const cvUrl = cvResult.cv_url;
+
+  const emailSubject = (subject || `CV: Candidate`).trim();
+  const emailBodyText = (body || '').trim();
+
+  const htmlBody = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#222">
+      ${emailBodyText
+        .split('\n')
+        .map(line => `<p style="margin:4px 0">${line || '&nbsp;'}</p>`)
+        .join('')}
+      <hr style="margin:20px 0;border:none;border-top:1px solid #ddd" />
+      <p style="font-size:14px;color:#444">
+        <strong>Employer-Safe CV Download Link:</strong><br/>
+        <a href="${cvUrl}" style="color:#2563eb">${cvUrl}</a>
+      </p>
+      <p style="font-size:12px;color:#888">This link is time-limited. Do not share publicly.</p>
+    </div>
+  `;
+
+  const result = await emailService.sendEmailDetailed({
+    to: to.trim(),
+    subject: emailSubject,
+    html: htmlBody,
+    text: `${emailBodyText}\n\n--- Employer-Safe CV ---\n${cvUrl}\n\nThis link is time-limited. Do not share publicly.`,
+    auditPayload: { candidateId, forwarded_by: userId },
+  });
+
+  if (!result.sent) {
+    return res.status(502).json({ error: 'Email could not be sent. Please try again.' });
+  }
+
+  res.json({ sent: true, to: result.to, provider: result.provider, cv_url: cvUrl });
 });

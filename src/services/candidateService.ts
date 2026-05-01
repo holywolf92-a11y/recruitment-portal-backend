@@ -182,32 +182,123 @@ export async function checkForDuplicates(cnic?: string, passport?: string, exclu
 }
 
 /**
- * Infer gender from a candidate's name using common Pakistani name patterns.
+ * Infer gender from a candidate's name using Pakistani/Arabic name patterns.
  * Returns 'Female', 'Male', or null if no strong match.
  */
 function inferGenderFromName(name: string): 'Female' | 'Male' | null {
   if (!name) return null;
-  const n = name.trim().toUpperCase();
-  // Strong female suffixes
-  if (/\b(BIBI|BEGUM|BANO|KHATOON|KHATUN|NISA|UNNISA|BEGAM)\b/.test(n)) return 'Female';
-  // Strong female first names (prefix match)
-  const femalePrefixes = [
-    'SHAHIDA','NIMRA','AYESHA','AISHA','FATIMA','MARYAM','ZAINAB','ANUM','NASREEN','NASRIN',
-    'SHAGUFTA','RUKHSANA','MEHWISH','BUSHRA','SAMRA','TAHIRA','GULNAZ','SEHAR','MAHEEN',
-    'ALISHA','LAIBA','HINA','FAREEHA','RABIA','ASMA','RAZIA','NADIA','SAIMA','FARZANA',
-    'SOBIA','UZMA','RUBINA','SUMAIRA','FOZIA','GULSHAN','ZARA','ANILA','NOSHEEN','TEHMINA',
-    'SHAISTA','RAHAT','PARVEEN','NAJMA','SHABANA','NARGIS','SALMA','ROZINA','YASMEEN','YASMIN','SADIA',
-  ];
-  for (const fp of femalePrefixes) {
-    if (n.startsWith(fp + ' ') || n === fp) return 'Female';
-  }
-  // Strong male prefixes
-  const malePrefixes = ['MUHAMMAD','HAFIZ','MAULANA','MOLANA','HAJI'];
-  for (const mp of malePrefixes) {
-    if (n.startsWith(mp + ' ') || n === mp) return 'Male';
-  }
+  // Strip titles and parenthetical suffixes, then uppercase
+  const n = name.replace(/\([^)]*\)/g, '').replace(/^(dr\.?\s+|prof\.?\s+|eng\.?\s+|mr\.?\s+|mrs\.?\s+|ms\.?\s+|miss\s+)/i, '').trim().toUpperCase();
+  if (!n) return null;
+
+  const words = n.split(/\s+/);
+  const first = words[0];
+  const last = words[words.length - 1];
+
+  // Female suffixes (last word)
+  if (/^(BIBI|BEGUM|BANO|KHATOON|KHATUN|NISA|UNNISA|BEGAM|BIVI|MAI|BINTE|BINT)$/.test(last)) return 'Female';
+
+  // Male suffixes — *ULLAH, *UDDIN endings always Male
+  if (/ULLAH$/.test(last) || /UDDIN$/.test(last)) return 'Male';
+
+  // Male prefixes (first word)
+  const malePfx = ['MUHAMMAD','MOHAMMED','MOHAMMAD','MOHD','HAFIZ','MAULANA','MOLANA','HAJI',
+    'SYED','SHEIKH','QARI','GHULAM','ABDUL','ABDUR','ABUL','ABU','ABAID','ABD',
+    'MIAN','KHAWAJA','MIRZA','ALLAMA','SARDAR','AGHA'];
+  if (malePfx.includes(first)) return 'Male';
+  // ABD* variants
+  if (/^ABD(UL|UR|AR|U|ULL)/.test(first)) return 'Male';
+  // CH (Chaudhry prefix) → Male
+  if (first === 'CH' || first.startsWith('CH.')) return 'Male';
+
+  // Female prefixes
+  if (['SYEDA','MISS','MRS'].includes(first)) return 'Female';
+
+  // Female first names (common Pakistani/Arabic)
+  const femaleNames = new Set([
+    'HIRA','ANAM','RIMSHA','SIDRA','IQRA','KIRAN','MAHAM','MISBAH','NIDA','SUNDAS',
+    'SANA','SARA','SARAH','AMNA','KAINAT','AREEBA','AROOJ','FARIHA','FAIZA','FARWA',
+    'FIZA','HADIA','HAFSA','HALEEMA','HALIMA','HAMNA','HANIA','HUMERA','JAVERIA',
+    'LUBNA','MALAIKA','MARWA','MEHREEN','MUSKAN','MUNEEBA','NABILA','NAILA','NAZIA',
+    'NEHA','NOOR','NOREEN','RAFIA','RAHILA','RANIA','RIDA','RUBA','SABA','SEHRISH',
+    'SHANZA','SHAZIA','SUMBUL','TAYYABA','TEHREEM','TOOBA','URWA','WARDA','YUMNA',
+    'ZAHRA','ZEHRA','ZEBA','ZUNAIRA','ANEELA','AMIRA','AAMIRA','ASIYA','BEENISH',
+    'BILQUEES','HOORIA','IRAM','IRHA','KOMAL','MAHVISH','MAMOONA','MASOOMA','NAILAH',
+    'NISHA','QURATULAIN','RAHIMA','SHAMAILA','SUMERA','SUNDUS','TANIA','UJALA','WAJEEHA',
+    'ZAREEN','AMBREEN','ARFA','ATIYA','AZRA','BISMAH','BUSHRA','DUAA','DUA','ESHA',
+    'FALAK','FARAH','FATIMAH','FEHMEEDA','HADIQAH','HAMIDA','HUMA','HUMAIRA','IFFAT',
+    'INAYA','ISHRAT','JASMINE','JUVERIAH','KANWAL','KHADEEJA','KHADIJA','KHIZRA',
+    'LARAIB','LAYLA','MAHA','MAHNOOR','MAIRA','MALIHA','MEERA','MEHAK','MEHWISH',
+    'MINHAL','MISHAL','MOMINA','MUQADDAS','NABIHA','NAEEMA','NAFEESA','NAHEED',
+    'NAYAB','NAZISH','NIGAR','NIGHAT','NIMRA','NOSHEEN','NUDRAT','NUSRAT','PARVEEN',
+    'RAHEELA','RAKSHANDA','RAMEEZA','REHANA','ROBINA','ROOHI','ROZINA','RUBAB',
+    'RUBINA','RUKHSAR','RUMAISA','SADAF','SAIRA','SALEHA','SALMA','SAMIA','SAMINA',
+    'SHAHIDA','SHAHINA','SHAHNAZ','SHAMIM','SHIRIN','SHUGUFTA','SOHAILA','SUMAIYA',
+    'TABASSUM','TAHIRA','TALAT','TAQDEES','TAYYIBA','TUBA','UMAIRA','WAJIHA',
+    'YASHFEEN','YASMIN','YASMEEN','ZARA','ZARISH','ZARNAB','ZEENAT','ZOBIA','ZOYA',
+    'ZAINAB','FATIMA','MARYAM','AYESHA','AISHA','ANUM','ASMA','RABIA','NASREEN',
+    'NASRIN','RUKHSANA','SAMRA','GULNAZ','SEHAR','MAHEEN','ALISHA','LAIBA','FAREEHA',
+    'NADIA','SAIMA','FARZANA','SOBIA','UZMA','FOZIA','ANILA','TEHMINA','SHAISTA',
+    'RAHAT','NAJMA','NARGIS','SADIA','GULSHAN','ALEENA','ALINA','AQSA','FARYAL',
+    'JANNAT','KINZA','MADIHA','RAMSHA','RUHI','SEEMAB','SEERAT','SHAKEELA','SHAMSA',
+    'SHEEBA','SHEEZA','SHEHLA','SIMRA','SUNBAL','TAHREEM','TASNIM','UROOBA','WARISHA',
+    'ZAHIDA','ZULEKHA','ZUBIA','ABEERA','ABIYA','AESHA','AFSHAN','AFSHEEN','AIMAN',
+    'AIMEN','ALIEHA','ALVEENA','IMAMA','IRSA','HIFZA','KARIMA','AREEJ','ALISHBA',
+    'MAHRUKH','SAHRISH','SAMREEN','SANIA','MINHA','BOUCHRA','HAJRA','FARRAH','ANEESA',
+    'BEENA','ANILA','MAHIRA','MAWRA','MAYRA','BAKHTAWAR','BATOOL','HOOR','ZUNERA',
+  ]);
+  if (femaleNames.has(first)) return 'Female';
+
+  // Male first names (common Pakistani/Arabic)
+  const maleNames = new Set([
+    'HAMZA','ALI','USMAN','WALEED','DANISH','KAMRAN','BILAL','IMRAN','FAISAL','SALMAN',
+    'WAQAS','ATIF','AAMIR','ADNAN','UMER','UMAR','ZUBAIR','RIZWAN','NADEEM','SHOAIB',
+    'ASAD','JAWAD','SAJID','ZAHID','MAJID','RASHID','HAMID','HARIS','TARIQ','IRFAN',
+    'JAVED','KASHIF','NAEEM','WASEEM','WASIM','NAVEED','SHAHID','BABAR','QASIM',
+    'JUNAID','KHURRAM','MANSOOR','RAHEEL','SOHAIL','YASIR','NADIR','OWAIS','PERVEZ',
+    'RAZA','SAAD','EJAZ','FAWAD','FARRUKH','ISHAQ','LUQMAN','MUDASSAR','NOMAN',
+    'NAUMAN','RAEES','SARFRAZ','TALHA','WAJID','YOUSAF','YUSUF','ZAHEER','AFFAN',
+    'ZEESHAN','REHAN','HASSAN','HASAN','HUSSAIN','HUSAIN','IBRAHIM','ISMAIL','KHALID',
+    'AQEEL','TANVEER','TANVIR','ANWAR','ARIF','NASIR','MUNIR','JAMIL','FAHAD','FAROOQ',
+    'OBAID','AHSAN','AHMER','DANIYAL','DANYAL','EHSAN','FAREED','HAMMAD','IFTIKHAR',
+    'JAVAID','KARIM','LATIF','MUBARAK','MUZAMMIL','OMER','QADEER','RAFIQ','SAFDAR',
+    'TAHIR','UZAIR','WAHEED','WAQAR','YAQOOB','ZAFAR','ABUBAKAR','ABUBAKR','ABUBAKKAR',
+    'DAUD','DAWUD','SHAFIQ','MUNEEB','MOHSIN','SIRAJ','TAYYAB','AOUN','BASIT','FAIZAN',
+    'ZAIN','ZOHAIB','TAUSEEF','ARSLAN','AWAIS','AZIZ','BURHAN','FARAZ','FARHAN',
+    'FURQAN','HASNAIN','IKRAM','KALEEM','KHURSHID','LIAQUAT','LIAQAT','MUAZ','MUKHTAR',
+    'MUSTAFA','NAJEEB','NASEEM','OMAR','OSAMA','OSMAN','PARVEZ','QAISAR','RAMZAN',
+    'SAEED','SAMEER','SHABBIR','SHAHBAZ','SHAHRUKH','SHAKEEL','SHAUKAT','SHEHZAD',
+    'SULTAN','SULEMAN','TAIMOOR','TOUQEER','UMAIR','YASEEN','ZAHIR','ZULFIQAR',
+    'AMJAD','AMJID','ANEES','AQIB','ARSHAD','ASIF','ASIM','ASLAM','AZHAR','BADAR',
+    'FAYAZ','HAFEEZ','HASHIM','HUSNAIN','JAHANGIR','JAMEEL','KHAWAR','MAHMOOD',
+    'MUSHTAQ','NAZAR','NIAZ','QAMAR','RIAZ','SALEEM','SARWAR','SHAKIR','SIKANDER',
+    'TAHSEEN','USAMA','ZAID','ZAYD','ANAS','SUFYAN','AYYUB','ILYAS','IDREES',
+    'HAROON','ABRAR','AMEER','ARSALAN','SHAHZAD','SHIRAZ','SOHAIB','SUBHAN','TALAL',
+    'TASHFEEN','TAUQEER','ZAMEER','AASIM','ABID','ADEEL','ADIL','AFTAB','AHAD',
+    'AHTISHAM','AIZAZ','AJMAL','AKBAR','AKRAM','ALAM','ALAMGIR','ALEEM','AMEEN',
+    'AMMAR','AQEEL','ARFAN','ARMAN','ARSLAN','ARYAN','ASHFAQ','ASHRAF','ASRAR',
+    'ATHAR','ATIQ','AWAIS','AYAZ','BAKR','BASHIR','BASIT','BILEL','DILAWAR',
+    'EHTISHAM','EJAZ','EMAD','FAIZ','FAIZAN','FARIS','FAZAL','GHAZI','GULFAM',
+    'GULZAR','HANIF','HAYAT','HILAL','HUNAIN','HUSSAM','HUSNAIN','IJAZ','IKHLAQ',
+    'IMAD','IMTIAZ','IRSHAD','IRTAZA','ISRAR','IZHAR','JAFAR','JAMAL','JUNAID',
+    'KAASHIF','KAMIL','KHAQAN','KHIZAR','LAEEQ','MASOOD','MATEEN','MAZHAR','MOBIN',
+    'MOIZ','MUBEEN','MUJAHID','MUJTABA','MUNIR','MURAD','MURTAZA','MUSAB','MUSAWAR',
+    'MUTAHIR','MUZZAMMIL','NASEEB','NASEER','NOUMAN','OBAID','PERVEZ','QADIR','RAHIM',
+    'RAUF','SABIR','SABTAIN','SAFI','SAFYAN','SAHIL','SAJJAD','SARMAD','SHAKEEL',
+    'SIDDIQ','SOHRAB','SUBHAAN','SUFIAN','USWAQ','ZAFARYAB','ZAHOOR','ZAKIR','ZARAR',
+    'ZUHAIB','AHMAD','AHMED','AAFAQ','AASHIR','AATIF','ALTAF','ALTAMISH','GHAZANFAR',
+    'HAIDER','HAMAYUN','HAMEEDULLAH','HAMZULLAH','HANEEF','HANZALA','HANZLA','HASEEB',
+    'HASSAAN','HASSAM','HAZRAT','HIDAYAT','HISAM','HOSSAIN','HUBAIB','HUMAIL','HUZAIFA',
+    'HUZAIFAH','IBAD','IBRAR','IHTESHAM','INAMULLAH','INZAMAM','IZAZ','JAMSHED','JOHAR',
+    'KABIR','KAMAL','KANWAR','KHATEEB','KHIZER','KONAIN','GULRAIZ','JAHANZAIB','JALAL',
+    'NAWAZ','NOORULLAH','FAHIM','FAIQ','FAKHAR','FARZAND','FURKAN','GHAZANFER',
+    'GOHAR','HAIDER','HANZALA','HANZLA',
+  ]);
+  if (maleNames.has(first)) return 'Male';
+
   return null;
 }
+
 
 export interface CreateCandidateData {
   name: string;

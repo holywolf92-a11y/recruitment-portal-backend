@@ -230,6 +230,15 @@ export interface CreateCandidateData {
 
   // Profile photo URL from parser
   profile_photo_url?: string;
+
+  // Excel data fields (migration add_excel_data_columns)
+  religion?: string;
+  salary_expectation?: string;
+  date_available?: string;
+  interview_date?: string;
+  medical_expiry?: string;
+  license?: string;
+  gcc_years?: number;
 }
 
 export async function createCandidate(data: CreateCandidateData, userId?: string) {
@@ -1144,6 +1153,9 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
     'medical_received', 'visa_received', 'cv_received', 'photo_received',
     'certificate_received', 'profile_photo_url',
     'driving_license_received',
+    // Excel data fields
+    'religion', 'salary_expectation', 'date_available', 'interview_date',
+    'medical_expiry', 'license', 'gcc_years',
   ]);
   for (const col of Object.keys(updateData)) {
     if (!KNOWN_CANDIDATE_COLUMNS_UPDATE.has(col)) {

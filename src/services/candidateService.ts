@@ -44,7 +44,7 @@ export function normalizePhoneE164(phone: string): string | null {
   return null;
 }
 
-export const CANDIDATE_STATUS_VALUES = ['Applied', 'Pending', 'Deployed'] as const;
+export const CANDIDATE_STATUS_VALUES = ['Applied', 'Pending', 'Deployed', 'Hired'] as const;
 export type CandidateStatus = (typeof CANDIDATE_STATUS_VALUES)[number];
 
 export function parseCandidateStatus(value?: string | null, fallback: CandidateStatus = 'Applied'): CandidateStatus {
@@ -60,6 +60,8 @@ export function parseCandidateStatus(value?: string | null, fallback: CandidateS
       return 'Pending';
     case 'deployed':
       return 'Deployed';
+    case 'hired':
+      return 'Hired';
     default:
       throw new Error(`Invalid status: ${value}. Allowed values are ${CANDIDATE_STATUS_VALUES.join(', ')}`);
   }

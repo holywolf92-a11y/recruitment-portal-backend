@@ -181,6 +181,34 @@ export async function checkForDuplicates(cnic?: string, passport?: string, exclu
   return duplicates;
 }
 
+/**
+ * Infer gender from a candidate's name using common Pakistani name patterns.
+ * Returns 'Female', 'Male', or null if no strong match.
+ */
+function inferGenderFromName(name: string): 'Female' | 'Male' | null {
+  if (!name) return null;
+  const n = name.trim().toUpperCase();
+  // Strong female suffixes
+  if (/\b(BIBI|BEGUM|BANO|KHATOON|KHATUN|NISA|UNNISA|BEGAM)\b/.test(n)) return 'Female';
+  // Strong female first names (prefix match)
+  const femalePrefixes = [
+    'SHAHIDA','NIMRA','AYESHA','AISHA','FATIMA','MARYAM','ZAINAB','ANUM','NASREEN','NASRIN',
+    'SHAGUFTA','RUKHSANA','MEHWISH','BUSHRA','SAMRA','TAHIRA','GULNAZ','SEHAR','MAHEEN',
+    'ALISHA','LAIBA','HINA','FAREEHA','RABIA','ASMA','RAZIA','NADIA','SAIMA','FARZANA',
+    'SOBIA','UZMA','RUBINA','SUMAIRA','FOZIA','GULSHAN','ZARA','ANILA','NOSHEEN','TEHMINA',
+    'SHAISTA','RAHAT','PARVEEN','NAJMA','SHABANA','NARGIS','SALMA','ROZINA','YASMEEN','YASMIN','SADIA',
+  ];
+  for (const fp of femalePrefixes) {
+    if (n.startsWith(fp + ' ') || n === fp) return 'Female';
+  }
+  // Strong male prefixes
+  const malePrefixes = ['MUHAMMAD','HAFIZ','MAULANA','MOLANA','HAJI'];
+  for (const mp of malePrefixes) {
+    if (n.startsWith(mp + ' ') || n === mp) return 'Male';
+  }
+  return null;
+}
+
 export interface CreateCandidateData {
   name: string;
   father_name?: string;
@@ -300,6 +328,9 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
   const truncCreate = (val: any, maxLen: number) =>
     typeof val === 'string' && val.length > maxLen ? val.slice(0, maxLen) : val;
 
+  // Auto-infer gender from name when not provided
+  const resolvedGender = data.gender || inferGenderFromName(data.name) || undefined;
+
   // Create candidate record
   const candidateData = {
     candidate_code: candidateCode,
@@ -317,7 +348,7 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     email: truncCreate(data.email, VARCHAR_LIMITS_CREATE.email),
     phone: truncCreate(phoneNormalized, VARCHAR_LIMITS_CREATE.phone),
     date_of_birth: data.date_of_birth,
-    gender: truncCreate(data.gender, VARCHAR_LIMITS_CREATE.gender),
+    gender: truncCreate(resolvedGender, VARCHAR_LIMITS_CREATE.gender),
     marital_status: truncCreate(data.marital_status, VARCHAR_LIMITS_CREATE.marital_status),
     address: truncCreate(data.address, VARCHAR_LIMITS_CREATE.address),
     cnic_normalized: cnicNormalized,

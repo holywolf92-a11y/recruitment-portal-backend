@@ -25,6 +25,7 @@ import {
   mergeCandidateController,
   getCandidateMergeHistoryController,
   getMatchingMetricsController,
+  getCandidatePortalLinkController,
 } from '../controllers/candidateController';
 
 const router = Router();
@@ -105,5 +106,8 @@ router.patch('/:id/fields/:field', updateCandidateFieldManuallyController);
 // Candidate merge
 router.post('/:id/merge', mergeCandidateController);
 router.get('/:id/merges', getCandidateMergeHistoryController);
+
+// Candidate portal link (onboarding link for admin to share with candidate)
+router.get('/:id/portal-link', getCandidatePortalLinkController);
 
 export default router;

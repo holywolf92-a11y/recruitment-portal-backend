@@ -1009,3 +1009,34 @@ export async function getMatchingMetricsController(_req: Request, res: Response)
     res.status(500).json({ error: error.message || 'Failed to fetch matching metrics' });
   }
 }
+
+/**
+ * GET /api/candidates/:id/portal-link
+ * Returns the onboarding portal URL for a candidate so admin can share it with the candidate/client.
+ */
+export async function getCandidatePortalLinkController(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Candidate ID required' });
+
+    const db = supabaseAdminClient();
+    const { data, error } = await db
+      .from('candidates')
+      .select('id, name, email_tracking_token')
+      .eq('id', id)
+      .neq('status', 'Deleted')
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Candidate not found' });
+    if (!data.email_tracking_token) return res.status(404).json({ error: 'No portal token for this candidate' });
+
+    const frontendBaseUrl = process.env.FRONTEND_URL || 'https://falishajobs.up.railway.app';
+    const portalLink = `${frontendBaseUrl}/onboarding?token=${data.email_tracking_token}`;
+
+    res.json({ portalLink, candidateId: data.id, name: data.name });
+  } catch (error: any) {
+    console.error('Error fetching candidate portal link:', error);
+    res.status(500).json({ error: error.message || 'Failed to get portal link' });
+  }
+}

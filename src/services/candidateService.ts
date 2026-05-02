@@ -362,6 +362,9 @@ export interface CreateCandidateData {
   medical_expiry?: string;
   license?: string;
   gcc_years?: number;
+
+  // Social links
+  youtube_link?: string;
 }
 
 export async function createCandidate(data: CreateCandidateData, userId?: string) {
@@ -581,6 +584,7 @@ const LIST_FIELDS = [
   'driving_license_received',
   'profile_photo_url', 'profile_photo_bucket', 'profile_photo_path',
   'needs_review', 'auto_extracted', 'created_at', 'updated_at',
+  'youtube_link',
 ].join(',');
 
 export async function listCandidates(filters: CandidateFilters = {}, userId: string) {
@@ -1282,6 +1286,8 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
     // Excel data fields
     'religion', 'salary_expectation', 'date_available', 'interview_date',
     'medical_expiry', 'license', 'gcc_years',
+    // Social links
+    'youtube_link',
   ]);
   for (const col of Object.keys(updateData)) {
     if (!KNOWN_CANDIDATE_COLUMNS_UPDATE.has(col)) {

@@ -347,6 +347,7 @@ router.put('/profile', authenticate, async (req: AuthRequest, res: Response) => 
       ['email', req.body?.email],
       ['date_of_birth', req.body?.date_of_birth || req.body?.dob],
       ['address', req.body?.address],
+      ['youtube_link', req.body?.youtube_link],
     ] as const;
 
     const changedFields: string[] = [];

@@ -1040,3 +1040,53 @@ export async function getCandidatePortalLinkController(req: Request, res: Respon
     res.status(500).json({ error: error.message || 'Failed to get portal link' });
   }
 }
+
+export async function sendPortalLinkWhatsAppController(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ error: 'Candidate ID required' });
+
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+    if (!phoneNumberId || !accessToken) {
+      return res.status(503).json({ error: 'WhatsApp credentials not configured on server' });
+    }
+
+    const db = supabaseAdminClient();
+    const { data, error } = await db
+      .from('candidates')
+      .select('id, name, phone, email_tracking_token')
+      .eq('id', id)
+      .neq('status', 'Deleted')
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Candidate not found' });
+    if (!data.email_tracking_token) return res.status(404).json({ error: 'No portal token for this candidate' });
+    if (!data.phone) return res.status(400).json({ error: 'Candidate has no phone number' });
+
+    const frontendBaseUrl = process.env.FRONTEND_URL || 'https://falishajobs.up.railway.app';
+    const portalLink = `${frontendBaseUrl}/onboarding?token=${data.email_tracking_token}`;
+
+    // Normalise to digits-only E.164 (WhatsApp API requires this)
+    const to = String(data.phone).replace(/\D/g, '');
+    if (!to) return res.status(400).json({ error: 'Invalid phone number for candidate' });
+
+    const { sendTemplateMessage } = await import('../services/whatsappService');
+    await sendTemplateMessage(phoneNumberId, accessToken, to, {
+      name: 'requested_link_notice',
+      language: 'en_US',
+      components: [
+        {
+          type: 'body',
+          parameters: [{ type: 'text', text: portalLink }],
+        },
+      ],
+    });
+
+    res.json({ ok: true, to, portalLink, name: data.name });
+  } catch (error: any) {
+    console.error('Error sending portal link via WhatsApp:', error);
+    res.status(500).json({ error: error.message || 'Failed to send WhatsApp message' });
+  }
+}

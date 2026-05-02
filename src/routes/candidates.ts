@@ -26,6 +26,7 @@ import {
   getCandidateMergeHistoryController,
   getMatchingMetricsController,
   getCandidatePortalLinkController,
+  sendPortalLinkWhatsAppController,
 } from '../controllers/candidateController';
 
 const router = Router();
@@ -109,5 +110,8 @@ router.get('/:id/merges', getCandidateMergeHistoryController);
 
 // Candidate portal link (onboarding link for admin to share with candidate)
 router.get('/:id/portal-link', getCandidatePortalLinkController);
+
+// Send portal link to candidate via WhatsApp (uses approved template: requested_link_notice)
+router.post('/:id/send-portal-link-whatsapp', sendPortalLinkWhatsAppController);
 
 export default router;

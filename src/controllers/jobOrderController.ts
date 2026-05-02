@@ -9,6 +9,7 @@ import {
   CreateJobOrderData,
   JobOrderFilters,
 } from '../services/jobOrderService';
+import { emailService } from '../services/emailService';
 
 export async function generateJobCodeController(req: Request, res: Response) {
   try {
@@ -34,6 +35,41 @@ export async function createJobOrderController(req: Request, res: Response) {
     }
 
     const jobOrder = await createJobOrder(jobOrderData, userId);
+
+    // Notify admin about new job order
+    emailService.sendEmail({
+      to: 'info@falishamanpower.com',
+      subject: `New Job Order Posted: ${jobOrder.job_code}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+          <h2 style="color:#1d4ed8;">New Job Order Posted</h2>
+          <p>A new job order has been created on the Falisha Manpower portal.</p>
+          <table style="width:100%;border-collapse:collapse;margin-top:16px;">
+            <tr>
+              <td style="padding:8px;background:#f1f5f9;font-weight:bold;width:140px;">Job Code</td>
+              <td style="padding:8px;border-bottom:1px solid #e2e8f0;">${jobOrder.job_code}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px;background:#f1f5f9;font-weight:bold;">Job Order ID</td>
+              <td style="padding:8px;border-bottom:1px solid #e2e8f0;">${jobOrder.id}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px;background:#f1f5f9;font-weight:bold;">Employer ID</td>
+              <td style="padding:8px;border-bottom:1px solid #e2e8f0;">${jobOrder.employer_id}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px;background:#f1f5f9;font-weight:bold;">Posted At</td>
+              <td style="padding:8px;">${new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' })} (PKT)</td>
+            </tr>
+          </table>
+          <p style="margin-top:24px;">
+            <a href="https://falishajobs.up.railway.app/admin/job-orders" style="background:#1d4ed8;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;">View in Portal →</a>
+          </p>
+        </div>
+      `,
+      text: `New job order posted: ${jobOrder.job_code}\nJob ID: ${jobOrder.id}\nEmployer ID: ${jobOrder.employer_id}\nPosted at: ${new Date().toISOString()}`,
+    }).catch(err => console.error('[JobOrder] Failed to send admin notification email:', err));
+
     res.status(201).json({ jobOrder });
   } catch (error: any) {
     console.error('Error creating job order:', error);

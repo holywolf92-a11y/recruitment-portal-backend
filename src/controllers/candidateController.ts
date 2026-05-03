@@ -11,6 +11,7 @@ import {
   updateCandidate,
   deleteCandidate,
   bulkUpdateCandidateStatus,
+  normalizePhoneE164,
   CreateCandidateData,
   CandidateFilters,
   DailyStatsFilters
@@ -1068,9 +1069,11 @@ export async function sendPortalLinkWhatsAppController(req: Request, res: Respon
     const frontendBaseUrl = process.env.FRONTEND_URL || 'https://falishajobs.up.railway.app';
     const portalLink = `${frontendBaseUrl}/onboarding?token=${data.email_tracking_token}`;
 
-    // Normalise to digits-only E.164 (WhatsApp API requires this)
-    const to = String(data.phone).replace(/\D/g, '');
-    if (!to) return res.status(400).json({ error: 'Invalid phone number for candidate' });
+    // Normalise to E.164 format required by Meta API (digits only, no +)
+    // e.g. 03135678933 → 923135678933, +923135678933 → 923135678933
+    const e164 = normalizePhoneE164(String(data.phone));
+    if (!e164) return res.status(400).json({ error: `Cannot normalise phone number "${data.phone}" to E.164 — please update the candidate with a valid Pakistan mobile number (e.g. 03XXXXXXXXX)` });
+    const to = e164.replace(/^\+/, ''); // Meta API needs digits-only, no leading +
 
     const { sendTemplateMessage } = await import('../services/whatsappService');
     await sendTemplateMessage(phoneNumberId, accessToken, to, {

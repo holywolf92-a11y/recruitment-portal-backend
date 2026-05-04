@@ -3,7 +3,8 @@ import { supabaseAdminClient } from '../config/database';
 import { resolveFrontendUrl } from '../utils/publicUrl';
 import { emailService } from './emailService';
 import { upsertAppUserProfile } from './userService';
-import { sendMessage } from './whatsappService';
+import { sendTemplateMessage } from './whatsappService';
+import { normalizePhoneE164 } from './candidateService';
 
 const FRONTEND_URL = resolveFrontendUrl(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
 
@@ -43,8 +44,9 @@ async function findExistingAuthUserByEmail(email?: string | null) {
   return data.users.find((user) => String(user.email || '').trim().toLowerCase() === normalizedEmail) || null;
 }
 
-function toWhatsAppPhone(phone: string): string {
-  return phone.replace(/\D/g, '');
+function toWhatsAppPhone(phone: string): string | null {
+  const e164 = normalizePhoneE164(phone);
+  return e164 ? e164.replace(/^\+/, '') : null; // Meta API needs digits-only, no leading +
 }
 
 function toRoleLabel(role: PortalAudience): string {
@@ -217,28 +219,25 @@ export async function dispatchPortalAccessLink(user: {
     const waPhone = toWhatsAppPhone(user.phone);
     delivery.whatsapp.to = waPhone;
 
-    const waText = [
-      `Welcome to Falisha Jobs Portal! 🎉`,
-      '',
-      `Hi ${displayName}, your ${roleLabel} account is ready.`,
-      '',
-      `Dashboard: ${dashboardUrl}`,
-      `Login Email: ${user.email}`,
-      autoLoginUrl ? `Direct Access Link: ${autoLoginUrl}` : 'Direct access link is temporarily unavailable. Open the dashboard URL and request a fresh access link if needed.',
-    ].join('\n');
-
     const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
     const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
     if (phoneNumberId && accessToken && waPhone) {
       try {
-        await sendMessage(phoneNumberId, accessToken, waPhone, waText);
+        // Use approved template — free-form texts are silently dropped outside the 24h window
+        await sendTemplateMessage(phoneNumberId, accessToken, waPhone, {
+          name: 'requested_link_notice',
+          language: 'en_US',
+          components: [{ type: 'body', parameters: [{ type: 'text', text: autoLoginUrl || dashboardUrl }] }],
+        });
         delivery.whatsapp.sent = true;
       } catch (error: any) {
         delivery.whatsapp.error = error?.message || 'Unknown WhatsApp delivery error';
         console.error('[PortalAccess] Failed to send access WhatsApp:', delivery.whatsapp.error);
       }
-    } else {
+    } else if (!phoneNumberId || !accessToken) {
       delivery.whatsapp.error = 'WhatsApp credentials are not configured';
+    } else {
+      delivery.whatsapp.error = `Phone "${user.phone}" could not be normalised to a valid Pakistan mobile number`;
     }
   }
 

@@ -539,7 +539,7 @@ emailRouter.post('/send-to-employer', async (req: Request, res: Response) => {
       nationality: candidate.nationality,
       position: candidate.position,
       profileLink: `${frontendUrl}/profile/${candidate.id}/${slugifyName(candidate.name)}`,
-      cvDownloadLink: `${apiBaseUrl}/cv-generator/${candidate.id}/download?format=employer-safe&force=true`,
+      cvDownloadLink: `${apiBaseUrl}/cv-generator/${candidate.id}/download?format=employer-safe`,
     }));
 
     // Send email

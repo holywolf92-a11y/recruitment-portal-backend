@@ -11,7 +11,7 @@ export const generateSingleCVController = asyncHandler(async (req: Request, res:
   const userId = (req as any).user?.id || 'system';
   const { candidateId } = req.params;
   const format = (req.query.format as 'standard' | 'employer-safe' | 'internal') || 'employer-safe';
-  const forceRegenerate = req.query.force === 'true';
+  const forceRegenerate = req.query.force === 'true' && req.query.hard === 'true';
 
   if (!candidateId) {
     return res.status(400).json({ error: 'Candidate ID is required' });
@@ -38,13 +38,13 @@ export const generateSingleCVController = asyncHandler(async (req: Request, res:
 
 /**
  * Download CV for a candidate (redirects to signed URL)
- * GET /api/cv-generator/:candidateId/download?format=employer-safe&force=true
+ * GET /api/cv-generator/:candidateId/download?format=employer-safe
  */
 export const downloadCVController = asyncHandler(async (req: Request, res: Response) => {
   const userId = (req as any).user?.id || 'system';
   const { candidateId } = req.params;
   const format = (req.query.format as 'standard' | 'employer-safe' | 'internal') || 'employer-safe';
-  const forceRegenerate = req.query.force === 'true';
+  const forceRegenerate = req.query.force === 'true' && req.query.hard === 'true';
 
   if (!candidateId) {
     return res.status(400).json({ error: 'Candidate ID is required' });

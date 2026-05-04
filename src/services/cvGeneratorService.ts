@@ -12,6 +12,32 @@ import { fetchParser, getPreferredParserBaseUrl } from '../utils/parserService';
 
 const STORAGE_BUCKET = 'documents';
 
+function getPositiveIntEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(String(process.env[name] || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function fetchParserWithTimeout(
+  pathname: string,
+  init: RequestInit,
+  timeoutMs: number,
+  label: string
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetchParser(pathname, { ...init, signal: controller.signal });
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`${label} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchLatestParsedCVFromParsingJobs(documents: any[]): Promise<any | null> {
   try {
     const attachmentId =
@@ -1118,7 +1144,7 @@ async function generatePDFFromHTML(html: string): Promise<Buffer> {
 
     try {
       const page = await browser.newPage();
-      await page.setContent(html, { waitUntil: 'networkidle0' });
+      await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
       const pdfBuffer = await page.pdf({
         format: 'A4',
@@ -1299,14 +1325,14 @@ async function sanitizeOriginalCvViaPython(
 
   let response: Response;
   try {
-    response = await fetchParser('/sanitize-cv', {
+    response = await fetchParserWithTimeout('/sanitize-cv', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-hmac-signature': hmacSig,
       },
       body: payload,
-    });
+    }, getPositiveIntEnv('CV_SANITIZE_TIMEOUT_MS', 20000), '/sanitize-cv');
   } catch (fetchErr: any) {
     console.warn(`[CVGenerator] /sanitize-cv request failed: ${fetchErr.message}`);
     return null;
@@ -1364,16 +1390,13 @@ const PACKAGE_DOC_CATEGORY_ORDER: Record<string, number> = {
  */
 async function buildEmployerPackageViaPython(
   candidateId: string,
-  candidate: any
+  candidate: any,
+  sanitizeResult: { buffer: Buffer; storagePath: string }
 ): Promise<Buffer | null> {
   const db = supabaseAdminClient();
 
-  // Step 1: Sanitize the original CV
-  const sanitizeResult = await sanitizeOriginalCvViaPython(candidateId);
-  if (!sanitizeResult) {
-    console.log(`[EmployerPackage] No sanitized CV for candidate ${candidateId}, falling back`);
-    return null;
-  }
+  // Step 1: Use the already-sanitized original CV. This avoids sanitizing the
+  // same file twice when package merging fails and we fall back to sanitized CV.
   const sanitizedCv = sanitizeResult.buffer;
   const cvStoragePath = sanitizeResult.storagePath;
 
@@ -1474,14 +1497,14 @@ async function buildEmployerPackageViaPython(
 
   let response: Response;
   try {
-    response = await fetchParser('/build-employer-package', {
+    response = await fetchParserWithTimeout('/build-employer-package', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-hmac-signature': hmacSig,
       },
       body: payload,
-    });
+    }, getPositiveIntEnv('EMPLOYER_PACKAGE_TIMEOUT_MS', 25000), '/build-employer-package');
   } catch (e: any) {
     console.warn(`[EmployerPackage] /build-employer-package request failed: ${e.message}`);
     return null;
@@ -1569,28 +1592,29 @@ export async function generateCV(options: CVGenerationOptions): Promise<CVGenera
     let fileSize: number;
 
     if (options.format === 'employer-safe') {
-      // Try to build full employer package (sanitized CV + all candidate docs merged)
-      const packagePdf = await buildEmployerPackageViaPython(options.candidateId, candidate);
-      if (packagePdf) {
-        console.log(`[CVGenerator] Built employer package PDF (${packagePdf.length} bytes)`);
-        pdfBuffer = packagePdf;
-        fileSize = packagePdf.length;
-      } else {
-        // Fallback 1: just the sanitized CV
-        const sanitizeRes = await sanitizeOriginalCvViaPython(options.candidateId);
-        if (sanitizeRes) {
-          console.log(`[CVGenerator] Sanitized original CV via Python (${sanitizeRes.buffer.length} bytes)`);
+      // Try to sanitize the original CV once, then optionally build a full employer
+      // package from that sanitized file. If merging is slow or fails, return the
+      // sanitized CV instead of repeating sanitization and timing out.
+      const sanitizeRes = await sanitizeOriginalCvViaPython(options.candidateId);
+      if (sanitizeRes) {
+        const packagePdf = await buildEmployerPackageViaPython(options.candidateId, candidate, sanitizeRes);
+        if (packagePdf) {
+          console.log(`[CVGenerator] Built employer package PDF (${packagePdf.length} bytes)`);
+          pdfBuffer = packagePdf;
+          fileSize = packagePdf.length;
+        } else {
+          console.log(`[CVGenerator] Using sanitized original CV fallback (${sanitizeRes.buffer.length} bytes)`);
           pdfBuffer = sanitizeRes.buffer;
           fileSize = sanitizeRes.buffer.length;
-        } else {
-          // Fallback 2: generate HTML-based CV (original behaviour)
-          console.log(`[CVGenerator] No original CV found or sanitization failed — falling back to HTML generation`);
-          const parsedCv = await fetchLatestParsedCVFromParsingJobs(documents);
-          const html = generateEmployerSafeCVHTML(candidate, documents, parsedCv);
-          console.log(`[CVGenerator] HTML generated, length: ${html.length} chars`);
-          pdfBuffer = await generatePDFFromHTML(html);
-          fileSize = pdfBuffer.length;
         }
+      } else {
+        // Fallback: generate HTML-based CV from candidate data and parsed CV output.
+        console.log(`[CVGenerator] No original CV found or sanitization failed — falling back to HTML generation`);
+        const parsedCv = await fetchLatestParsedCVFromParsingJobs(documents);
+        const html = generateEmployerSafeCVHTML(candidate, documents, parsedCv);
+        console.log(`[CVGenerator] HTML generated, length: ${html.length} chars`);
+        pdfBuffer = await generatePDFFromHTML(html);
+        fileSize = pdfBuffer.length;
       }
     } else {
       // internal / standard: generate from HTML template

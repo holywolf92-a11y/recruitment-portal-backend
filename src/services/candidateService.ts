@@ -1003,7 +1003,7 @@ function exportToCSV(candidates: any[]): { buffer: Buffer; filename: string } {
     const age = c.date_of_birth ? calculateAgeFromDOB(c.date_of_birth) : '';
     const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
-    const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe&force=true`;
+    const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe`;
 
     const row = [
       c.id || '',
@@ -1065,7 +1065,7 @@ function exportToExcel(candidates: any[]): { buffer: Buffer; filename: string } 
     const age = c.date_of_birth ? calculateAgeFromDOB(c.date_of_birth) : '';
     const slug = (c.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const profileLink = `${frontendUrl}/profile/${c.id}/${slug}`;
-    const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe&force=true`;
+    const cvLink = `${apiBaseUrl}/cv-generator/${c.id}/download?format=employer-safe`;
 
     data.push([
       c.id || '',

@@ -51,11 +51,11 @@ router.get('/health', async (req: Request, res: Response) => {
 });
 
 // Download CV (redirect to signed URL)
-// GET /api/cv-generator/:candidateId/download?format=employer-safe&force=true
+// GET /api/cv-generator/:candidateId/download?format=employer-safe
 router.get('/:candidateId/download', downloadCVController);
 
 // Generate single CV (returns JSON)
-// GET /api/cv-generator/:candidateId?format=employer-safe&force=true
+// GET /api/cv-generator/:candidateId?format=employer-safe
 router.get('/:candidateId', generateSingleCVController);
 
 // Get CV generation status

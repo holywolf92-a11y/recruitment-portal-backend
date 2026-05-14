@@ -291,6 +291,7 @@ router.put('/profile', auth_1.authenticate, async (req, res) => {
             ['email', req.body?.email],
             ['date_of_birth', req.body?.date_of_birth || req.body?.dob],
             ['address', req.body?.address],
+            ['youtube_link', req.body?.youtube_link],
         ];
         const changedFields = [];
         for (const [field, nextValue] of editableFields) {

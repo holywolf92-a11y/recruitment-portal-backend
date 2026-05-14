@@ -67,4 +67,8 @@ router.patch('/:id/fields/:field', candidateController_1.updateCandidateFieldMan
 // Candidate merge
 router.post('/:id/merge', candidateController_1.mergeCandidateController);
 router.get('/:id/merges', candidateController_1.getCandidateMergeHistoryController);
+// Candidate portal link (onboarding link for admin to share with candidate)
+router.get('/:id/portal-link', candidateController_1.getCandidatePortalLinkController);
+// Send portal link to candidate via WhatsApp (uses approved template: requested_link_notice)
+router.post('/:id/send-portal-link-whatsapp', candidateController_1.sendPortalLinkWhatsAppController);
 exports.default = router;

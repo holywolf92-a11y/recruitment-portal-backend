@@ -40,6 +40,7 @@ exports.formatDocumentResponse = formatDocumentResponse;
 exports.uploadCandidateDocument = uploadCandidateDocument;
 exports.getCandidateDocumentById = getCandidateDocumentById;
 exports.listCandidateDocumentsByCandidate = listCandidateDocumentsByCandidate;
+exports.getOriginalCvSignedUrlForCandidate = getOriginalCvSignedUrlForCandidate;
 exports.getCandidateDocumentSignedUrl = getCandidateDocumentSignedUrl;
 exports.deleteCandidateDocument = deleteCandidateDocument;
 exports.updateDocumentVerification = updateDocumentVerification;
@@ -803,6 +804,54 @@ async function listCandidateDocumentsByCandidate(candidateId, category) {
         throw new Error(`Failed to list documents: ${error.message}`);
     }
     return (data || []);
+}
+/**
+ * Get signed URL for a candidate's original CV.
+ * Checks candidate_documents first, then falls back to inbox_attachments.
+ * Returns null if no CV is found.
+ */
+async function getOriginalCvSignedUrlForCandidate(candidateId, expiresIn = 3600) {
+    const db = (0, database_1.supabaseAdminClient)();
+    let storageBucket = null;
+    let storagePath = null;
+    // 1. Check candidate_documents first
+    const { data: cvDocs } = await db
+        .from('candidate_documents')
+        .select('storage_bucket, storage_path')
+        .eq('candidate_id', candidateId)
+        .eq('category', 'cv_resume')
+        .order('created_at', { ascending: false })
+        .limit(1);
+    if (cvDocs && cvDocs.length > 0) {
+        const doc = cvDocs[0];
+        storageBucket = doc.storage_bucket || 'documents';
+        storagePath = doc.storage_path;
+    }
+    // 2. Fall back to inbox_attachments
+    if (!storagePath) {
+        const { data: inboxDocs } = await db
+            .from('inbox_attachments')
+            .select('storage_bucket, storage_path')
+            .or(`candidate_id.eq.${candidateId},linked_candidate_id.eq.${candidateId}`)
+            .or('attachment_kind.ilike.cv,document_type.ilike.cv,mime_type.eq.application/pdf')
+            .order('created_at', { ascending: false })
+            .limit(1);
+        if (inboxDocs && inboxDocs.length > 0) {
+            const doc = inboxDocs[0];
+            storageBucket = doc.storage_bucket || 'documents';
+            storagePath = doc.storage_path;
+        }
+    }
+    if (!storagePath) {
+        return null;
+    }
+    const { data, error } = await db.storage
+        .from(storageBucket || 'documents')
+        .createSignedUrl(storagePath, expiresIn);
+    if (error || !data) {
+        throw new Error(`Failed to generate signed URL: ${error?.message}`);
+    }
+    return data.signedUrl;
 }
 /**
  * Get document signed URL for download

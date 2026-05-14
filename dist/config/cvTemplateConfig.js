@@ -22,9 +22,9 @@ exports.getTemplateConfig = getTemplateConfig;
  * This ensures all users get the updated design without manual cache clearing.
  */
 exports.CV_TEMPLATE_CONFIG = {
-    version: 'v3.1.0',
-    description: 'Employer CV enrichment layer with inferred role, synthesized summaries/experience, structured skills, and single-page footer layout',
-    lastUpdated: '2026-03-25',
+    version: 'v3.4.1',
+    description: 'Employer Package: fix deleted_at filter (column does not exist) - correctly appends passport/CNIC docs',
+    lastUpdated: '2026-04-30',
 };
 /**
  * Get the current template version string for cache key generation

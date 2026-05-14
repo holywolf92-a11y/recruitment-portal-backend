@@ -13,6 +13,7 @@ const publicUrl_1 = require("../utils/publicUrl");
 const emailService_1 = require("./emailService");
 const userService_1 = require("./userService");
 const whatsappService_1 = require("./whatsappService");
+const candidateService_1 = require("./candidateService");
 const FRONTEND_URL = (0, publicUrl_1.resolveFrontendUrl)(process.env.FRONTEND_URL || process.env.PUBLIC_FRONTEND_URL || undefined);
 function generateTemporaryPassword() {
     return `Falisha!${crypto_1.default.randomBytes(4).toString('hex')}`;
@@ -30,7 +31,8 @@ async function findExistingAuthUserByEmail(email) {
     return data.users.find((user) => String(user.email || '').trim().toLowerCase() === normalizedEmail) || null;
 }
 function toWhatsAppPhone(phone) {
-    return phone.replace(/\D/g, '');
+    const e164 = (0, candidateService_1.normalizePhoneE164)(phone);
+    return e164 ? e164.replace(/^\+/, '') : null; // Meta API needs digits-only, no leading +
 }
 function toRoleLabel(role) {
     return role.charAt(0).toUpperCase() + role.slice(1);
@@ -168,20 +170,16 @@ async function dispatchPortalAccessLink(user) {
     if (user.phone) {
         const waPhone = toWhatsAppPhone(user.phone);
         delivery.whatsapp.to = waPhone;
-        const waText = [
-            `Welcome to Falisha Jobs Portal! 🎉`,
-            '',
-            `Hi ${displayName}, your ${roleLabel} account is ready.`,
-            '',
-            `Dashboard: ${dashboardUrl}`,
-            `Login Email: ${user.email}`,
-            autoLoginUrl ? `Direct Access Link: ${autoLoginUrl}` : 'Direct access link is temporarily unavailable. Open the dashboard URL and request a fresh access link if needed.',
-        ].join('\n');
         const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
         const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
         if (phoneNumberId && accessToken && waPhone) {
             try {
-                await (0, whatsappService_1.sendMessage)(phoneNumberId, accessToken, waPhone, waText);
+                // Use approved template — free-form texts are silently dropped outside the 24h window
+                await (0, whatsappService_1.sendTemplateMessage)(phoneNumberId, accessToken, waPhone, {
+                    name: 'requested_link_notice',
+                    language: 'en_US',
+                    components: [{ type: 'body', parameters: [{ type: 'text', text: autoLoginUrl || dashboardUrl }] }],
+                });
                 delivery.whatsapp.sent = true;
             }
             catch (error) {
@@ -189,8 +187,11 @@ async function dispatchPortalAccessLink(user) {
                 console.error('[PortalAccess] Failed to send access WhatsApp:', delivery.whatsapp.error);
             }
         }
-        else {
+        else if (!phoneNumberId || !accessToken) {
             delivery.whatsapp.error = 'WhatsApp credentials are not configured';
+        }
+        else {
+            delivery.whatsapp.error = `Phone "${user.phone}" could not be normalised to a valid Pakistan mobile number`;
         }
     }
     return delivery;

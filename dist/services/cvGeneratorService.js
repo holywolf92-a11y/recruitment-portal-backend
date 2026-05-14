@@ -51,6 +51,26 @@ const cvTemplateConfig_1 = require("../config/cvTemplateConfig");
 const documentCategories_1 = require("../config/documentCategories");
 const parserService_1 = require("../utils/parserService");
 const STORAGE_BUCKET = 'documents';
+function getPositiveIntEnv(name, fallback) {
+    const parsed = Number.parseInt(String(process.env[name] || ''), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+async function fetchParserWithTimeout(pathname, init, timeoutMs, label) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await (0, parserService_1.fetchParser)(pathname, { ...init, signal: controller.signal });
+    }
+    catch (error) {
+        if (error?.name === 'AbortError') {
+            throw new Error(`${label} timed out after ${timeoutMs}ms`);
+        }
+        throw error;
+    }
+    finally {
+        clearTimeout(timeout);
+    }
+}
 async function fetchLatestParsedCVFromParsingJobs(documents) {
     try {
         const attachmentId = documents?.find((d) => d?.category === documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME && d?.inbox_attachment_id)?.inbox_attachment_id ||
@@ -132,6 +152,27 @@ async function calculateCandidateVersionHash(candidateId, format) {
         // Non-fatal: cache hash falls back to candidate fields.
         parsingOutputHash = '';
     }
+    // For employer-safe: include a signature of all candidate documents so adding/removing
+    // any document invalidates the cached package (document staleness detection).
+    let documentsSignature = '';
+    if (format === 'employer-safe') {
+        try {
+            const { data: allDocs } = await db
+                .from('candidate_documents')
+                .select('id, category, storage_path, updated_at, deleted_at')
+                .eq('candidate_id', candidateId)
+                .is('deleted_at', null)
+                .order('category')
+                .order('created_at');
+            if (allDocs && allDocs.length > 0) {
+                const docSig = allDocs.map((d) => `${d.id}:${d.category}:${d.storage_path}:${d.updated_at}`).join('|');
+                documentsSignature = crypto_1.default.createHash('sha256').update(docSig).digest('hex');
+            }
+        }
+        catch {
+            documentsSignature = '';
+        }
+    }
     const dataString = [
         (0, cvTemplateConfig_1.getTemplateVersion)(), // Include template version to bust cache when design changes
         candidate.name || '',
@@ -147,6 +188,7 @@ async function calculateCandidateVersionHash(candidateId, format) {
         candidate.country_of_interest || '',
         candidate.updated_at || '',
         parsingOutputHash,
+        documentsSignature,
     ].join('|');
     return crypto_1.default.createHash('sha256').update(dataString).digest('hex');
 }
@@ -1041,7 +1083,7 @@ async function generatePDFFromHTML(html) {
         console.log(`[CVGenerator] Puppeteer launched successfully`);
         try {
             const page = await browser.newPage();
-            await page.setContent(html, { waitUntil: 'networkidle0' });
+            await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
             const pdfBuffer = await page.pdf({
                 format: 'A4',
                 printBackground: true,
@@ -1117,8 +1159,9 @@ async function saveCVMetadata(candidateId, format, storagePath, versionHash, fil
  * Fetch the candidate's original uploaded CV from Supabase Storage and call the
  * Python parser /sanitize-cv endpoint to produce a redacted, employer-safe PDF.
  *
- * Returns the sanitized PDF as a Buffer, or null if no original CV was found
- * or if the sanitization request failed (caller should fall back to HTML generation).
+ * Returns { buffer, storagePath } where buffer is the sanitized PDF and storagePath
+ * is the storage key of the original CV file (used to filter out co-located documents).
+ * Returns null if no original CV was found or sanitization failed.
  */
 async function sanitizeOriginalCvViaPython(candidateId) {
     const db = (0, database_1.supabaseAdminClient)();
@@ -1187,14 +1230,14 @@ async function sanitizeOriginalCvViaPython(candidateId) {
     const hmacSig = crypto_1.default.createHmac('sha256', HMAC_SECRET).update(payload).digest('hex');
     let response;
     try {
-        response = await (0, parserService_1.fetchParser)('/sanitize-cv', {
+        response = await fetchParserWithTimeout('/sanitize-cv', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'x-hmac-signature': hmacSig,
             },
             body: payload,
-        });
+        }, getPositiveIntEnv('CV_SANITIZE_TIMEOUT_MS', 20000), '/sanitize-cv');
     }
     catch (fetchErr) {
         console.warn(`[CVGenerator] /sanitize-cv request failed: ${fetchErr.message}`);
@@ -1219,7 +1262,143 @@ async function sanitizeOriginalCvViaPython(candidateId) {
     }
     console.log(`[CVGenerator] /sanitize-cv success: method=${result.method} status=${result.status} ` +
         `redacted=${result.redacted_count} confidence=${result.confidence_score}`);
-    return Buffer.from(result.sanitized_content, 'base64');
+    return { buffer: Buffer.from(result.sanitized_content, 'base64'), storagePath: storagePath };
+}
+// Document category priority order for employer package
+const PACKAGE_DOC_CATEGORY_ORDER = {
+    passport: 1,
+    cnic: 2,
+    driving_license: 3,
+    educational_documents: 4,
+    certificates: 4,
+    experience_certificates: 5,
+    navttc_reports: 5,
+    police_character_certificate: 6,
+    medical_reports: 7,
+    photos: 8,
+    contracts: 9,
+    other_documents: 10,
+};
+/**
+ * Build a complete Employer Package PDF via Python:
+ * 1. Fetch & sanitize original CV
+ * 2. Fetch all other candidate documents
+ * 3. Call /build-employer-package to merge into one PDF with cover page
+ * Returns merged PDF buffer, or null if sanitization failed.
+ */
+async function buildEmployerPackageViaPython(candidateId, candidate, sanitizeResult) {
+    const db = (0, database_1.supabaseAdminClient)();
+    // Step 1: Use the already-sanitized original CV. This avoids sanitizing the
+    // same file twice when package merging fails and we fall back to sanitized CV.
+    const sanitizedCv = sanitizeResult.buffer;
+    const cvStoragePath = sanitizeResult.storagePath;
+    // Step 2: Fetch all candidate documents except cv_resume.
+    // Exclude any doc that shares the same storage file as the original CV — those pages
+    // are already embedded inside the sanitized CV and don't need to be appended again.
+    const { data: allDocs } = await db
+        .from('candidate_documents')
+        .select('id, category, storage_bucket, storage_path, file_name, mime_type')
+        .eq('candidate_id', candidateId)
+        .neq('category', documentCategories_1.DOCUMENT_CATEGORIES.CV_RESUME)
+        .order('category')
+        .order('created_at', { ascending: false });
+    // Only keep docs that are genuinely separate files (different storage path from the CV)
+    const candidateDocs = (allDocs || []).filter((doc) => doc.storage_path && doc.storage_path !== cvStoragePath);
+    console.log(`[EmployerPackage] ${allDocs?.length ?? 0} total extra docs, ` +
+        `${(allDocs?.length ?? 0) - candidateDocs.length} skipped (same file as CV), ` +
+        `${candidateDocs.length} separate docs to append`);
+    const docPayloads = [];
+    // Sort by category priority
+    const sortedDocs = [...candidateDocs].sort((a, b) => {
+        const aOrder = PACKAGE_DOC_CATEGORY_ORDER[(a.category || '').toLowerCase()] ?? 99;
+        const bOrder = PACKAGE_DOC_CATEGORY_ORDER[(b.category || '').toLowerCase()] ?? 99;
+        return aOrder - bOrder;
+    });
+    // Deduplicate: keep only the first (latest) document per category
+    const seenCategories = new Set();
+    const dedupedDocs = sortedDocs.filter((doc) => {
+        const cat = (doc.category || 'other_documents').toLowerCase();
+        if (seenCategories.has(cat))
+            return false;
+        seenCategories.add(cat);
+        return true;
+    });
+    for (const doc of dedupedDocs) {
+        try {
+            const bucket = doc.storage_bucket || 'documents';
+            const path = doc.storage_path;
+            if (!path)
+                continue;
+            const { data: fileData, error } = await db.storage.from(bucket).download(path);
+            if (error || !fileData) {
+                console.warn(`[EmployerPackage] Failed to download ${path}: ${error?.message}`);
+                continue;
+            }
+            const buf = Buffer.from(await fileData.arrayBuffer());
+            docPayloads.push({
+                content: buf.toString('base64'),
+                file_name: doc.file_name || 'document.pdf',
+                mime_type: doc.mime_type || 'application/pdf',
+                category: doc.category || 'other_documents',
+                display_name: doc.display_name || undefined,
+            });
+        }
+        catch (e) {
+            console.warn(`[EmployerPackage] Error downloading doc ${doc.id}: ${e.message}`);
+        }
+    }
+    console.log(`[EmployerPackage] Collected ${docPayloads.length} extra docs for package`);
+    // Step 4: Call Python /build-employer-package
+    const HMAC_SECRET = process.env.PYTHON_HMAC_SECRET;
+    if (!HMAC_SECRET) {
+        console.warn('[EmployerPackage] PYTHON_HMAC_SECRET not set');
+        return null;
+    }
+    const payload = JSON.stringify({
+        sanitized_cv_content: sanitizedCv.toString('base64'),
+        documents: docPayloads,
+        candidate_name: candidate.name || 'Candidate',
+        candidate_code: candidate.candidate_code || null,
+        profession: candidate.position || null,
+        nationality: candidate.nationality || null,
+        generated_date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }),
+    });
+    const hmacSig = crypto_1.default.createHmac('sha256', HMAC_SECRET).update(payload).digest('hex');
+    let response;
+    try {
+        response = await fetchParserWithTimeout('/build-employer-package', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-hmac-signature': hmacSig,
+            },
+            body: payload,
+        }, getPositiveIntEnv('EMPLOYER_PACKAGE_TIMEOUT_MS', 25000), '/build-employer-package');
+    }
+    catch (e) {
+        console.warn(`[EmployerPackage] /build-employer-package request failed: ${e.message}`);
+        return null;
+    }
+    if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        console.warn(`[EmployerPackage] /build-employer-package HTTP ${response.status}: ${body.slice(0, 200)}`);
+        return null;
+    }
+    let result;
+    try {
+        result = await response.json();
+    }
+    catch {
+        console.warn('[EmployerPackage] /build-employer-package response not valid JSON');
+        return null;
+    }
+    if (!result?.success || !result?.package_content) {
+        console.warn(`[EmployerPackage] /build-employer-package failed: ${result?.error}`);
+        return null;
+    }
+    console.log(`[EmployerPackage] Package built: pages=${result.page_count} docs=${result.included_documents?.length} ` +
+        `size=${result.package_content.length}`);
+    return Buffer.from(result.package_content, 'base64');
 }
 /**
  * Generate a single CV for a candidate
@@ -1267,14 +1446,25 @@ async function generateCV(options) {
         let pdfBuffer;
         let fileSize;
         if (options.format === 'employer-safe') {
-            const sanitized = await sanitizeOriginalCvViaPython(options.candidateId);
-            if (sanitized) {
-                console.log(`[CVGenerator] Sanitized original CV via Python (${sanitized.length} bytes)`);
-                pdfBuffer = sanitized;
-                fileSize = sanitized.length;
+            // Try to sanitize the original CV once, then optionally build a full employer
+            // package from that sanitized file. If merging is slow or fails, return the
+            // sanitized CV instead of repeating sanitization and timing out.
+            const sanitizeRes = await sanitizeOriginalCvViaPython(options.candidateId);
+            if (sanitizeRes) {
+                const packagePdf = await buildEmployerPackageViaPython(options.candidateId, candidate, sanitizeRes);
+                if (packagePdf) {
+                    console.log(`[CVGenerator] Built employer package PDF (${packagePdf.length} bytes)`);
+                    pdfBuffer = packagePdf;
+                    fileSize = packagePdf.length;
+                }
+                else {
+                    console.log(`[CVGenerator] Using sanitized original CV fallback (${sanitizeRes.buffer.length} bytes)`);
+                    pdfBuffer = sanitizeRes.buffer;
+                    fileSize = sanitizeRes.buffer.length;
+                }
             }
             else {
-                // Fallback: generate HTML-based CV (original behaviour)
+                // Fallback: generate HTML-based CV from candidate data and parsed CV output.
                 console.log(`[CVGenerator] No original CV found or sanitization failed — falling back to HTML generation`);
                 const parsedCv = await fetchLatestParsedCVFromParsingJobs(documents);
                 const html = generateEmployerSafeCVHTML(candidate, documents, parsedCv);

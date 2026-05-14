@@ -33,9 +33,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getCVStatusController = exports.generateBulkCVsController = exports.downloadCVController = exports.generateSingleCVController = void 0;
+exports.forwardCVByEmailController = exports.getCVStatusController = exports.generateBulkCVsController = exports.downloadCVController = exports.generateSingleCVController = void 0;
 const cvGeneratorService_1 = require("../services/cvGeneratorService");
 const errorHandling_1 = require("../utils/errorHandling");
+const emailService_1 = require("../services/emailService");
 /**
  * Generate a single CV for a candidate
  * GET /api/cv-generator/:candidateId?format=employer-safe
@@ -44,7 +45,7 @@ exports.generateSingleCVController = (0, errorHandling_1.asyncHandler)(async (re
     const userId = req.user?.id || 'system';
     const { candidateId } = req.params;
     const format = req.query.format || 'employer-safe';
-    const forceRegenerate = req.query.force === 'true';
+    const forceRegenerate = req.query.force === 'true' && req.query.hard === 'true';
     if (!candidateId) {
         return res.status(400).json({ error: 'Candidate ID is required' });
     }
@@ -66,13 +67,13 @@ exports.generateSingleCVController = (0, errorHandling_1.asyncHandler)(async (re
 });
 /**
  * Download CV for a candidate (redirects to signed URL)
- * GET /api/cv-generator/:candidateId/download?format=employer-safe&force=true
+ * GET /api/cv-generator/:candidateId/download?format=employer-safe
  */
 exports.downloadCVController = (0, errorHandling_1.asyncHandler)(async (req, res) => {
     const userId = req.user?.id || 'system';
     const { candidateId } = req.params;
     const format = req.query.format || 'employer-safe';
-    const forceRegenerate = req.query.force === 'true';
+    const forceRegenerate = req.query.force === 'true' && req.query.hard === 'true';
     if (!candidateId) {
         return res.status(400).json({ error: 'Candidate ID is required' });
     }
@@ -153,4 +154,55 @@ exports.getCVStatusController = (0, errorHandling_1.asyncHandler)(async (req, re
         file_size: cached.file_size,
         access_count: cached.access_count,
     });
+});
+/**
+ * Forward a candidate's employer-safe CV to any email address
+ * POST /api/cv-generator/:candidateId/forward-email
+ * Body: { to: string, subject?: string, body?: string }
+ */
+exports.forwardCVByEmailController = (0, errorHandling_1.asyncHandler)(async (req, res) => {
+    const userId = req.user?.id || 'system';
+    const { candidateId } = req.params;
+    const { to, subject, body } = req.body;
+    if (!candidateId) {
+        return res.status(400).json({ error: 'Candidate ID is required' });
+    }
+    if (!to || typeof to !== 'string' || !to.includes('@')) {
+        return res.status(400).json({ error: 'A valid recipient email address is required' });
+    }
+    // Generate (or retrieve cached) employer-safe CV
+    const cvResult = await (0, cvGeneratorService_1.generateCV)({
+        candidateId,
+        format: 'employer-safe',
+        forceRegenerate: false,
+        userId,
+    });
+    const cvUrl = cvResult.cv_url;
+    const emailSubject = (subject || `CV: Candidate`).trim();
+    const emailBodyText = (body || '').trim();
+    const htmlBody = `
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#222">
+      ${emailBodyText
+        .split('\n')
+        .map(line => `<p style="margin:4px 0">${line || '&nbsp;'}</p>`)
+        .join('')}
+      <hr style="margin:20px 0;border:none;border-top:1px solid #ddd" />
+      <p style="font-size:14px;color:#444">
+        <strong>Employer-Safe CV Download Link:</strong><br/>
+        <a href="${cvUrl}" style="color:#2563eb">${cvUrl}</a>
+      </p>
+      <p style="font-size:12px;color:#888">This link is time-limited. Do not share publicly.</p>
+    </div>
+  `;
+    const result = await emailService_1.emailService.sendEmailDetailed({
+        to: to.trim(),
+        subject: emailSubject,
+        html: htmlBody,
+        text: `${emailBodyText}\n\n--- Employer-Safe CV ---\n${cvUrl}\n\nThis link is time-limited. Do not share publicly.`,
+        auditPayload: { candidateId, forwarded_by: userId },
+    });
+    if (!result.sent) {
+        return res.status(502).json({ error: 'Email could not be sent. Please try again.' });
+    }
+    res.json({ sent: true, to: result.to, provider: result.provider, cv_url: cvUrl });
 });

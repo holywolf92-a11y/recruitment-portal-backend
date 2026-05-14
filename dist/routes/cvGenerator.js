@@ -73,10 +73,10 @@ router.get('/health', async (req, res) => {
     }
 });
 // Download CV (redirect to signed URL)
-// GET /api/cv-generator/:candidateId/download?format=employer-safe&force=true
+// GET /api/cv-generator/:candidateId/download?format=employer-safe
 router.get('/:candidateId/download', cvGeneratorController_1.downloadCVController);
 // Generate single CV (returns JSON)
-// GET /api/cv-generator/:candidateId?format=employer-safe&force=true
+// GET /api/cv-generator/:candidateId?format=employer-safe
 router.get('/:candidateId', cvGeneratorController_1.generateSingleCVController);
 // Get CV generation status
 // GET /api/cv-generator/:candidateId/status?format=employer-safe
@@ -84,4 +84,7 @@ router.get('/:candidateId/status', cvGeneratorController_1.getCVStatusController
 // Generate bulk CVs
 // POST /api/cv-generator/bulk
 router.post('/bulk', cvGeneratorController_1.generateBulkCVsController);
+// Forward CV by email
+// POST /api/cv-generator/:candidateId/forward-email
+router.post('/:candidateId/forward-email', cvGeneratorController_1.forwardCVByEmailController);
 exports.default = router;

@@ -200,6 +200,8 @@ router.post('/candidate-documents/:id/approve', quickApproveController_1.quickAp
 router.post('/fix-approved-photos', fixApprovedPhotosController_1.fixApprovedPhotos);
 // List documents for a candidate (with category filtering)
 router.get('/candidates/:candidateId/documents', documentController_1.listCandidateDocumentsControllerNew);
+// Get signed URL for candidate's original CV (checks candidate_documents + inbox_attachments)
+router.get('/candidates/:candidateId/cv-url', (0, errorHandling_1.asyncHandler)(documentController_1.getCandidateCvUrlController));
 // Extract photo from PDF profile photo and save as image
 router.post('/candidates/:candidateId/extract-photo', (0, errorHandling_1.asyncHandler)(pdfPhotoExtractionController_1.extractPhotoFromPdfController));
 // AI-assisted: Extract profile headshot from a PDF document and save as image

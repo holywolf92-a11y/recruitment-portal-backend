@@ -55,6 +55,8 @@ exports.getMissingFieldsController = getMissingFieldsController;
 exports.mergeCandidateController = mergeCandidateController;
 exports.getCandidateMergeHistoryController = getCandidateMergeHistoryController;
 exports.getMatchingMetricsController = getMatchingMetricsController;
+exports.getCandidatePortalLinkController = getCandidatePortalLinkController;
+exports.sendPortalLinkWhatsAppController = sendPortalLinkWhatsAppController;
 // import { AuthRequest } from '../middleware/auth';
 const candidateService_1 = require("../services/candidateService");
 const progressiveDataCompletionService_1 = require("../services/progressiveDataCompletionService");
@@ -955,5 +957,87 @@ async function getMatchingMetricsController(_req, res) {
     catch (error) {
         console.error('Error fetching matching metrics:', error);
         res.status(500).json({ error: error.message || 'Failed to fetch matching metrics' });
+    }
+}
+/**
+ * GET /api/candidates/:id/portal-link
+ * Returns the onboarding portal URL for a candidate so admin can share it with the candidate/client.
+ */
+async function getCandidatePortalLinkController(req, res) {
+    try {
+        const { id } = req.params;
+        if (!id)
+            return res.status(400).json({ error: 'Candidate ID required' });
+        const db = (0, database_1.supabaseAdminClient)();
+        const { data, error } = await db
+            .from('candidates')
+            .select('id, name, email_tracking_token')
+            .eq('id', id)
+            .neq('status', 'Deleted')
+            .maybeSingle();
+        if (error)
+            throw error;
+        if (!data)
+            return res.status(404).json({ error: 'Candidate not found' });
+        if (!data.email_tracking_token)
+            return res.status(404).json({ error: 'No portal token for this candidate' });
+        const frontendBaseUrl = process.env.FRONTEND_URL || 'https://falishajobs.up.railway.app';
+        const portalLink = `${frontendBaseUrl}/onboarding?token=${data.email_tracking_token}`;
+        res.json({ portalLink, candidateId: data.id, name: data.name });
+    }
+    catch (error) {
+        console.error('Error fetching candidate portal link:', error);
+        res.status(500).json({ error: error.message || 'Failed to get portal link' });
+    }
+}
+async function sendPortalLinkWhatsAppController(req, res) {
+    try {
+        const { id } = req.params;
+        if (!id)
+            return res.status(400).json({ error: 'Candidate ID required' });
+        const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+        const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+        if (!phoneNumberId || !accessToken) {
+            return res.status(503).json({ error: 'WhatsApp credentials not configured on server' });
+        }
+        const db = (0, database_1.supabaseAdminClient)();
+        const { data, error } = await db
+            .from('candidates')
+            .select('id, name, phone, email_tracking_token')
+            .eq('id', id)
+            .neq('status', 'Deleted')
+            .maybeSingle();
+        if (error)
+            throw error;
+        if (!data)
+            return res.status(404).json({ error: 'Candidate not found' });
+        if (!data.email_tracking_token)
+            return res.status(404).json({ error: 'No portal token for this candidate' });
+        if (!data.phone)
+            return res.status(400).json({ error: 'Candidate has no phone number' });
+        const frontendBaseUrl = process.env.FRONTEND_URL || 'https://falishajobs.up.railway.app';
+        const portalLink = `${frontendBaseUrl}/onboarding?token=${data.email_tracking_token}`;
+        // Normalise to E.164 format required by Meta API (digits only, no +)
+        // e.g. 03135678933 → 923135678933, +923135678933 → 923135678933
+        const e164 = (0, candidateService_1.normalizePhoneE164)(String(data.phone));
+        if (!e164)
+            return res.status(400).json({ error: `Cannot normalise phone number "${data.phone}" to E.164 — please update the candidate with a valid Pakistan mobile number (e.g. 03XXXXXXXXX)` });
+        const to = e164.replace(/^\+/, ''); // Meta API needs digits-only, no leading +
+        const { sendTemplateMessage } = await Promise.resolve().then(() => __importStar(require('../services/whatsappService')));
+        await sendTemplateMessage(phoneNumberId, accessToken, to, {
+            name: 'requested_link_notice',
+            language: 'en_US',
+            components: [
+                {
+                    type: 'body',
+                    parameters: [{ type: 'text', text: portalLink }],
+                },
+            ],
+        });
+        res.json({ ok: true, to, portalLink, name: data.name });
+    }
+    catch (error) {
+        console.error('Error sending portal link via WhatsApp:', error);
+        res.status(500).json({ error: error.message || 'Failed to send WhatsApp message' });
     }
 }

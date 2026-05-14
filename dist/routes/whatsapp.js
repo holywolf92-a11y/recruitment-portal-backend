@@ -88,7 +88,13 @@ function extractStatusUpdate(body) {
         const st = body?.entry?.[0]?.changes?.[0]?.value?.statuses?.[0];
         if (!st?.id || !st?.status)
             return null;
-        return { id: st.id, status: st.status, timestamp: st.timestamp };
+        return {
+            id: st.id,
+            status: st.status,
+            timestamp: st.timestamp,
+            errorCode: st.errors?.[0]?.code,
+            errorMessage: st.errors?.[0]?.message,
+        };
     }
     catch {
         return null;
@@ -131,6 +137,13 @@ router.post('/', rateLimit_1.whatsappLimiter, verifySignature, (0, errorHandling
     if (statusUpdate) {
         try {
             await (0, whatsappInboxService_1.updateMessageStatus)(statusUpdate.id, statusUpdate.status);
+            if (statusUpdate.status === 'failed') {
+                logger.warn('WhatsApp message delivery FAILED', {
+                    id: statusUpdate.id,
+                    errorCode: statusUpdate.errorCode,
+                    errorMessage: statusUpdate.errorMessage,
+                });
+            }
         }
         catch (err) {
             logger.error('Failed to update WhatsApp message status (fail-open)', {

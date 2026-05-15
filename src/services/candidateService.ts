@@ -44,6 +44,49 @@ export function normalizePhoneE164(phone: string): string | null {
   return null;
 }
 
+// Words/abbreviations that should stay ALL-CAPS in position titles
+const POSITION_ACRONYMS = new Set([
+  'AC', 'HVAC', 'SMAW', 'MIG', 'TIG', 'FCAW', 'LPG', 'GCC',
+  'UAE', 'KSA', 'QC', 'QA', 'IT', 'HR', 'CNC', 'NC', 'CAD',
+  'CAM', 'PLC', 'CCTV', 'CV', 'MBA', 'BBA', 'HSE', 'CNIC',
+]);
+
+/**
+ * Normalises a candidate position string so that minor casing / spacing / punctuation
+ * differences do not create duplicate profession buckets in the sidebar.
+ *
+ * Rules applied (in order):
+ *   1. Collapse whitespace + trim.
+ *   2. Reject garbage (only digits, only symbols, or < 2 chars) → return null.
+ *   3. Expand common abbreviation: A/C → AC.
+ *   4. Title-case every word.
+ *   5. Restore known ALL-CAPS acronyms.
+ */
+export function normalizePosition(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+
+  // 1. Collapse whitespace + trim
+  let s = raw.replace(/\s+/g, ' ').trim();
+
+  // 2. Reject garbage
+  if (!s || s.length < 2 || /^[\d\s!@#$%^&*()\-_=+\[\]{};':"\\|,.<>/?`~]+$/.test(s)) {
+    return null;
+  }
+
+  // 3. Expand common abbreviations
+  s = s.replace(/\bA\/C\b/gi, 'AC');
+  s = s.replace(/\bA\.C\.?\b/gi, 'AC');
+
+  // 4+5. Title-case each word, then restore known acronyms
+  s = s.replace(/\S+/g, (word) => {
+    const alphaOnly = word.toUpperCase().replace(/[^A-Z]/g, '');
+    if (POSITION_ACRONYMS.has(alphaOnly)) return alphaOnly;
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  });
+
+  return s.replace(/\s+/g, ' ').trim() || null;
+}
+
 export const CANDIDATE_STATUS_VALUES = ['Applied', 'Pending', 'Deployed', 'Hired', 'Cancelled'] as const;
 export type CandidateStatus = (typeof CANDIDATE_STATUS_VALUES)[number];
 
@@ -453,7 +496,7 @@ export async function createCandidate(data: CreateCandidateData, userId?: string
     passport_normalized: passportNormalized,
 
     nationality: truncCreate(data.nationality, VARCHAR_LIMITS_CREATE.nationality),
-    position: truncCreate(data.position, VARCHAR_LIMITS_CREATE.position),
+    position: truncCreate(normalizePosition(data.position) ?? data.position, VARCHAR_LIMITS_CREATE.position),
     experience_years: data.experience_years,
     country_of_interest: truncCreate(data.country_of_interest, VARCHAR_LIMITS_CREATE.country_of_interest),
     skills: truncCreate(data.skills, VARCHAR_LIMITS_CREATE.skills),
@@ -624,9 +667,9 @@ export async function listCandidates(filters: CandidateFilters = {}, userId: str
     query = query.eq('status', 'Deleted');
   }
 
-  // Apply profession (position) filter
+  // Apply profession (position) filter — case-insensitive to survive pre-backfill data
   if (filters.position && filters.position !== 'all') {
-    query = query.eq('position', filters.position);
+    query = query.ilike('position', filters.position);
   }
 
   // Apply country-of-interest filter
@@ -759,7 +802,10 @@ export async function getCandidateBrowseMetadata(userId: string): Promise<Candid
   const statusMap = new Map<string, number>();
 
   for (const candidate of rows) {
-    const position = (candidate.position || '').trim();
+    // Use the normalised form as the grouping key so casing/spacing variants
+    // (e.g. "Ac Technician", "AC TECHNICIAN", "A/C Technician") collapse into one bucket.
+    const rawPosition = (candidate.position || '').trim();
+    const position = normalizePosition(rawPosition) || rawPosition;
     const country = (candidate.country_of_interest || '').trim();
     const status = ((candidate.status || 'Applied') as string).trim() || 'Applied';
     const hasCompleteDocuments = Boolean(
@@ -1222,6 +1268,9 @@ export async function updateCandidate(id: string, data: Partial<CreateCandidateD
   }
   if (data.phone) {
     updateData.phone = normalizePhoneE164(data.phone);
+  }
+  if (data.position !== undefined) {
+    updateData.position = normalizePosition(data.position) ?? data.position ?? null;
   }
 
   // Validate profile_photo_url if provided (accept all valid image URLs including CV-extracted photos)

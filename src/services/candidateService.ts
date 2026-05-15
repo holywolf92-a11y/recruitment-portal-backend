@@ -46,9 +46,34 @@ export function normalizePhoneE164(phone: string): string | null {
 
 // Words/abbreviations that should stay ALL-CAPS in position titles
 const POSITION_ACRONYMS = new Set([
-  'AC', 'HVAC', 'SMAW', 'MIG', 'TIG', 'FCAW', 'LPG', 'GCC',
-  'UAE', 'KSA', 'QC', 'QA', 'IT', 'HR', 'CNC', 'NC', 'CAD',
-  'CAM', 'PLC', 'CCTV', 'CV', 'MBA', 'BBA', 'HSE', 'CNIC',
+  // Mechanical / HVAC / Welding
+  'AC', 'HVAC', 'SMAW', 'MIG', 'TIG', 'FCAW', 'LPG', 'CNC', 'NC',
+  // Engineering
+  'CAD', 'CAM', 'PLC', 'BOP',
+  // Security / Comms
+  'CCTV', 'NOC', 'VOIP', 'MES',
+  // IT / Tech
+  'IT', 'UI', 'UX', 'SEO', 'AI', 'ML', 'ERP', 'SAP', 'CRM', 'IOT',
+  // Quality / Safety
+  'QA', 'QC', 'QAQC', 'HSE', 'HSSE', 'EHS', 'SQA', 'PACS', 'SNLE',
+  // HR / Business / Operations
+  'HR', 'CSR', 'AML', 'TSO', 'DGM', 'AR', 'AP',
+  // C-Suite
+  'CEO', 'CFO', 'COO', 'CTO', 'CMO',
+  // Qualifications / Degrees
+  'CV', 'MBA', 'BBA', 'ACCA', 'CA', 'BS', 'MS', 'PhD',
+  // Medical
+  'ICU', 'RN',
+  // Construction / MEP
+  'MEP', 'BMS',
+  // Database / Data
+  'SQL', 'DBA',
+  // Seniority grades (Roman numerals used in job titles)
+  'II', 'III', 'IV',
+  // Transport / Heavy-equipment
+  'HTV', 'LTV', 'RTG',
+  // Regions / IDs
+  'GCC', 'UAE', 'KSA', 'CNIC',
 ]);
 
 /**
@@ -77,11 +102,19 @@ export function normalizePosition(raw: string | null | undefined): string | null
   s = s.replace(/\bA\/C\b/gi, 'AC');
   s = s.replace(/\bA\.C\.?\b/gi, 'AC');
 
-  // 4+5. Title-case each word, then restore known acronyms
+  // 4+5. Process each non-whitespace token: handle acronyms and title-casing,
+  // correctly handling words that start with punctuation or contain / and - separators.
   s = s.replace(/\S+/g, (word) => {
-    const alphaOnly = word.toUpperCase().replace(/[^A-Z]/g, '');
-    if (POSITION_ACRONYMS.has(alphaOnly)) return alphaOnly;
-    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    return word.replace(/[A-Za-z]+/g, (seg, offset) => {
+      // If this alpha segment is a known acronym, keep it ALL-CAPS
+      if (POSITION_ACRONYMS.has(seg.toUpperCase())) return seg.toUpperCase();
+      // Capitalise if at the start of the token or immediately after a non-alpha char (e.g. ( - /)
+      const prevChar = offset > 0 ? word[offset - 1] : '';
+      const atBoundary = offset === 0 || !/[A-Za-z]/.test(prevChar);
+      return atBoundary
+        ? seg.charAt(0).toUpperCase() + seg.slice(1).toLowerCase()
+        : seg.toLowerCase();
+    });
   });
 
   return s.replace(/\s+/g, ' ').trim() || null;

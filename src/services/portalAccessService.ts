@@ -45,8 +45,23 @@ async function findExistingAuthUserByEmail(email?: string | null) {
 }
 
 function toWhatsAppPhone(phone: string): string | null {
+  // Pakistan numbers use the strict normaliser (also used for candidate matching,
+  // so we deliberately don't loosen it there).
   const e164 = normalizePhoneE164(phone);
-  return e164 ? e164.replace(/^\+/, '') : null; // Meta API needs digits-only, no leading +
+  if (e164) return e164.replace(/^\+/, ''); // Meta API needs digits-only, no leading +
+
+  // International fallback so overseas partners/employers aren't silently dropped.
+  // A valid E.164 number carries its own country code: 8–15 digits and never
+  // starts with 0 (after stripping a leading 00 international dialing prefix).
+  let digits = String(phone || '').replace(/\D/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2); // strip an international dialing prefix
+  // Repair Pakistan numbers stored as "+92 0XXXXXXXXXX" (country code + a stray trunk 0),
+  // e.g. "+92 03009767316" -> digits "9203009767316" -> "923009767316".
+  if (digits.length === 13 && digits.startsWith('920')) digits = `92${digits.slice(3)}`;
+  if (digits.length >= 8 && digits.length <= 15 && !digits.startsWith('0')) {
+    return digits;
+  }
+  return null;
 }
 
 function toRoleLabel(role: PortalAudience): string {

@@ -115,11 +115,22 @@ const JSEARCH_COUNTRY_NAMES: Record<string, string> = {
   de: 'Germany', gb: 'United Kingdom', pl: 'Poland', us: 'United States',
 };
 
+// TODO(linkedin-phase2): if JSearch publisher='LinkedIn' coverage stays thin
+// after this enhancement, add a dedicated searchLinkedIn() backed by
+// https://rapidapi.com/fantastic-jobs-fantastic-jobs-default/api/linkedin-job-search-api
+// — env LINKEDIN_RAPIDAPI_KEY, endpoint /active-jb-24h, gated by
+// FEATURE_LINKEDIN_PROVIDER=true. Not needed today.
+
 export async function searchJSearch(args: {
   query: string;
   positionCategory: string;
   countryCode: string;
   datePosted?: 'all' | 'today' | '3days' | 'week' | 'month';
+  // Multi-page knobs. Each `num_pages` request burns one billed API call but
+  // returns up to ~10 jobs/page (so 3 pages ≈ 30 results in one call). `page`
+  // lets the caller paginate beyond that — used by the sweep loop to fan out.
+  numPages?: number; // 1-20, JSearch hard caps server-side
+  page?: number;     // 1-based
 }): Promise<NormalizedJobLead[]> {
   const apiKey = process.env.RAPIDAPI_KEY;
   if (!apiKey) throw new Error('RAPIDAPI_KEY env var missing');
@@ -127,8 +138,8 @@ export async function searchJSearch(args: {
   const params = new URLSearchParams({
     query: args.query,
     country: args.countryCode,
-    page: '1',
-    num_pages: '1',
+    page:        String(Math.max(1, args.page ?? 1)),
+    num_pages:   String(Math.min(20, Math.max(1, args.numPages ?? 1))),
     date_posted: args.datePosted ?? 'month',
   });
 

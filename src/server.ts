@@ -58,6 +58,9 @@ try {
   });
 
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+  // Railway/K8s liveness probe — same payload, alternate path so probes can
+  // hit /healthz without rerouting and without burning an auth token.
+  app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
   app.get('/health/supabase', async (_req, res) => {
     try {

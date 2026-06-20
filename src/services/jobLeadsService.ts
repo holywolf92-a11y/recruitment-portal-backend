@@ -35,6 +35,19 @@ export type SweepRequest = {
   jsearchCountries?: ReadonlyArray<string>;
   // Safety cap so an accidental huge matrix doesn't burn the JSearch free tier.
   maxQueries?: number;
+  // ── New: knobs for "more LinkedIn jobs" — see the LinkedIn enhancement plan.
+  // `datePosted` constrains JSearch results to recent posts; defaults to 'week'
+  // (down from 'month') so freshness > breadth on a manual sweep.
+  datePosted?: 'all' | 'today' | '3days' | 'week' | 'month';
+  // `numPages` × 10 results per JSearch API call. Each numPages step is one
+  // billed call. Default 1.
+  numPages?: number;
+  // `pageLoops` = how many sequential JSearch page fetches per (position,country)
+  // — e.g. pageLoops=2 fetches page=1 AND page=2. Multiplies API spend.
+  pageLoops?: number;
+  // When true, the JSearch query string gets " via linkedin" appended, which
+  // biases JSearch toward LinkedIn-published results.
+  linkedinBias?: boolean;
 };
 
 export type SweepSummary = {
@@ -57,13 +70,43 @@ export type SweepSummary = {
 };
 
 const DEFAULT_MAX_QUERIES = 80;
+// Hard ceiling on billed JSearch calls in a single sweep — protects the
+// RapidAPI free-tier quota from a careless { pageLoops: 5, numPages: 5 } call.
+// Computed as jsearch_tasks × pageLoops × numPages must be ≤ this.
+const JSEARCH_BILLED_CALL_BUDGET = 250;
+
+// Module-level in-flight guard. Prevents double-submit (frontend double-click,
+// curl, multiple tabs) from spawning concurrent sweeps that would double the
+// API cost AND race on the same source_url upserts.
+export class SweepAlreadyRunningError extends Error {
+  constructor() { super('A sweep is already in progress'); this.name = 'SweepAlreadyRunningError'; }
+}
+let sweepInFlight: Promise<SweepSummary> | null = null;
+export function isSweepInFlight(): boolean { return sweepInFlight !== null; }
+
+export class SweepBudgetExceededError extends Error {
+  constructor(public readonly billed: number, public readonly cap: number) {
+    super(`Sweep would issue ${billed} billed JSearch calls; cap is ${cap}. Lower pageLoops or numPages.`);
+    this.name = 'SweepBudgetExceededError';
+  }
+}
 
 export async function runSweep(req: SweepRequest = {}): Promise<SweepSummary> {
+  if (sweepInFlight) throw new SweepAlreadyRunningError();
+  sweepInFlight = runSweepInner(req).finally(() => { sweepInFlight = null; });
+  return sweepInFlight;
+}
+
+async function runSweepInner(req: SweepRequest): Promise<SweepSummary> {
   const startedAt = new Date();
   const positions = req.positions ?? DEFAULT_POSITION_CATEGORIES;
   const adzunaCountries = req.adzunaCountries ?? DEFAULT_EU_COUNTRIES;
   const jsearchCountries = req.jsearchCountries ?? [...DEFAULT_GULF_COUNTRIES, ...DEFAULT_OTHER_COUNTRIES];
   const maxQueries = req.maxQueries ?? DEFAULT_MAX_QUERIES;
+  const datePosted   = req.datePosted   ?? 'week';
+  const numPages     = Math.min(5, Math.max(1, req.numPages ?? 1));
+  const pageLoops    = Math.min(5, Math.max(1, req.pageLoops ?? 1));
+  const linkedinBias = req.linkedinBias === true;
 
   // Build the matrix, capped.
   type Task = { source: 'adzuna' | 'jsearch'; position: { slug: string; query: string }; country: string };
@@ -78,6 +121,15 @@ export async function runSweep(req: SweepRequest = {}): Promise<SweepSummary> {
     }
   }
   const planned = tasks.slice(0, maxQueries);
+
+  // Reject before issuing any HTTP call if the request would burn more JSearch
+  // quota than the per-sweep budget allows. Stops "5 pages × 5 numPages" from
+  // silently torching the monthly free tier in one click.
+  const jsearchTaskCount = planned.filter((t) => t.source === 'jsearch').length;
+  const projectedBilled = jsearchTaskCount * pageLoops * numPages;
+  if (projectedBilled > JSEARCH_BILLED_CALL_BUDGET) {
+    throw new SweepBudgetExceededError(projectedBilled, JSEARCH_BILLED_CALL_BUDGET);
+  }
 
   const summary: SweepSummary = {
     startedAt: startedAt.toISOString(),
@@ -100,8 +152,36 @@ export async function runSweep(req: SweepRequest = {}): Promise<SweepSummary> {
       if (t.source === 'adzuna') {
         leads = await searchAdzuna({ query: t.position.query, positionCategory: t.position.slug, countryCode: t.country });
       } else {
-        const q = `${t.position.query} jobs in ${humanCountry(t.country)}`;
-        leads = await searchJSearch({ query: q, positionCategory: t.position.slug, countryCode: t.country });
+        // Build the JSearch query — optionally biased toward LinkedIn results.
+        // The " via linkedin" suffix is parsed by JSearch and re-ranks publishers.
+        const baseQ = `${t.position.query} jobs in ${humanCountry(t.country)}`;
+        const q = linkedinBias ? `${baseQ} via linkedin` : baseQ;
+        // Loop pages — pageLoops × numPages — to multiply coverage per sweep.
+        // Errors on later pages don't tank the whole task: keep whatever we got.
+        const collected: NormalizedJobLead[] = [];
+        for (let p = 1; p <= pageLoops; p += 1) {
+          try {
+            const batch = await searchJSearch({
+              query: q,
+              positionCategory: t.position.slug,
+              countryCode: t.country,
+              datePosted,
+              numPages,
+              page: p,
+            });
+            collected.push(...batch);
+            // JSearch returns ~10 results per internal page, so a "full" batch
+            // is roughly numPages × 10. Anything noticeably shorter means we
+            // hit the end of the result set — stop early.
+            if (batch.length < numPages * 10) break;
+          } catch (err) {
+            if (p === 1) throw err; // first page failure = real error, surface it
+            // later-page failures are common (quota/rate) — log and stop early
+            console.warn('[jobLeadsService] JSearch page', p, 'failed for', t.position.slug, t.country, err instanceof Error ? err.message : err);
+            break;
+          }
+        }
+        leads = collected;
       }
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -316,15 +396,24 @@ export type LeadFilters = {
   countryCode?: string;
   positionCategory?: string;
   source?: 'adzuna' | 'jsearch';
-  daysOld?: number;          // posted_at within this many days
+  daysOld?: number;          // posted_at within this many days (alias for datePosted)
+  // datePosted matches the JSearch token vocabulary so the frontend can use
+  // one control for both sweep-time and read-time filtering. Translated to a
+  // posted_at >= now() - interval on the read side.
+  datePosted?: 'today' | '3days' | 'week' | 'month' | 'all';
+  publisher?: string;        // case-insensitive substring match on `publisher`
   search?: string;           // employer name or title
   limit?: number;
   offset?: number;
 };
 
+const DATE_POSTED_DAYS: Record<NonNullable<LeadFilters['datePosted']>, number | null> = {
+  today: 1, '3days': 3, week: 7, month: 30, all: null,
+};
+
 export async function listJobLeads(filters: LeadFilters = {}) {
   const db = supabaseAdminClient();
-  const limit = Math.min(Math.max(filters.limit ?? 50, 1), 200);
+  const limit = Math.min(Math.max(filters.limit ?? 50, 1), 10_000);
   const offset = Math.max(filters.offset ?? 0, 0);
 
   let q = db
@@ -339,9 +428,20 @@ export async function listJobLeads(filters: LeadFilters = {}) {
   if (filters.countryCode)      q = q.eq('country_code', filters.countryCode);
   if (filters.positionCategory) q = q.eq('position_category', filters.positionCategory);
   if (filters.source)           q = q.eq('source', filters.source);
-  if (filters.daysOld) {
-    const since = new Date(Date.now() - filters.daysOld * 24 * 60 * 60 * 1000).toISOString();
-    q = q.gte('posted_at', since);
+  // datePosted takes priority over daysOld when both are set.
+  let effectiveDaysOld: number | null | undefined = filters.daysOld;
+  if (filters.datePosted) effectiveDaysOld = DATE_POSTED_DAYS[filters.datePosted];
+  if (effectiveDaysOld) {
+    const since = new Date(Date.now() - effectiveDaysOld * 24 * 60 * 60 * 1000).toISOString();
+    // OR in a NULL clause: many JSearch results have no posted_at (we'd silently
+    // drop them otherwise). For NULL-posted rows we still want them surfaced
+    // since `found_at` (when we discovered them) is implicitly recent.
+    q = q.or(`posted_at.gte.${since},posted_at.is.null`);
+  }
+  if (filters.publisher) {
+    // Exact match — values come from the /publishers dropdown of known
+    // publishers, so substring isn't needed and ilike '_' wildcards can't bite.
+    q = q.eq('publisher', filters.publisher.trim());
   }
   if (filters.search) {
     const term = filters.search.trim();
@@ -355,6 +455,42 @@ export async function listJobLeads(filters: LeadFilters = {}) {
   if (error) throw error;
   return { leads: data ?? [], total: count ?? 0, limit, offset };
 }
+
+/**
+ * Distinct publisher values across job_leads, for the Publisher dropdown.
+ * Reads the latest 10k rows ordered by found_at so the dropdown stays fresh
+ * even when older publishers drop off the cap. Returns up to ~200 unique
+ * publishers (well under any real-world cap).
+ */
+const PUBLISHERS_CACHE_TTL_MS = 60_000;
+let publishersCache: { value: string[]; expiresAt: number } | null = null;
+
+export async function listPublishers(force = false): Promise<string[]> {
+  if (!force && publishersCache && publishersCache.expiresAt > Date.now()) {
+    return publishersCache.value;
+  }
+  const db = supabaseAdminClient();
+  const SCAN_LIMIT = 10_000;
+  const { data, error } = await db
+    .from('job_leads')
+    .select('publisher, found_at')
+    .not('publisher', 'is', null)
+    .order('found_at', { ascending: false })
+    .limit(SCAN_LIMIT);
+  if (error) throw error;
+  const rows = (data ?? []) as Array<{ publisher: string | null }>;
+  if (rows.length === SCAN_LIMIT) {
+    console.warn(`[jobLeadsService] listPublishers hit ${SCAN_LIMIT}-row cap — publisher list may be incomplete`);
+  }
+  const set = new Set<string>();
+  for (const row of rows) if (row.publisher) set.add(row.publisher);
+  const result = Array.from(set).sort((a, b) => a.localeCompare(b));
+  publishersCache = { value: result, expiresAt: Date.now() + PUBLISHERS_CACHE_TTL_MS };
+  return result;
+}
+
+// Lets the sweep flow bust the cache without waiting for TTL.
+export function invalidatePublishersCache(): void { publishersCache = null; }
 
 export async function listRecruiterCompanies(filters: { countryCode?: string; minListings?: number; limit?: number; offset?: number } = {}) {
   const db = supabaseAdminClient();

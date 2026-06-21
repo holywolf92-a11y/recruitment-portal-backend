@@ -74,23 +74,30 @@ router.post('/ingest-cv', uploadWithErrorHandling('cv'), async (req: AuthRequest
       });
     }
 
-    const rozeeCvId      = String(req.body?.rozeeCvId      ?? '').trim().slice(0, 120);
+    const rozeeCvIdRaw   = String(req.body?.rozeeCvId      ?? '').trim().slice(0, 120);
     const rozeeUserId    = String(req.body?.rozeeUserId    ?? '').trim().slice(0, 120) || null;
     const rozeeTopJobJid = String(req.body?.rozeeTopJobJid ?? '').trim().slice(0, 120) || null;
     const sourceUrl      = String(req.body?.sourceUrl      ?? '').trim().slice(0, 500) || null;
     const candidateName  = String(req.body?.candidateName  ?? '').trim().slice(0, 200) || null;
-    if (!rozeeCvId) {
-      return res.status(400).json({ ok: false, error: 'MISSING_CV_ID', message: 'rozeeCvId is required for dedup + audit' });
-    }
+    // rozeeCvId is OPTIONAL — many rozeegpt pages don't expose a stable id in the DOM
+    // (CV viewer modals especially). Content-addressed sha256 below covers dedup.
+    const rozeeCvId      = rozeeCvIdRaw || null;
 
     const ingestedByUserId = req.user.id;
-    const externalMessageId = `rozee-${rozeeCvId}-${ingestedByUserId}`;
+    // Defer externalMessageId composition until after we've computed sha256 so
+    // we can use it as the fallback identity when rozeeCvId is absent.
 
     // Content-addressed dedup — same file bytes = same sha256, regardless of
     // which user submitted them or what rozeeCvId rozeegpt assigned. Prevents
     // wasted uploads + the "different rozeeCvId for the same content" bug
     // where createAttachment's sha256 check would throw mid-pipeline.
     const sha256 = createHash('sha256').update(file.buffer).digest('hex');
+    // External message id: prefer rozeeCvId for stable cross-tab/cross-session
+    // dedup, fall back to content sha256 so the same file ingested twice is a
+    // dedup-hit regardless of where it came from.
+    const externalMessageId = rozeeCvId
+      ? `rozee-${rozeeCvId}-${ingestedByUserId}`
+      : `rozee-sha256-${sha256}-${ingestedByUserId}`;
     const db = supabaseAdminClient();
     const { data: existingAtt } = await db
       .from('inbox_attachments')

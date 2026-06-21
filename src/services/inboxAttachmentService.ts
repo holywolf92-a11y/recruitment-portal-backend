@@ -57,10 +57,15 @@ export async function createAttachment(input: InboxAttachmentCreateInput) {
     // WhatsApp identity-first rule: preserve explicit raw storage paths.
     // For other sources, default to unmatched_documents for later linking.
     const source = input.messageSource || 'web';
+    // Sources we trust to have already picked a meaningful storage path:
+    // - WhatsApp raw media (identity-first rule)
+    // - rozeegpt extension uploads (sha256-deterministic, per-user audit path)
     const shouldPreserveProvidedPath =
-      source === 'whatsapp' &&
       typeof input.storagePath === 'string' &&
-      input.storagePath.startsWith('whatsapp/raw/');
+      (
+        (source === 'whatsapp' && input.storagePath.startsWith('whatsapp/raw/')) ||
+        (source === 'rozeegpt' && input.storagePath.startsWith('rozeegpt/'))
+      );
 
     if (!shouldPreserveProvidedPath) {
       finalStoragePath = DocumentClassifier.generateUnmatchedPath(

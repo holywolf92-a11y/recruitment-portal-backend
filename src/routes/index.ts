@@ -30,6 +30,8 @@ import publicPortalRoutes from './publicPortal';
 import recommendationsRoutes from './recommendations';
 import databankRoutes from './databank';
 import jobLeadsRoutes from './jobLeads';
+import apiTokensRoutes from './apiTokens';
+import extensionRoutes from './extension';
 import { getWorkerStatus } from '../controllers/workerStatusController';
 
 const router = Router();
@@ -65,6 +67,8 @@ router.use('/public-portal', publicPortalRoutes);
 router.use('/recommendations', recommendationsRoutes);
 router.use('/databank', databankRoutes);
 router.use('/jobs', jobLeadsRoutes);
+router.use('/auth/tokens', apiTokensRoutes);
+router.use('/extension', extensionRoutes);
 router.get('/worker-status', getWorkerStatus);
 
 export default router;

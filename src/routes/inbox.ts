@@ -681,10 +681,10 @@ router.post(
   '/attachments/:attachmentId/retry',
   asyncHandler(async (req: Request, res: Response) => {
     const { attachmentId } = req.params;
-    const jobInfo = await enqueueCvParsingJobForAttachment(attachmentId, {
-      force: true,
-      expiresInSeconds: 3600,
-    });
+    // Drop the previously-ignored `expiresInSeconds` argument — enqueueCvParsingJob
+    // doesn't read it. Redis errors here now surface as 503 QUEUE_UNAVAILABLE
+    // via the global errorHandler sniff instead of an opaque 500.
+    const jobInfo = await enqueueCvParsingJobForAttachment(attachmentId, { force: true });
     res.status(202).json({ job_id: jobInfo.jobId, status: jobInfo.status });
   })
 );

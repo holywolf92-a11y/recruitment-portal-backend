@@ -246,6 +246,21 @@ export function errorHandler(err: any, req: any, res: any, next: any) {
     });
   }
 
+  // BullMQ / ioredis errors — Redis rate-limit, MOVED, LOADING, CLUSTERDOWN,
+  // ECONNREFUSED/ETIMEDOUT. These were previously buried as a generic 500
+  // "Internal server error" giving the operator zero signal. Surface them as
+  // a 503 with the real Redis error so the UI can render an actionable
+  // "queue temporarily unavailable" instead.
+  const errName    = (err as { name?: string })?.name ?? '';
+  const errMessage = (err as { message?: string })?.message ?? '';
+  if (errName === 'ReplyError' || /rate-limited|MOVED|LOADING|CLUSTERDOWN|ECONNREFUSED|ETIMEDOUT/i.test(errMessage)) {
+    return res.status(503).json({
+      error: `Queue temporarily unavailable: ${errMessage}`,
+      type: 'QUEUE_UNAVAILABLE',
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   // Default error response
   return res.status(500).json({
     error: 'Internal server error',

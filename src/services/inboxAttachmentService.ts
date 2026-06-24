@@ -402,10 +402,15 @@ export async function enqueueCvParsingJobForAttachment(
         force: options?.force ?? false,
       },
       {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 2000 },
+        // 5 attempts × exponential backoff starting at 10s → 10/20/40/80/160s ≈ 5 minutes total.
+        // Survives transient Redis rate-limit windows that would burn through
+        // the prior 3-attempt × 2s/4s/8s budget in under 15 seconds.
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 10000 },
+        // Keep failed jobs for 24h so they're recoverable via the Retry button
+        // long after they stop being interesting for queue-size purposes.
         removeOnComplete: 200,
-        removeOnFail: 200,
+        removeOnFail: { count: 200, age: 86400 },
       }
     );
 

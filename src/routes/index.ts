@@ -32,6 +32,7 @@ import databankRoutes from './databank';
 import jobLeadsRoutes from './jobLeads';
 import apiTokensRoutes from './apiTokens';
 import extensionRoutes from './extension';
+import facebookRoutes from './facebook';
 import { getWorkerStatus } from '../controllers/workerStatusController';
 
 const router = Router();
@@ -69,6 +70,7 @@ router.use('/databank', databankRoutes);
 router.use('/jobs', jobLeadsRoutes);
 router.use('/auth/tokens', apiTokensRoutes);
 router.use('/extension', extensionRoutes);
+router.use('/facebook', facebookRoutes);
 router.get('/worker-status', getWorkerStatus);
 
 export default router;

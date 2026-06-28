@@ -419,7 +419,7 @@ export async function listJobLeads(filters: LeadFilters = {}) {
   let q = db
     .from('job_leads')
     .select(
-      'id, source, source_url, title, employer_name, country_code, country_name, city, position_category, publisher, salary_min, salary_max, salary_currency, posted_at, found_at',
+      'id, source, source_url, title, employer_name, country_code, country_name, city, position_category, publisher, salary_min, salary_max, salary_currency, posted_at, found_at, fb_post_id, fb_posted_at',
       { count: 'exact' },
     )
     .order('posted_at', { ascending: false, nullsFirst: false })

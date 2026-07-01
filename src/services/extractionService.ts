@@ -19,6 +19,37 @@ interface ExtractionData {
   extraction_source?: string;
 }
 
+// `candidates` has several VARCHAR-limited columns; the Python parser can emit
+// longer strings (e.g. HSE CVs whose education/certification lines run past 255
+// chars), which otherwise fail the entire update with Postgres 22001
+// "value too long for type character varying(255)" and leave the candidate
+// un-updated. Clamp those fields to their column limits before writing. TEXT
+// columns (skills, certifications, previous_employment, professional_summary…)
+// are unbounded and left untouched. Mirrors VARCHAR_LIMITS_CREATE in
+// candidateService.ts.
+const CANDIDATE_VARCHAR_LIMITS: Record<string, number> = {
+  name: 255,
+  email: 255,
+  phone: 50,
+  position: 255,
+  education: 255,
+  nationality: 100,
+  country_of_interest: 100,
+  father_name: 255,
+  extraction_source: 50,
+};
+
+function clampCandidateVarcharFields<T extends Record<string, any>>(payload: T): T {
+  const out: Record<string, any> = { ...payload };
+  for (const [field, max] of Object.entries(CANDIDATE_VARCHAR_LIMITS)) {
+    const value = out[field];
+    if (typeof value === 'string' && value.length > max) {
+      out[field] = value.slice(0, max);
+    }
+  }
+  return out as T;
+}
+
 /**
  * Extract candidate data from CV using Python parser
  */
@@ -52,11 +83,11 @@ export async function extractCandidateData(
     const db = supabaseAdminClient();
     const { data, error } = await db
       .from('candidates')
-      .update({
+      .update(clampCandidateVarcharFields({
         ...normalizedData,
         extraction_source: extractedData.extraction_source || 'python-parser-v1',
         extracted_at: new Date().toISOString()
-      })
+      }))
       .eq('id', candidateId)
       .select()
       .single();
@@ -226,11 +257,11 @@ export async function updateExtraction(
     const db = supabaseAdminClient();
     const { data, error } = await db
       .from('candidates')
-      .update({
+      .update(clampCandidateVarcharFields({
         ...extractedData,
         extraction_source: approved ? 'human-reviewed' : 'rejected',
         extracted_at: new Date().toISOString()
-      })
+      }))
       .eq('id', candidateId)
       .select()
       .single();

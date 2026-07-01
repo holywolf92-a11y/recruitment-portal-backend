@@ -43,9 +43,12 @@ try {
   // Handle preflight OPTIONS requests explicitly
   app.options('*', cors());
 
-  // Parse JSON bodies - MUST come before routes
-  app.use(express.json({ limit: '100mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+  // Parse JSON bodies - MUST come before routes.
+  // File uploads go through multer (multipart) with their own size limits, so
+  // JSON/urlencoded bodies only carry API data. Cap them well below the 512MB
+  // container heap so a single large (or malicious) body can't spike toward OOM.
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
   // Increase request timeout for file uploads (5 minutes)
   app.use((req, res, next) => {

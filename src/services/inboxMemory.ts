@@ -29,6 +29,45 @@ const messagesByExternalId = new Map<string, string>();
 const attachments = new Map<string, Attachment>();
 const cvDedupIndex = new Set<string>(); // `${sha256}|cv`
 
+// This is an EMERGENCY fallback store, used only when Supabase writes fail
+// (see inboxService / inboxAttachmentService). Under a sustained DB outage it
+// would otherwise grow without bound and OOM the process (the container heap is
+// only 512MB), so cap it with FIFO eviction of the oldest entries. Maps iterate
+// in insertion order, so `keys().next()` yields the oldest.
+const MAX_MEM_MESSAGES = 2000;
+const MAX_MEM_ATTACHMENTS = 5000;
+
+function dropAttachment(aid: string, a: Attachment) {
+  attachments.delete(aid);
+  if (a.sha256 && a.attachment_type === 'cv') {
+    cvDedupIndex.delete(`${a.sha256}|cv`);
+  }
+}
+
+function evictOldestMessages() {
+  while (messages.size > MAX_MEM_MESSAGES) {
+    const oldestId: string | undefined = messages.keys().next().value;
+    if (!oldestId) break;
+    const m = messages.get(oldestId);
+    messages.delete(oldestId);
+    if (m) messagesByExternalId.delete(m.external_message_id);
+    // Drop any attachments belonging to the evicted message (and their dedup keys).
+    for (const [aid, a] of attachments) {
+      if (a.inbox_message_id === oldestId) dropAttachment(aid, a);
+    }
+  }
+}
+
+function evictOldestAttachments() {
+  while (attachments.size > MAX_MEM_ATTACHMENTS) {
+    const oldestId: string | undefined = attachments.keys().next().value;
+    if (!oldestId) break;
+    const a = attachments.get(oldestId);
+    if (a) dropAttachment(oldestId, a);
+    else attachments.delete(oldestId);
+  }
+}
+
 function newId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
@@ -55,6 +94,7 @@ export async function memCreateMessage(input: {
   };
   messages.set(id, m);
   messagesByExternalId.set(input.externalMessageId, id);
+  evictOldestMessages();
   return m;
 }
 
@@ -138,6 +178,7 @@ export async function memCreateAttachment(input: {
   }
 
   attachments.set(id, att);
+  evictOldestAttachments();
   return att;
 }
 

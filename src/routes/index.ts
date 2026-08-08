@@ -33,6 +33,7 @@ import jobLeadsRoutes from './jobLeads';
 import apiTokensRoutes from './apiTokens';
 import extensionRoutes from './extension';
 import facebookRoutes from './facebook';
+import adminHeapRoutes from './adminHeap';
 import { getWorkerStatus } from '../controllers/workerStatusController';
 
 const router = Router();
@@ -71,6 +72,7 @@ router.use('/jobs', jobLeadsRoutes);
 router.use('/auth/tokens', apiTokensRoutes);
 router.use('/extension', extensionRoutes);
 router.use('/facebook', facebookRoutes);
+router.use('/admin-heap', adminHeapRoutes);
 router.get('/worker-status', getWorkerStatus);
 
 export default router;

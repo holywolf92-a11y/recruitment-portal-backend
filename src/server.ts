@@ -7,6 +7,7 @@ import { supabaseAdminClient } from './config/database';
 import routes from './routes';
 import { errorHandler, createLogger } from './utils/errorHandling';
 import { isHostingerImapConfigured } from './services/hostingerMailboxService';
+import { startHeapWatcher } from './utils/heapWatcher';
 
 dotenv.config();
 validateEnv();
@@ -205,6 +206,7 @@ try {
     process.exit(1);
   }).on('listening', () => {
     logger.info('Server is now listening for connections');
+    startHeapWatcher();
   });
 } catch (error) {
   logger.error('Failed to initialize server', error);

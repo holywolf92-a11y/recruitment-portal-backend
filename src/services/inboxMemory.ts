@@ -192,3 +192,13 @@ export async function memDeleteAttachment(id: string) {
   attachments.delete(id);
   return a;
 }
+
+// Diagnostic: current sizes of the in-memory fallback store (for the heap watcher).
+export function getInboxMemoryStats() {
+  return {
+    messages: messages.size,
+    messagesByExternalId: messagesByExternalId.size,
+    attachments: attachments.size,
+    cvDedupIndex: cvDedupIndex.size,
+  };
+}

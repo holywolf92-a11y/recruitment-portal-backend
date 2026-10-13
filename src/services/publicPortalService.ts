@@ -1,6 +1,7 @@
 import { supabaseAdminClient } from '../config/database';
 import { createCandidate, normalizePhoneE164, type CreateCandidateData } from './candidateService';
-import { uploadCandidateDocument } from './candidateDocumentService';
+import { uploadCandidateDocument, getCandidateDocumentSignedUrl } from './candidateDocumentService';
+import { extractCandidateData } from './extractionService';
 import { sendText } from './whatsappInteractiveService';
 import { dispatchPortalAccessLink, ensurePortalAccount } from './portalAccessService';
 import { resolveFrontendUrl } from '../utils/publicUrl';
@@ -188,7 +189,7 @@ export async function submitCandidatePublicIntake(input: CandidatePublicIntakeIn
 
   const candidate = await createCandidate(candidatePayload);
   if (cvFile) {
-    await uploadCandidateDocument({
+    const uploadResult = await uploadCandidateDocument({
       candidate_id: candidate.id,
       file_name: cvFile.originalname,
       mime_type: cvFile.mimetype,
@@ -196,6 +197,25 @@ export async function submitCandidatePublicIntake(input: CandidatePublicIntakeIn
       source: 'web',
       document_type: 'cv',
     });
+
+    // Fire-and-forget: parse the uploaded CV to enrich the candidate (profession,
+    // skills, education, passport, etc.) beyond what the web form captured.
+    // Fully guarded so it can never fail the application — the candidate already
+    // exists with the form data regardless of parse outcome.
+    const docId = (uploadResult as { document?: { id?: string } } | undefined)?.document?.id;
+    if (docId) {
+      void (async () => {
+        try {
+          const cvUrl = await getCandidateDocumentSignedUrl(docId);
+          await extractCandidateData(candidate.id, cvUrl, 'web-intake');
+        } catch (err) {
+          console.error(
+            '[public-portal] CV extraction (non-fatal) failed:',
+            err instanceof Error ? err.message : err,
+          );
+        }
+      })();
+    }
   }
 
   const onboardingLink = await ensureCandidateOnboardingLink(candidate.id);

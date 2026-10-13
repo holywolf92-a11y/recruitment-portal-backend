@@ -34,6 +34,7 @@ import apiTokensRoutes from './apiTokens';
 import extensionRoutes from './extension';
 import facebookRoutes from './facebook';
 import adminHeapRoutes from './adminHeap';
+import talentRoutes from './talent';
 import { getWorkerStatus } from '../controllers/workerStatusController';
 
 const router = Router();
@@ -73,6 +74,7 @@ router.use('/auth/tokens', apiTokensRoutes);
 router.use('/extension', extensionRoutes);
 router.use('/facebook', facebookRoutes);
 router.use('/admin-heap', adminHeapRoutes);
+router.use('/talent', talentRoutes);
 router.get('/worker-status', getWorkerStatus);
 
 export default router;

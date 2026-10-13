@@ -26,6 +26,8 @@ export const FALISHA_CONTACT = {
 
 export interface TalentCard {
   code: string;
+  name: string | null;
+  title: string | null; // the candidate's actual position/title from their CV (the "main profession")
   category: string;
   profession: string;
   nationality: string | null;
@@ -48,7 +50,7 @@ let cache: Index | null = null;
 let building: Promise<Index> | null = null;
 
 const CANDIDATE_FIELDS =
-  'id,candidate_code,position,nationality,country_of_interest,experience_years,gcc_years,skills,date_of_birth,gender,status,date_available,professional_summary,previous_employment,education';
+  'id,candidate_code,name,position,nationality,country_of_interest,experience_years,gcc_years,skills,date_of_birth,gender,status,date_available,professional_summary,previous_employment,education';
 
 // WhatsApp Business enquiry link — every empty/low search routes here so a
 // recruiter never hits a dead end ("never show empty — say N available, enquire").
@@ -95,8 +97,14 @@ function inferProfession(row: any): { category: string; profession: string } {
 
 function toCard(row: any): TalentCard {
   const { category, profession } = inferProfession(row);
+  // The candidate's real title (raw CV position) is the most informative label;
+  // fall back to the normalized profession when the position field is blank.
+  const rawPos = typeof row.position === 'string' ? row.position.trim() : '';
+  const name = typeof row.name === 'string' && row.name.trim() ? row.name.trim() : null;
   return {
     code: row.candidate_code || `FAL-${String(row.id).slice(0, 8)}`,
+    name,
+    title: rawPos ? rawPos.slice(0, 60) : profession,
     category,
     profession,
     nationality: normalizeNationality(row.nationality),
@@ -211,6 +219,19 @@ export async function getCandidates(f: CandidateFilters): Promise<{
   const limit = Math.min(60, Math.max(1, f.limit || 20));
   const eq = (a: string | null, b?: string) => !b || (a || '').toLowerCase() === b.toLowerCase();
   const q = (f.q || '').toLowerCase().trim();
+  // Broad, token-based search: EVERY word in the query must appear somewhere in
+  // the candidate's name / real title / profession / category / skills / country.
+  // So "chemical engineer" matches a candidate titled "Engineer" with a
+  // "Chemical Analysis" skill, etc.
+  const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+  const matchesQ = (c: TalentCard) => {
+    if (!tokens.length) return true;
+    const hay = [c.name, c.title, c.profession, c.category, c.nationality, c.country_of_interest, ...c.skills]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return tokens.every((t) => hay.includes(t));
+  };
 
   const filtered = cards.filter(
     (c) =>
@@ -219,10 +240,7 @@ export async function getCandidates(f: CandidateFilters): Promise<{
       eq(c.nationality, f.nationality) &&
       eq(c.country_of_interest, f.country) &&
       (f.minExperience == null || (c.experience_years || 0) >= f.minExperience) &&
-      (!q ||
-        c.profession.toLowerCase().includes(q) ||
-        c.skills.some((s) => s.toLowerCase().includes(q)) ||
-        (c.nationality || '').toLowerCase().includes(q))
+      matchesQ(c),
   );
 
   // Never-empty: a search with no exact match still returns an enquiry CTA with a

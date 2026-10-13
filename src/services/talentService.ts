@@ -48,7 +48,15 @@ let cache: Index | null = null;
 let building: Promise<Index> | null = null;
 
 const CANDIDATE_FIELDS =
-  'id,candidate_code,position,nationality,country_of_interest,experience_years,gcc_years,skills,date_of_birth,gender,status,date_available';
+  'id,candidate_code,position,nationality,country_of_interest,experience_years,gcc_years,skills,date_of_birth,gender,status,date_available,professional_summary,previous_employment,education';
+
+// WhatsApp Business enquiry link — every empty/low search routes here so a
+// recruiter never hits a dead end ("never show empty — say N available, enquire").
+const WA_NUMBER = FALISHA_CONTACT.whatsapp.replace(/[^0-9]/g, '');
+const FALLBACK_AVAILABLE = 50; // reassurance count shown when a search has no exact match
+function enquiryLink(note: string): string {
+  return `https://wa.me/${WA_NUMBER}?text=${encodeURIComponent(note)}`;
+}
 
 function computeAge(dob: string | null): number | null {
   if (!dob) return null;
@@ -70,8 +78,23 @@ function toSkills(raw: unknown): string[] {
   return [];
 }
 
+// Incorporate blank-position candidates: when `position` is empty, infer the
+// profession from their skills / summary / work history instead of dropping them
+// into an "Unspecified" bucket (per "don't show unspecified — incorporate them").
+function inferProfession(row: any): { category: string; profession: string } {
+  const direct = normalizeProfession(row.position);
+  if (direct.category !== 'Unspecified') return direct; // has a usable position
+  const text = [row.skills, row.professional_summary, row.previous_employment, row.education]
+    .map((x) => (typeof x === 'string' ? x : Array.isArray(x) ? x.join(' ') : ''))
+    .join(' ');
+  const inferred = normalizeProfession(text);
+  // Only accept a confident inference (a named profession, not the Other catch-all).
+  if (inferred.category !== 'Unspecified' && inferred.category !== 'Other') return inferred;
+  return direct; // still genuinely unknown
+}
+
 function toCard(row: any): TalentCard {
-  const { category, profession } = normalizeProfession(row.position);
+  const { category, profession } = inferProfession(row);
   return {
     code: row.candidate_code || `FAL-${String(row.id).slice(0, 8)}`,
     category,
@@ -146,6 +169,7 @@ export async function getProfessions(): Promise<{ total: number; categories: Pro
     m.set(c.profession, (m.get(c.profession) || 0) + 1);
   }
   const categories: ProfessionGroup[] = [...byCat.entries()]
+    .filter(([category]) => category !== 'Unspecified') // never surface the blank bucket
     .map(([category, m]) => ({
       category,
       total: [...m.values()].reduce((a, b) => a + b, 0),
@@ -168,12 +192,19 @@ export interface CandidateFilters {
   limit?: number;
 }
 
+export interface Enquiry {
+  whatsapp: string;
+  available_estimate: number;
+  message: string | null;
+}
+
 export async function getCandidates(f: CandidateFilters): Promise<{
   total: number;
   page: number;
   limit: number;
   contact: typeof FALISHA_CONTACT;
   candidates: TalentCard[];
+  enquiry: Enquiry;
 }> {
   const { cards } = await getIndex();
   const page = Math.max(1, f.page || 1);
@@ -194,6 +225,23 @@ export async function getCandidates(f: CandidateFilters): Promise<{
         (c.nationality || '').toLowerCase().includes(q))
   );
 
+  // Never-empty: a search with no exact match still returns an enquiry CTA with a
+  // reassurance count, so the website can show "50+ available — enquire" instead
+  // of a dead end, routing the recruiter to WhatsApp Business.
+  const what = f.profession || f.q || f.category || 'workers';
+  const enquiry: Enquiry =
+    filtered.length === 0
+      ? {
+          whatsapp: enquiryLink(`Hi Falisha, I'm looking for ${what}. What do you have available?`),
+          available_estimate: FALLBACK_AVAILABLE,
+          message: `We can source ${what} on request — ${FALLBACK_AVAILABLE}+ profiles available. Enquire on WhatsApp.`,
+        }
+      : {
+          whatsapp: enquiryLink(`Hi Falisha, I'm interested in your ${what} candidates.`),
+          available_estimate: filtered.length,
+          message: null,
+        };
+
   const startIdx = (page - 1) * limit;
   return {
     total: filtered.length,
@@ -201,6 +249,7 @@ export async function getCandidates(f: CandidateFilters): Promise<{
     limit,
     contact: FALISHA_CONTACT,
     candidates: filtered.slice(startIdx, startIdx + limit),
+    enquiry,
   };
 }
 
@@ -216,10 +265,11 @@ export async function getStats(): Promise<{
     for (const v of vals) if (v) m.set(v, (m.get(v) || 0) + 1);
     return [...m.entries()].map(([k, count]) => ({ k, count })).sort((a, b) => b.count - a.count);
   };
+  const named = cards.filter((c) => c.category !== 'Unspecified');
   return {
     total_candidates: cards.length,
-    by_category: tally(cards.map((c) => c.category)).map((x) => ({ category: x.k, count: x.count })),
+    by_category: tally(named.map((c) => c.category)).map((x) => ({ category: x.k, count: x.count })),
     by_country: tally(cards.map((c) => c.country_of_interest)).slice(0, 15).map((x) => ({ country: x.k, count: x.count })),
-    top_professions: tally(cards.map((c) => c.profession)).slice(0, 25).map((x) => ({ profession: x.k, count: x.count })),
+    top_professions: tally(named.map((c) => c.profession)).slice(0, 25).map((x) => ({ profession: x.k, count: x.count })),
   };
 }

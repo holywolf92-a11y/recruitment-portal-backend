@@ -13,6 +13,7 @@
 import { supabaseAdminClient } from '../config/database';
 import { normalizeCNIC, normalizePassport } from './candidateService';
 import { CandidateMatcher } from './candidateMatcher';
+import { clampCandidateText, flattenCandidateListField, isEmptyOrPlaceholderValue } from '../utils/candidateFieldFormat';
 
 // Excel Browser fields (the "bible" for missing data tracking)
 export const EXCEL_BROWSER_FIELDS = {
@@ -135,11 +136,16 @@ export async function enrichCandidateData(
   const sourceTracking: FieldSource[] = [];
 
   // Process each extracted field
-  for (const [field, extractedValue] of Object.entries(extractedData)) {
+  for (const [field, rawExtractedValue] of Object.entries(extractedData)) {
     if (!candidateHasColumn(currentCandidate, field)) {
       skipped.push(field);
       continue;
     }
+
+    // Flatten parser arrays (skills, education objects, …) to the stored string
+    // format first, so the emptiness checks and the VARCHAR clamp below see the
+    // value that will actually be written.
+    const extractedValue: any = flattenCandidateListField(field, rawExtractedValue);
 
     // Skip null/undefined/empty extracted values
     if (extractedValue === null || extractedValue === undefined || extractedValue === '') {
@@ -152,6 +158,11 @@ export async function enrichCandidateData(
       if (normalized === '' || ['missing', 'null', 'undefined', 'n/a', 'na', 'none', 'not provided'].includes(normalized)) {
         continue;
       }
+    }
+
+    // Skip empty lists / objects (e.g. `education: []` from the parser)
+    if (isEmptyOrPlaceholderValue(extractedValue)) {
+      continue;
     }
 
     // Log nationality processing for debugging
@@ -300,16 +311,16 @@ export async function enrichCandidateData(
 
       // Additional CV extraction fields that are VARCHAR(255) in some deployments.
       // Keep these short to avoid BullMQ retry loops due to Postgres 22001 errors.
-      skills: 255,
+      // (skills and certifications are TEXT in production — rows hold values well
+      // over 255 chars — so they are not clamped.)
       languages: 255,
-      certifications: 255,
       internships: 255,
       previous_employment: 255,
       address: 255,
     };
     for (const [col, maxLen] of Object.entries(VARCHAR_LIMITS)) {
       if (typeof updates[col] === 'string' && updates[col].length > maxLen) {
-        updates[col] = updates[col].slice(0, maxLen);
+        updates[col] = clampCandidateText(col, updates[col], maxLen);
       }
     }
 

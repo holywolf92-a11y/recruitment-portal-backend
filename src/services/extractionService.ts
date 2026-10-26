@@ -1,5 +1,6 @@
 import { supabaseAdminClient } from '../config/database';
 import { fetchParser } from '../utils/parserService';
+import { clampCandidateText, flattenCandidateListField, isEmptyOrPlaceholderValue } from '../utils/candidateFieldFormat';
 
 interface ExtractionData {
   nationality?: string;
@@ -44,10 +45,23 @@ function clampCandidateVarcharFields<T extends Record<string, any>>(payload: T):
   for (const [field, max] of Object.entries(CANDIDATE_VARCHAR_LIMITS)) {
     const value = out[field];
     if (typeof value === 'string' && value.length > max) {
-      out[field] = value.slice(0, max);
+      out[field] = clampCandidateText(field, value, max);
     }
   }
   return out as T;
+}
+
+// Flatten list fields (skills, education objects, …) to the same strings the
+// CV worker stores, and drop values the parser could not find (null /
+// "missing" / []) so they never blank out data the candidate already has
+// (e.g. answers from the website application form).
+function normalizeExtractedFields(data: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [field, value] of Object.entries(data || {})) {
+    const flattened = flattenCandidateListField(field, value);
+    if (!isEmptyOrPlaceholderValue(flattened)) out[field] = flattened;
+  }
+  return out;
 }
 
 /**
@@ -68,16 +82,7 @@ export async function extractCandidateData(
 
     const extractedData: ExtractionData = extractionResult.data;
 
-    // Normalize list fields for storage
-    const normalizedData = {
-      ...extractedData,
-      certifications: Array.isArray(extractedData.certifications)
-        ? extractedData.certifications.join(', ')
-        : extractedData.certifications,
-      internships: Array.isArray(extractedData.internships)
-        ? extractedData.internships.join(', ')
-        : extractedData.internships,
-    };
+    const normalizedData = normalizeExtractedFields(extractedData);
 
     // Update candidate with extracted data
     const db = supabaseAdminClient();
@@ -258,7 +263,7 @@ export async function updateExtraction(
     const { data, error } = await db
       .from('candidates')
       .update(clampCandidateVarcharFields({
-        ...extractedData,
+        ...normalizeExtractedFields(extractedData),
         extraction_source: approved ? 'human-reviewed' : 'rejected',
         extracted_at: new Date().toISOString()
       }))

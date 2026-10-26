@@ -127,6 +127,12 @@ try {
       });
     }).catch((err) => logger.error('Failed to load Hostinger mailbox polling worker', err));
 
+    // IMAP CV intake mailboxes (info@ etc.) — read-only, checkpointed, single runner via DB lock
+    import('./workers/mailboxIntakePollingWorker').then(({ startIntakeMailboxPolling }) => {
+      const started = startIntakeMailboxPolling();
+      logger.info('IMAP intake mailbox polling', { started });
+    }).catch((err) => logger.error('Failed to load IMAP intake mailbox polling worker', err));
+
     // WhatsApp bridge disconnect monitor — emails admin when any account goes offline
     import('./workers/whatsappMonitorWorker').then(({ startWhatsAppMonitor }) => {
       startWhatsAppMonitor();

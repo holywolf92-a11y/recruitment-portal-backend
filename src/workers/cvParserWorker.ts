@@ -632,7 +632,7 @@ async function createCandidateFromParsedData(
       professional_summary: candidate.professional_summary || candidate.summary || undefined,
       // Pass through profile_photo_url from parser response if present (ignore PDF links)
       profile_photo_url: isProfilePhotoPdf ? undefined : normalizedProfilePhotoUrl,
-      source: messageSource === 'whatsapp' ? 'WhatsApp' : messageSource === 'gmail' ? 'Email' : 'Manual',
+      source: messageSource === 'whatsapp' ? 'WhatsApp' : messageSource === 'gmail' || messageSource === 'email' ? 'Email' : 'Manual',
       auto_extracted: true,
     };
 
